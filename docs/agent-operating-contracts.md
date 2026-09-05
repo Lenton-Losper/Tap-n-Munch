@@ -733,7 +733,13 @@ Anything **base-conditional** must be read against the branch it is landing on:
 Unchanged and non-negotiable:
 
 - nothing reaches production that is not on origin first
-- `production-worker.yml` is the only production path, manual dispatch only
+- **`scripts/deploy/deploy-production.mjs`, run locally, is the production path** — by design, not
+  as a fallback. It is what enforces the sequence: artifact gate, upload at 0%, smoke the preview,
+  record the rollback target, explicit two-flag promotion, sampled live health.
+  `production-worker.yml` is **not** the route and must not be described as one. GitHub Actions is
+  unavailable at the account level; jobs are rejected before executing any step. The workflow file
+  stays in the tree as a record of the same sequence, but nothing dispatches it. See
+  `docs/production-deploy-runbook.md`
 - migrations never ride a deploy — apply via `scripts/safe-supabase-linked.ts` first. `db query`
   does not record the ledger row, so the drift guard still fails afterwards, and the fix is
   `migration repair`, never a re-run

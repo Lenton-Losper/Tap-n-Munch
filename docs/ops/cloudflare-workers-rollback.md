@@ -4,7 +4,19 @@
 **Scope:** Worker code rollback only. Does **not** undo Supabase schema changes.  
 **Date of investigation:** 2026-07-28. **Empirically re-verified:** 2026-07-28 (same day, later session — see verification note below).  
 **Live production Worker:** `flashtap-production` (`wrangler.production.toml`) → `https://flashtap.app`  
-**Deploy path today:** GitHub Actions `production-worker.yml` → `npx wrangler@3.99.0 deploy --config wrangler.production.toml` (immediate 100% cutover).
+**Deploy path:** `node scripts/deploy/deploy-production.mjs`, run locally in the Linux build
+container — artifact gate → `versions upload` at 0% → smoke the preview → record the rollback
+target → explicit two-flag promotion → sampled live health. Rollback is `--rollback <version-id>`
+against the target it recorded before promoting. See `docs/production-deploy-runbook.md`.
+
+> **Superseded framing, 2026-09-05.** This document was written on 2026-07-28, when the path was a
+> `production-worker.yml` dispatch running a bare `wrangler deploy` at an immediate 100% cutover.
+> That is no longer how production ships and `production-worker.yml` is not the route: GitHub
+> Actions is unavailable at the account level, and the local script is the deploy path by design.
+> The Part 1/2 findings below about **versions, deployments and the Cloudflare API** are unchanged
+> and still correct — they are properties of the platform, not of the runner. Where the text says
+> "Actions" or "the workflow", read "the local deploy script". The workflow file is retained in the
+> tree as a record of the sequence; nothing dispatches it.
 
 ---
 

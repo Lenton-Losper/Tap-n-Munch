@@ -13,15 +13,16 @@
 | Fact | Detail |
 | --- | --- |
 | Production traffic | Cloudflare Worker **`flashtap-production`** on `flashtap.app` / `www` / `riviera` |
-| Prod deploy trigger | Manual only: Actions → **Deploy flashtap-production Worker** (`workflow_dispatch`), **must be from `main`** |
-| Prod deploy command | `npx wrangler@3.99.0 deploy --config wrangler.production.toml` |
-| Cutover model | **Full direct cutover** — new version gets **100%** traffic immediately |
-| Gradual rollout / % traffic split | **Not used** |
+| Prod deploy trigger | Manual only: a person runs `scripts/deploy/deploy-production.mjs` locally, from `main`. **`production-worker.yml` is not the route** — Actions is unavailable at the account level and nothing dispatches it |
+| Prod deploy command | `node scripts/deploy/deploy-production.mjs --promote --i-have-read-the-runbook`, in the Linux build container, after `build-linux.sh` |
+| Cutover model | **Upload at 0% → smoke the preview → explicit promotion.** No customer traffic moves until the second flag is given |
+| Gradual rollout / % traffic split | Used for the candidate (0%); promotion is then to 100%. The worker's own rollout is gradual, so verification samples 20× |
 | Blue/green | **Not used** |
-| Staging | Push to `cloudflare-staging` → **Deploy to Cloudflare Staging** (`staging.yml`): build → `wrangler deploy` → HTTP smoke + Jest + Playwright |
+| Staging | Push to `cloudflare-staging` → **Deploy to Cloudflare Staging** (`staging.yml`): build → `wrangler deploy` → HTTP smoke + Jest + Playwright. Also gated on Actions, so also not currently running |
 | Staging HTTP smoke today | `GET /` and `GET /api/menu/<fixture>/features` must return success |
-| Prod post-deploy automated smoke | **None** in `production-worker.yml` (deploy + secret put only) |
-| Prod pre-deploy gates | OpenNext build; assert custom domains in toml; **migration drift check** (hard fail) |
+| Prod post-deploy automated smoke | `scripts/deploy/smoke-preview.mjs` against the live URL, 20 samples, run by the deploy script itself |
+| Prod pre-deploy gates | Artifact is Linux-built and complete (`check-opennext-artifact.mjs`); preview smoke; rollback target recorded before promoting |
+| Migration drift check | **Not in the deploy path.** `scripts/check-migration-drift.mjs` is wired into `production-worker.yml` only, which does not run. Run it by hand before promoting — see the gap noted in `docs/production-deploy-runbook.md` |
 | Retired path | `production.yml` (Vercel) is manual/legacy; production traffic is CF-only |
 
 Snapshot at investigation time (2026-07-28, morning):

@@ -3,9 +3,18 @@
 **The short version: build in Docker Linux, prove the artifact, upload at 0%, smoke it, promote,
 watch, and know your rollback target before you need it.**
 
-GitHub Actions have been unavailable at the account level since 2026-08-28, so **today the only
-working path is local**. That is also the dangerous path, because a local build on Windows produces an artifact
-that passes every build step and 500s every route.
+**`node scripts/deploy/deploy-production.mjs`, run locally, IS the deploy path.** Not a fallback,
+not a workaround, and not something to be migrated back into CI when circumstances change. It is
+the route by design: it is what makes the safe path the short path, and it refuses to skip its own
+gates. `.github/workflows/production-worker.yml` is **not** the deploy path — GitHub Actions is
+unavailable at the account level, jobs are rejected before executing any step, and nothing
+dispatches it. The workflow file is kept as a record of the same sequence; treat it as
+documentation, not as a route.
+
+The local path is also the dangerous one if run carelessly, which is what most of this document is
+about: a local build **on Windows** produces an artifact that passes every build step and 500s
+every route. That is why the build happens in a Linux container and why the artifact gate runs
+before anything uploads.
 
 ---
 
@@ -157,21 +166,40 @@ The target is the version you wrote down in step 0. Roll back first, diagnose af
 
 | Guard | Enforced by | Covers |
 |---|---|---|
-| Artifact is Linux-built and complete | `scripts/deploy/check-opennext-artifact.mjs` | local build **and** CI |
+| Artifact is Linux-built and complete | `scripts/deploy/check-opennext-artifact.mjs` | every deploy |
 | The gate still detects | `__tests__/deploy-artifact-gate.test.ts` (8 tests) | every test run |
-| Build cannot run on the host | `scripts/deploy/build-linux.sh` refuses non-Linux | local |
+| Build cannot run on the host | `scripts/deploy/build-linux.sh` refuses non-Linux | every build |
 | No artifact is ever committed | `/.open-next/` in `.gitignore` | every commit |
-| 0% upload → smoke → explicit promote | `.github/workflows/production-worker.yml` | CI, once Actions are available again |
-| No 5xx before or after promotion | `scripts/deploy/smoke-preview.mjs` | both |
+| 0% upload → smoke → explicit promote | `scripts/deploy/deploy-production.mjs` | every deploy |
+| The rollback target is the version that was serving | `deploy-production.mjs` stage 4 | every deploy |
+| No 5xx before or after promotion | `scripts/deploy/smoke-preview.mjs` | every deploy |
 | A migration never bundles DDL with a write to live rows | `scripts/check-migration-no-data-write.mjs` | every run |
-| The sequence cannot skip its own gates | `scripts/deploy/deploy-production.mjs` | local |
-| The sequence still gates | `__tests__/deploy-sequence-gates.test.ts` (13 tests) | every test run |
+| The sequence cannot skip its own gates | `scripts/deploy/deploy-production.mjs` | every deploy |
+| The sequence still gates | `__tests__/deploy-sequence-gates.test.ts` (17 tests) | every test run |
+
+Every row is enforced by the local sequence, because the local sequence is the deploy path.
+`production-worker.yml` contains the same stages and enforces nothing, because nothing runs it.
 
 ## Known gaps
 
-- **CI cannot run.** Actions have been unavailable at the account level since 2026-08-28: jobs are
-  rejected before executing any step, with zero steps and no log. Every gate above exists in the
-  workflow and is exercised locally; none of it runs automatically today.
+- **The migration drift check is NOT in the deploy path.** `scripts/check-migration-drift.mjs` is
+  wired into `production-worker.yml:335` and nowhere else, and that workflow does not run — so
+  nothing stops a deploy whose code expects a migration production has not got. This gate was real
+  when CI was the route and was lost when the route changed; it did not move into
+  `deploy-production.mjs`. **Until it does, run it by hand before promoting:**
+
+  ```
+  SUPABASE_URL="$NEXT_PUBLIC_SUPABASE_URL" MIGRATION_TARGET_ENV=production \
+    node scripts/check-migration-drift.mjs
+  ```
+
+  (credentials in `.env.local`; it does not load dotenv itself)
+
+- **Nothing runs automatically.** Every gate above is enforced when a person runs the deploy
+  script; none of it is triggered by a push. That is a real property of this setup and worth
+  stating plainly — but it is not a reason to look to `production-worker.yml`. Actions have been
+  unavailable at the account level since 2026-08-28 (jobs rejected before executing any step, zero
+  steps, no log), and the deploy path is the local script by design regardless.
 - **The local path is not forced.** Nothing physically stops someone running `wrangler deploy` by
   hand and skipping all of this. What has changed is that the safe path is now the SHORT one —
   `npm run deploy:preview` is fewer keystrokes than the manual sequence and refuses a malformed

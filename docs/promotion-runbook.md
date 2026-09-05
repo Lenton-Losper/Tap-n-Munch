@@ -296,8 +296,12 @@ quantity of work. The file gap is.**
 
 Only after step 6 passes, and only for a wave cleared to reach production.
 
-`main` has no push trigger, so the deploy is a deliberate `workflow_dispatch` of
-`production-worker.yml`. Then verify `/api/version` on **all three** hostnames — and sample, do not
+The deploy is `node scripts/deploy/deploy-production.mjs --promote --i-have-read-the-runbook`, run
+locally in the Linux build container — see `docs/production-deploy-runbook.md` for the full
+sequence and the build step that must precede it. It is the deploy path by design; it is not a
+`workflow_dispatch` of `production-worker.yml`, which is not the route and cannot run (GitHub
+Actions is unavailable at the account level). Then verify `/api/version` on **all three**
+hostnames — and sample, do not
 spot-check: the worker rolls out gradually and a single cache-busted request can return either
 version for roughly two minutes. Require 20/20 identical reads per hostname before calling it done.
 
