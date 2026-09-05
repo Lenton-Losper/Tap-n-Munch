@@ -45,6 +45,21 @@ import { toBusinessDocumentRow } from '@/lib/documents/business-document-row'
 
 const FROM = 'FlashTap <noreply@flashtap.app>'
 
+/**
+ * NO `reply_to`, AND NO INVITATION TO REPLY. A DECISION, NOT AN OMISSION — 2026-09-05.
+ *
+ * A draft of this email closed with "Questions about this invoice? Reply to this email and it will
+ * reach <venue>." That sentence was false: replies go to noreply@flashtap.app and reach nobody.
+ *
+ * The obvious repair is a `reply_to` pointing at the venue. It was considered and REJECTED by the
+ * owner: replies landing in an unwatched venue mailbox are worse than no invitation to reply,
+ * because the customer believes they have been in touch and nobody has heard them. The venue's own
+ * contact details are printed on the attached PDF, which is where a customer with a question
+ * should be sent.
+ *
+ * Do not add a reply line back without a mailbox somebody actually reads.
+ */
+
 export type SendDocumentResult =
   | { ok: true; providerReference: string | null; to: string }
   | { ok: false; errorCode: string; errorMessage: string; to: string }
@@ -146,9 +161,6 @@ export function renderDocumentEmailHtml(doc: {
         ${due ? `<tr><td style="padding:2px 16px 2px 0;color:#6b7280;">Due</td><td style="padding:2px 0;font-weight:600;">${escapeHtml(due)}</td></tr>` : ''}
       </table>
       ${bankBlock}
-      <p style="font-size:13px;color:#6b7280;margin:28px 0 0;">
-        Questions about this ${noun.toLowerCase()}? Reply to this email and it will reach ${escapeHtml(venue)}.
-      </p>
     </div>
   </body>
 </html>`
