@@ -115,6 +115,19 @@ export interface ReceiptSnapshot {
     /** Always 0 until an order-level discount model exists. */
     discount: number
     grand_total: number
+    /**
+     * THE GRATUITY, in the receipt currency, and PERMANENTLY OPTIONAL.
+     *
+     * ABSENT MEANS UNKNOWN, NEVER ZERO. Every receipt issued before this field existed has no
+     * gratuity recorded either way, and no backfill is sanctioned -- the same rule as the #251
+     * line-VAT split and outlet.vat_registered. A renderer must presence-check, not default.
+     *
+     * OUTSIDE subtotal, vat and grand_total, deliberately. A freely given gratuity is not
+     * consideration for the supply, so it is not in the VAT base and not part of the bill;
+     * grand_total stays the amount owed for the food. What the customer was CHARGED is
+     * grand_total + tip, which is why the renderers print a second total under it.
+     */
+    tip?: number
   }
   payments: ReceiptPayment[]
 }
@@ -516,6 +529,34 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
     )
   }
 
+  /**
+   * THE GRATUITY FOR THIS SETTLEMENT, or nothing at all.
+   *
+   * Keyed on `payment_reference`, which is what payment_tips records and what identifies the
+   * transaction across BOTH settle paths. Issuance runs AFTER payment, so the tip is already
+   * written by the time this reads -- that is why the snapshot can carry it at all.
+   *
+   * A FAILED READ LEAVES IT ABSENT, NOT ZERO. Absent means unknown for every renderer, which is
+   * the same contract as the #251 line-VAT split; writing 0 would assert that no gratuity was
+   * given, which is a different and possibly false claim.
+   */
+  let tipAmount: number | undefined
+  {
+    const reference = String(order.payment_reference || '').trim()
+    if (reference) {
+      const { data: tipRow } = await supabase
+        .from('payment_tips')
+        .select('tip_cents')
+        .eq('restaurant_id', order.restaurant_id)
+        .eq('payment_reference', reference)
+        .maybeSingle()
+      const cents = tipRow?.tip_cents
+      if (typeof cents === 'number' && Number.isFinite(cents) && cents > 0) {
+        tipAmount = round2(cents / 100)
+      }
+    }
+  }
+
   const lineItems = (Array.isArray(order.items) ? order.items : []).map(toLineItem)
   const subtotal = Number(order.subtotal) || 0
   const vat = Number(order.tax) || 0
@@ -593,6 +634,8 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
       vat,
       discount,
       grand_total: grandTotal,
+      // Omitted entirely when there is none: absent means unknown, never zero.
+      ...(tipAmount !== undefined ? { tip: tipAmount } : {}),
     },
     payments,
   }
