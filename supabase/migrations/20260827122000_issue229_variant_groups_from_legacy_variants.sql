@@ -1,4 +1,25 @@
+-- @env: production
+--
 -- #229 -- make `variant_groups` the working mechanism on FNB ChowNow's five drinks.
+--
+-- SCOPE, ADDED 2026-09-05. This migration names FIVE `menu_items` ROWS BY UUID and refuses if any
+-- is missing, so it is a correction to specific production data and cannot be environment-neutral.
+-- Measured on both databases the same day:
+--
+--     production   in the ledger, 5 of 5 rows present, 543 menu_items
+--     staging      not applied,   0 of 5 rows present,  44 menu_items
+--
+-- It is DONE on production. On staging it aborts on its own first guard --
+-- `#229: menu_items row 9b366863-... is gone; re-derive this migration` -- which is the guard
+-- working, not a fault: applying it there could only overwrite unrelated rows or nothing at all.
+-- Without this header it defaulted to `both` and was reported as staging drift forever, for a
+-- migration that must never run there.
+--
+-- It was carried in the fourteen-file staging catch-up (#378) and stopped that run at the
+-- fourteenth file. The catch-up's own pre-flight table had already measured `0 of 5 named
+-- menu_item ids exist` and recorded it as "updates nothing" -- but the FIRST thing this file does
+-- with a missing row is RAISE. The measurement was right and the conclusion drawn from it was
+-- wrong; the other thirteen applied cleanly.
 --
 -- WRITTEN, PROVED, NOT APPLIED. This touches live menu data at a trading venue.
 --
