@@ -746,6 +746,23 @@ export type SettleTabExtras = {
    */
   staffUserId?: string;
   authorizationTokenId?: string;
+  /**
+   * THE GRATUITY, in integer cents, alongside the bill and never inside it.
+   *
+   * `amount` is checked server-side against the sum of the order totals -- a money control that
+   * stops a terminal settling a tab for the wrong figure. Folding a tip in would loosen it to
+   * "totals, or totals plus something", which is not a check. The customer is charged the sum of
+   * the two in one transaction.
+   */
+  tipCents?: number;
+  /**
+   * WHO IS TAKING THE GRATUITY. An UNVERIFIED claim from the picker -- no PIN, nothing proved.
+   *
+   * Deliberately NOT `staffUserId` above, which exists only when a PIN was typed and a token
+   * consumed. Merging them would silently downgrade every attributed settlement from "proved" to
+   * "asserted". Required by the server whenever tipCents > 0.
+   */
+  tipStaffUserId?: string;
 };
 
 export type SettleTabResult = {
@@ -787,6 +804,9 @@ export async function settleTab(
         business_order_no: isCash ? undefined : extras?.businessOrderNo,
         staff_user_id: extras?.staffUserId,
         authorization_token_id: extras?.authorizationTokenId,
+        // Separate fields, separate trust. See SettleTabExtras.
+        tip_cents: extras?.tipCents,
+        tip_staff_user_id: extras?.tipStaffUserId,
       }),
     },
     token,
@@ -1415,6 +1435,43 @@ export async function getAuthorizedUsers(
 ): Promise<AuthorizedUser[]> {
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/authorized-users?purpose=${encodeURIComponent(purpose)}`,
+    {headers: {'Content-Type': 'application/json'}},
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as {users?: AuthorizedUser[]};
+  return data.users ?? [];
+}
+
+/**
+ * WHO WORKS HERE — for the gratuity picker. NOT who may authorise anything.
+ *
+ * ============================================================================================
+ * THIS IS A DIFFERENT LIST FROM getAuthorizedUsers, ON PURPOSE
+ * ============================================================================================
+ *
+ * `getAuthorizedUsers(purpose)` answers "who may approve this privileged action", and earns it by
+ * filtering to users holding a terminal PIN credential AND the permission that purpose maps to.
+ * Picking from it is a step toward proving something, which the PIN then completes.
+ *
+ * This answers "which member of staff is taking this tip". It applies NEITHER filter, deliberately:
+ * a waiter with no PIN can still be handed a gratuity, and receiving one is not a permission.
+ *
+ * *** THE RESULT IS AN UNVERIFIED CLAIM. ANYONE HOLDING THE TERMINAL CAN PICK ANYONE. ***
+ *
+ * Acceptable for a gratuity, where a mis-tap is a payroll correction. NOT acceptable for a refund,
+ * a cash settlement or a walkout close -- those write away money or debt and keep their PIN. DO
+ * NOT REUSE THIS TO SKIP A PIN. If you are here because a PIN is inconvenient, the answer is no.
+ */
+export async function getVenueStaff(token: string): Promise<AuthorizedUser[]> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/authorized-users?scope=venue_staff`,
     {headers: {'Content-Type': 'application/json'}},
     token,
   );
@@ -2807,6 +2864,10 @@ export async function settleAllocations(
     method: 'cash' | 'card';
     staffUserId?: string | null;
     authorizationTokenId?: string | null;
+    /** Integer cents, alongside the split amount and never inside it. See SettleTabExtras. */
+    tipCents?: number;
+    /** The picker's UNVERIFIED claim. Never staffUserId, which is PIN-proved. */
+    tipStaffUserId?: string;
   },
   token: string,
 ): Promise<SettleAllocationsResult> {
@@ -2820,6 +2881,11 @@ export async function settleAllocations(
   }
   if (params.staffUserId) body.staff_user_id = params.staffUserId;
   if (params.authorizationTokenId) body.authorization_token_id = params.authorizationTokenId;
+  // Sent only when there is a gratuity: an absent key means "no tip", never "a tip we dropped".
+  if (params.tipCents && params.tipCents > 0) {
+    body.tip_cents = params.tipCents;
+    body.tip_staff_user_id = params.tipStaffUserId;
+  }
 
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/settle-allocations`,
