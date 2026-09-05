@@ -161,9 +161,29 @@ describe('the ordering is the safety property', () => {
     const NEWEST = '6d335f8a-4b97-41d4-bbda-e5c6fc7da517'
     const OLDEST = '9fcbd1df-0fda-4729-bfa6-68c97aec2608'
 
-    /** The extraction the script performs, modelled here so the property is executable. */
-    const pick = (out: string) =>
-      [...out.matchAll(/\(100%\)\s*([0-9a-f-]{36})/g)].map((m) => m[1]).at(-1) ?? null
+    /**
+     * THE SCRIPT'S OWN EXPRESSION, LIFTED OUT OF ITS SOURCE — not a copy of it.
+     *
+     * Written first as a local re-implementation, which was worthless and proved to be: reverting
+     * the script to the broken `.match()` left three of these four tests GREEN, because they were
+     * exercising the copy while the script did something else. A test that models the code cannot
+     * notice the code changing.
+     *
+     * So the two lines are read out of the file and evaluated. If someone reverts the parse, these
+     * go red; if the lines are renamed or restructured away, the lift throws and they go red
+     * loudly rather than silently passing on a stale model.
+     */
+    const pick: (out: string) => string | null = (() => {
+      const lines = source.split(/\r?\n/)
+      const a = lines.find((l) => l.trimStart().startsWith('const hundredPercent ='))
+      const b = lines.find((l) => l.trimStart().startsWith('const current ='))
+      if (!a || !b) {
+        throw new Error('deploy-production.mjs no longer has the two rollback-target lines to lift')
+      }
+      // `deployments.out` is the only free variable; bind it to the fixture.
+      const fn = new Function('out', `${a.replace('deployments.out', 'out')}\n${b}\nreturn current`)
+      return (out: string) => fn(out) as string | null
+    })()
 
     it('picks the newest deployment, not the first one printed', () => {
       expect(pick(LIST)).toBe(NEWEST)
