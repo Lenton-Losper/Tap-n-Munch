@@ -142,3 +142,75 @@ describe('a gratuity that was taken and not recorded is visible, never silent', 
     expect(after).toMatch(/console\.error/)
   })
 })
+
+/**
+ * THE SPLIT PATH. Same rules, a different ledger.
+ *
+ * `settle-allocations` writes `order_line_allocation_settlements`, not `payments`, and the two
+ * are NOT interchangeable -- which is exactly why the tip has a nullable FK to each and a CHECK
+ * requiring one. These pin that this path obeys the same ordering as the whole-tab route.
+ */
+describe('the split settle path records the gratuity too', () => {
+  const ALLOC = readFileSync(
+    join(__dirname, '..', 'app', 'api', 'terminal', 'tabs', '[tabId]', 'settle-allocations', 'route.ts'),
+    'utf8',
+  ).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  const allocAt = (needle: string) => {
+    const i = ALLOC.indexOf(needle)
+    expect(i).toBeGreaterThan(-1)
+    return i
+  }
+
+  /**
+   * ASSERT THE CONDITION, NOT THE MESSAGE INSIDE IT.
+   *
+   * These three tests first checked only that `TIP_NEEDS_ATTRIBUTION`,
+   * `not_recorded_no_settlement_row` and `parseTipCents` appeared. Mutation testing caught all
+   * three: replacing each guard's condition with `if (false)` leaves those strings sitting inside
+   * the now-dead block, so every assertion still matched and the suite stayed green while the
+   * guards did nothing. A marker proves a branch was written; only the condition proves it runs.
+   */
+  it('refuses an unattributed gratuity BEFORE the settle RPC runs', () => {
+    expect(ALLOC).toMatch(/if \(tipCents > 0 && !attributedStaffUserId\)/)
+    expect(ALLOC).toMatch(/TIP_NEEDS_ATTRIBUTION/)
+    expect(allocAt('TIP_NEEDS_ATTRIBUTION')).toBeLessThan(allocAt("rpc('settle_order_line_allocations'"))
+  })
+
+  it('parses the gratuity before anything settles, and acts on a bad value', () => {
+    expect(allocAt('parseTipCents')).toBeLessThan(allocAt("rpc('settle_order_line_allocations'"))
+    expect(ALLOC).toMatch(/if \(!tipParse\.ok\)/)
+  })
+
+  it('records the tip AFTER the RPC, against the allocation settlement', () => {
+    expect(allocAt("rpc('settle_order_line_allocations'")).toBeLessThan(allocAt('recordTip('))
+    expect(ALLOC).toMatch(/allocationSettlementId: settlementId/)
+  })
+
+  it('finds the settlement by THIS call payment_reference, not by guessing', () => {
+    const block = ALLOC.slice(allocAt("from('order_line_allocation_settlements')"), allocAt('recordTip('))
+    expect(block).toMatch(/\.eq\('payment_reference', paymentReference\)/)
+    expect(block).toMatch(/\.eq\('restaurant_id', terminal\.restaurantId\)/)
+  })
+
+  it('reports a gratuity it could not attach, rather than dropping it silently', () => {
+    // The condition, not just the message it produces — see the note above.
+    expect(ALLOC).toMatch(/if \(settlementReadError \|\| !settlementId\)/)
+    expect(ALLOC).toMatch(/not_recorded_no_settlement_row/)
+    // The allocations ARE settled at that point; the customer has paid.
+    const after = ALLOC.slice(allocAt('not_recorded_no_settlement_row'))
+    expect(after).not.toMatch(/throw /)
+  })
+
+  it('carries the outcome in the audit trail and the response, guarded on a tip existing', () => {
+    const audit = ALLOC.slice(allocAt("from('audit_logs')"), allocAt('new_tab_total'))
+    expect(audit).toMatch(/tip_recorded: tipOutcome/)
+    const response = ALLOC.slice(allocAt('new_tab_total'))
+    expect(response).toMatch(/tip_recorded: tipOutcome/)
+  })
+
+  it('never folds the gratuity into the settled amount', () => {
+    expect(ALLOC).not.toMatch(/appliedAmountCents\s*\+\s*tipCents/)
+    expect(ALLOC).toMatch(/amount: fromCents\(appliedAmountCents\)/)
+  })
+})
