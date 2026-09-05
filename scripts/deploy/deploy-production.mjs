@@ -123,6 +123,77 @@ if (run('node', ['scripts/deploy/check-opennext-artifact.mjs', '.open-next']).co
   fail('the artifact is malformed. This is the check that would have prevented the 2026-09-01 outage.')
 }
 
+/**
+ * THE ARTIFACT MUST BE A BUILD OF *THIS* COMMIT.
+ *
+ * ============================================================================================
+ * WHY, MEASURED 2026-09-05
+ * ============================================================================================
+ *
+ * A `build-linux.sh` run was killed mid-`npm ci` by host memory pressure. That left the PREVIOUS
+ * build sitting in `.open-next`: complete, valid, Linux-built, 13.5 MB. Every check above passes
+ * it, because they ask whether the artifact is WELL-FORMED and never which commit it is.
+ *
+ * Deploying at that moment would have tagged the version `deploy-<new sha>`, set
+ * `--var GIT_COMMIT_SHA=<new sha>`, and shipped the OLD bundle. /api/version would then have
+ * answered the NEW sha while running the OLD code, and the 20/20 post-promotion sampling would
+ * have gone green on it.
+ *
+ * NOTE WHAT THAT MEANS FOR THE IDENTITY FIX (08ce71a4, earlier the same day). Before it, a stale
+ * artifact answered {"commit":null} -- useless, but honest. After it, the version asserts a
+ * confident WRONG answer. Making the deploy able to identify itself is what made this failure mode
+ * dangerous, so the two changes belong together.
+ *
+ * ============================================================================================
+ * THE EVIDENCE IS ALREADY IN THE BUNDLE -- NOTHING NEW HAD TO BE RECORDED
+ * ============================================================================================
+ *
+ * `build-linux.sh` exports NEXT_PUBLIC_COMMIT_SHA, and Next inlines NEXT_PUBLIC_* at build time,
+ * so the full 40-character sha is a literal inside handler.mjs. This looks for exactly that.
+ *
+ * Three outcomes, deliberately distinguished, because "wrong commit" and "cannot tell" are
+ * different problems with different fixes:
+ *
+ *   match          proceed
+ *   no sha at all  the artifact predates the sha bake, or was built without it -> REBUILD
+ *   a DIFFERENT sha  the artifact is a different commit -> REBUILD (this is the 2026-09-05 case)
+ */
+const headSha = run('git', ['rev-parse', 'HEAD'], { capture: true }).stdout.trim()
+if (!/^[0-9a-f]{40}$/.test(headSha)) {
+  fail(
+    [
+      'could not resolve the full commit sha, so the artifact cannot be checked against it.',
+      `  git said: ${JSON.stringify(headSha)}`,
+      '  In Docker this means the gitdir is not mounted -- the repo is a git worktree, so',
+      '  .git is a pointer to a path outside the container. See the runbook.',
+    ].join('\n'),
+  )
+}
+
+const handlerPath = join('.open-next', 'server-functions', 'default', 'handler.mjs')
+const bundle = readFileSync(handlerPath, 'utf8')
+if (!bundle.includes(headSha)) {
+  // Only scanned on failure: cheap enough once, and it turns "wrong" into "wrong, and here is
+  // which commit you actually have".
+  const found = [...new Set(bundle.match(/\b[0-9a-f]{40}\b/g) ?? [])]
+  fail(
+    [
+      'THE ARTIFACT IS NOT A BUILD OF THIS COMMIT.',
+      `  HEAD                 ${headSha}`,
+      found.length
+        ? `  baked into handler   ${found.slice(0, 3).join('\n                       ')}`
+        : '  baked into handler   (no 40-character sha found at all)',
+      '',
+      '  The artifact gate above passed because the artifact is well-formed. It is simply a',
+      '  build of something else -- most likely a rebuild that failed and left the previous one',
+      '  in place. Rebuild before deploying:',
+      '',
+      '    docker run --rm -e GIT_COMMIT_SHA=$(git rev-parse HEAD) ... bash /app/scripts/deploy/build-linux.sh',
+    ].join('\n'),
+  )
+}
+console.log(`  artifact commit    : ${headSha} (matches HEAD)`)
+
 // ── 2. upload at 0% ──────────────────────────────────────────────────────────
 
 banner('UPLOAD AT 0% TRAFFIC')
