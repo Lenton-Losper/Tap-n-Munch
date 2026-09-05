@@ -3,8 +3,8 @@
 **The short version: build in Docker Linux, prove the artifact, upload at 0%, smoke it, promote,
 watch, and know your rollback target before you need it.**
 
-GitHub Actions cannot run while the account's billing is locked, so **today the only working path
-is local**. That is also the dangerous path, because a local build on Windows produces an artifact
+GitHub Actions have been unavailable at the account level since 2026-08-28, so **today the only
+working path is local**. That is also the dangerous path, because a local build on Windows produces an artifact
 that passes every build step and 500s every route.
 
 ---
@@ -161,7 +161,7 @@ The target is the version you wrote down in step 0. Roll back first, diagnose af
 | The gate still detects | `__tests__/deploy-artifact-gate.test.ts` (8 tests) | every test run |
 | Build cannot run on the host | `scripts/deploy/build-linux.sh` refuses non-Linux | local |
 | No artifact is ever committed | `/.open-next/` in `.gitignore` | every commit |
-| 0% upload → smoke → explicit promote | `.github/workflows/production-worker.yml` | CI, once billing allows |
+| 0% upload → smoke → explicit promote | `.github/workflows/production-worker.yml` | CI, once Actions are available again |
 | No 5xx before or after promotion | `scripts/deploy/smoke-preview.mjs` | both |
 | A migration never bundles DDL with a write to live rows | `scripts/check-migration-no-data-write.mjs` | every run |
 | The sequence cannot skip its own gates | `scripts/deploy/deploy-production.mjs` | local |
@@ -169,8 +169,9 @@ The target is the version you wrote down in step 0. Roll back first, diagnose af
 
 ## Known gaps
 
-- **CI cannot run** while billing is locked. Every gate above exists in the workflow and is
-  exercised locally; none of it runs automatically today.
+- **CI cannot run.** Actions have been unavailable at the account level since 2026-08-28: jobs are
+  rejected before executing any step, with zero steps and no log. Every gate above exists in the
+  workflow and is exercised locally; none of it runs automatically today.
 - **The local path is not forced.** Nothing physically stops someone running `wrangler deploy` by
   hand and skipping all of this. What has changed is that the safe path is now the SHORT one —
   `npm run deploy:preview` is fewer keystrokes than the manual sequence and refuses a malformed
