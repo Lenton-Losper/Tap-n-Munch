@@ -35,13 +35,42 @@ afterAll(() => {
   for (const d of created) rmSync(d, { recursive: true, force: true })
 })
 
-/** Runs the sequence in a throwaway cwd, so the real .open-next is never consulted. */
+/**
+ * The commit these fixtures pretend to be. Stage 1 now requires the artifact to be a build of
+ * HEAD (2026-09-05), so a fixture has to have a resolvable HEAD and a matching baked sha to
+ * represent a REAL good artifact. See __tests__/deploy-artifact-must-be-head.test.ts.
+ */
+const FIXTURE_SHA = 'c'.repeat(40)
+
+/**
+ * Runs the sequence in a throwaway cwd, so the real .open-next is never consulted.
+ *
+ * A `git` shim is put on PATH answering FIXTURE_SHA. Without it the sequence stops at the
+ * commit check with "could not resolve the full commit sha" -- correct behaviour outside a
+ * repository, but it would mean these tests never reached the stages they exist to cover.
+ */
 function runIn(dir: string, args: string[] = []) {
+  const binDir = join(dir, 'fakebin')
+  mkdirSync(binDir, { recursive: true })
+  const isWin = process.platform === 'win32'
+  if (isWin) {
+    writeFileSync(
+      join(binDir, 'git.cmd'),
+      `@echo off\r\nif "%1"=="rev-parse" (\r\n  if "%2"=="--short" (echo ${FIXTURE_SHA.slice(0, 8)}) else (echo ${FIXTURE_SHA})\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n`,
+    )
+  } else {
+    writeFileSync(
+      join(binDir, 'git'),
+      `#!/bin/sh\nif [ "$1" = "rev-parse" ]; then\n  if [ "$2" = "--short" ]; then echo ${FIXTURE_SHA.slice(0, 8)}; else echo ${FIXTURE_SHA}; fi\n  exit 0\nfi\nexit 1\n`,
+      { mode: 0o755 },
+    )
+  }
   try {
     const out = execFileSync(process.execPath, [SCRIPT, ...args], {
       cwd: dir,
       encoding: 'utf8',
       timeout: 30_000,
+      env: { ...process.env, PATH: `${binDir}${isWin ? ';' : ':'}${process.env.PATH ?? ''}` },
     })
     return { code: 0, out }
   } catch (err) {
@@ -65,7 +94,11 @@ function workspace(withArtifact: 'none' | 'windows' | 'linux') {
     const body =
       withArtifact === 'windows'
         ? `outputFileTracingRoot:"D:${BACKSLASH}${BACKSLASH}dev";require("instrumentation_ts_x._.js");`
-        : 'outputFileTracingRoot:"/app";require("instrumentation_ts_x._.js"); const instrumentation_ts_x = 1;'
+        : 'outputFileTracingRoot:"/app";require("instrumentation_ts_x._.js"); const instrumentation_ts_x = 1;' +
+          // A real artifact carries its commit: build-linux.sh exports NEXT_PUBLIC_COMMIT_SHA and
+          // Next inlines it. Stage 1 refuses one that does not match HEAD, so the good fixture
+          // must have it or it is no longer modelling a good artifact.
+          `const COMMIT="${FIXTURE_SHA}";`
     const pad = 'x'.repeat(Math.max(0, 10_000_000 - body.length))
     writeFileSync(join(handlerDir, 'handler.mjs'), body + pad)
   }
