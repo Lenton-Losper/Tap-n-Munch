@@ -206,6 +206,28 @@ export function renderReceiptEscPos(
   builder.bold(true)
   builder.line(twoColumnLine('Total', money(snapshot, snapshot.totals.grand_total), characterWidth))
   builder.bold(false)
+
+  /**
+   * THE GRATUITY, AND THEN WHAT WAS ACTUALLY CHARGED.
+   *
+   * A customer charged more than the bill needs to see why, on the paper in their hand. The order
+   * is: Total (the food) -> Gratuity -> Total (what left their card).
+   *
+   * PRESENCE-CHECKED, NEVER DEFAULTED. `tip` is permanently optional and absent means UNKNOWN,
+   * not zero: every receipt issued before the field existed has no gratuity recorded either way.
+   * Printing "Gratuity 0.00" on those would assert something nobody recorded, so a snapshot
+   * without the field prints exactly what it printed before — one Total, nothing added.
+   */
+  const tip = snapshot.totals.tip
+  if (typeof tip === 'number' && tip > 0) {
+    builder.line(twoColumnLine('Gratuity', money(snapshot, tip), characterWidth))
+    builder.bold(true)
+    builder.line(
+      twoColumnLine('Total', money(snapshot, snapshot.totals.grand_total + tip), characterWidth),
+    )
+    builder.bold(false)
+  }
+
   builder.line()
 
   for (const payment of snapshot.payments) {

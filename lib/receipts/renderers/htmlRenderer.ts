@@ -94,6 +94,12 @@ function renderScreenCard(snapshot: ReceiptSnapshot): string {
       ? summaryRow('Discount', `-${formatMoney(snapshot, snapshot.totals.discount)}`)
       : '',
     summaryRow('Total', formatMoney(snapshot, snapshot.totals.grand_total), { emphasize: true }),
+    // Gratuity, then what was actually charged. PRESENCE-CHECKED: tip is permanently optional and
+    // absent means UNKNOWN, never zero, so a pre-existing receipt renders exactly as before.
+    typeof snapshot.totals.tip === 'number' && snapshot.totals.tip > 0
+      ? summaryRow('Gratuity', formatMoney(snapshot, snapshot.totals.tip)) +
+        summaryRow('Total', formatMoney(snapshot, snapshot.totals.grand_total + snapshot.totals.tip), { emphasize: true })
+      : '',
   ].join('')
 
   const paymentsHtml = snapshot.payments
@@ -243,7 +249,7 @@ function renderPrintLayout(snapshot: ReceiptSnapshot, options: HtmlRenderOptions
     ${dashedLine}
 
     <div style="text-align: center; font-size: 19px; font-weight: 700; padding: 4px 0;">
-      Total: ${formatMoney(snapshot, snapshot.totals.grand_total)}
+      Total: ${formatMoney(snapshot, snapshot.totals.grand_total + (snapshot.totals.tip ?? 0))}
     </div>
 
     ${dashedLine}

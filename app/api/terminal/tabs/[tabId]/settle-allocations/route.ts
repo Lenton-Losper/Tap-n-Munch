@@ -47,6 +47,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { generatePaymentReference } from '@/lib/payment-reference'
+import { parseTipCents, recordTip } from '@/lib/payments/tips'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import {
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
@@ -108,6 +109,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       )
     }
     const isCashSettlement = method === 'cash'
+
+    /**
+     * THE GRATUITY. Same contract as the whole-tab settle route: integer cents, its own field,
+     * never folded into an amount this route validates. See lib/payments/tips.ts for why a
+     * voluntary gratuity is not consideration for the supply and therefore not part of the bill.
+     */
+    const tipParse = parseTipCents((body as { tip_cents?: unknown; tipCents?: unknown }).tip_cents ??
+      (body as { tipCents?: unknown }).tipCents)
+    if (!tipParse.ok) {
+      return NextResponse.json({ error: tipParse.message, code: tipParse.code }, { status: 400 })
+    }
+    const tipCents = tipParse.tipCents
 
     /**
      * WHO IS TAKING THE CASH — the gap this route's own header declared:
@@ -291,6 +304,59 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       attributedStaffUserId = staffUserId
     }
 
+    /**
+     * WHO IS TAKING THE GRATUITY — AN UNVERIFIED CLAIM, A SEPARATE FIELD FROM THE PIN-PROVED ONE.
+     *
+     * `attributedStaffUserId` above is VERIFIED: a PIN was typed and a single-use token consumed
+     * against purpose 'cash_settlement', and it is what lands on the append-only settlements
+     * ledger. `tip_staff_user_id` is a picker choice with nothing behind it — ANYONE HOLDING THE
+     * TERMINAL CAN PICK ANYONE. Merging them would downgrade the ledger's meaning invisibly.
+     *
+     * Acceptable for a gratuity (a mis-tap is a payroll correction) and NOT acceptable for a
+     * refund, cash settlement or walkout close. THIS PATTERN MUST NOT BE REUSED FOR THOSE.
+     * A picker is attribution; a PIN is authorisation. See the settle route for the full note.
+     *
+     * Mandatory when a tip is keyed, refused before the RPC, so nothing is half-settled.
+     */
+    const tipStaffUserId = String(
+      (body as { tip_staff_user_id?: unknown; tipStaffUserId?: unknown }).tip_staff_user_id ??
+        (body as { tipStaffUserId?: unknown }).tipStaffUserId ??
+        '',
+    ).trim()
+    if (tipCents > 0 && !tipStaffUserId) {
+      return NextResponse.json(
+        {
+          error:
+            'Choose who is taking this gratuity before settling. A tip has to be recorded ' +
+            'against a member of staff.',
+          code: 'TIP_NEEDS_STAFF',
+          tip_cents: tipCents,
+        },
+        { status: 400 },
+      )
+    }
+
+    // Unverified does not mean unchecked: the FK would accept a real user from another venue.
+    if (tipCents > 0) {
+      const { data: tipMember, error: tipMemberError } = await supabase
+        .from('restaurant_users')
+        .select('user_id')
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('user_id', tipStaffUserId)
+        .is('deleted_at', null)
+        .maybeSingle()
+
+      if (tipMemberError || !tipMember) {
+        return NextResponse.json(
+          {
+            error: 'That staff member is not on this venue, so the gratuity cannot be recorded.',
+            code: 'TIP_STAFF_NOT_A_MEMBER',
+          },
+          { status: 400 },
+        )
+      }
+    }
+
     const paymentReference = generatePaymentReference()
     const { data: rpcData, error: rpcError } = await supabase.rpc('settle_order_line_allocations', {
       p_restaurant_id: terminal.restaurantId,
@@ -318,6 +384,70 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
         { error: 'No allocations could be settled', code: 'NOTHING_SETTLED', refused: result.refused },
         { status: 409 },
       )
+    }
+
+    /**
+     * THE GRATUITY, recorded against the settlement that carried it.
+     *
+     * WHY A RE-READ RATHER THAN THE RPC'S RETURN. `settle_order_line_allocations` answers
+     * `{applied, refused}` with allocation ids and amounts -- not the settlement row ids it just
+     * wrote. Widening that function's return is a migration against an RPC both paths depend on,
+     * which is a bigger change than this needs, so the rows are found by the `payment_reference`
+     * this call generated. That reference is unique per settle, so the re-read cannot pick up an
+     * earlier settlement's rows.
+     *
+     * WHY THE FIRST ROW. A split settle writes ONE settlement row PER ALLOCATION, but the customer
+     * gave ONE gratuity for the whole transaction -- there is no per-allocation share of it, and
+     * inventing one by dividing would be fabricating a number nobody agreed. The tip is a single
+     * row naming a representative settlement; `payment_reference` is what ties the group together
+     * if the whole event ever needs reconstructing.
+     *
+     * *** A DESIGN CHOICE WORTH REVISITING: if a tip should belong to the settle EVENT rather than
+     * *** to one of its rows, the cleaner model is payment_tips.payment_reference. The migration is
+     * *** not applied anywhere yet, so that change is still cheap.
+     */
+    let tipOutcome: string | null = null
+    if (tipCents > 0) {
+      const { data: settlementRows, error: settlementReadError } = await supabase
+        .from('order_line_allocation_settlements')
+        .select('id')
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('payment_reference', paymentReference)
+        .order('settled_at', { ascending: true })
+        .limit(1)
+
+      const settlementId = settlementRows?.[0]?.id ? String(settlementRows[0].id) : null
+      if (settlementReadError || !settlementId) {
+        // The allocations ARE settled -- the RPC succeeded. Only the gratuity could not be
+        // attached, so this is reported, never thrown: the customer has paid.
+        tipOutcome = 'not_recorded_no_settlement_row'
+        console.error('[terminal/tabs/settle-allocations] gratuity could not be recorded', {
+          tabId,
+          tip_cents: tipCents,
+          payment_reference: paymentReference,
+          error: settlementReadError,
+        })
+      } else {
+        const tip = await recordTip(supabase, {
+          restaurantId: terminal.restaurantId,
+          tipCents,
+          method: isCashSettlement ? 'cash' : 'card',
+          // Non-null by the TIP_NEEDS_ATTRIBUTION gate above, which refuses before the RPC.
+          // The PICKER value, not attributedStaffUserId. See the trust note above.
+          staffUserId: tipStaffUserId,
+          tabId,
+          paymentReference,
+          allocationSettlementId: settlementId,
+        })
+        tipOutcome = tip.recorded ? 'recorded' : tip.reason
+        if (!tip.recorded && tip.reason === 'failed') {
+          console.error('[terminal/tabs/settle-allocations] gratuity insert failed', {
+            tabId,
+            tip_cents: tipCents,
+            error: tip.error,
+          })
+        }
+      }
     }
 
     // Which orders did the just-applied allocations belong to? Each may now be fully paid.
@@ -410,6 +540,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
         staff_user_id: attributedStaffUserId,
         authorization_token_id: authorizationTokenId || null,
         attribution: attributedStaffUserId ? 'authorized' : 'unattributed',
+        // Only when a gratuity was keyed, so an absent key means "no tip" and never "a tip we
+        // lost". Any value other than 'recorded' means one was taken and needs reconciling.
+        ...(tipCents > 0
+          ? {
+              tip_cents: tipCents,
+              tip_recorded: tipOutcome,
+              tip_method: isCashSettlement ? 'cash' : 'card',
+              // Named apart from staff_user_id: that one is PIN-proved, this is a picker claim.
+              tip_staff_user_id: tipStaffUserId,
+              tip_attribution: 'picker_unverified',
+            }
+          : {}),
         completed_order_ids: completedOrderIds,
         settled_at: new Date().toISOString(),
       },
@@ -434,6 +576,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       completed_order_ids: completedOrderIds,
       new_tab_total: newTotal,
       tab_total_stale: newTotal === null,
+      // Same contract as the audit entry: absent means no gratuity was keyed. The settlement
+      // succeeded either way, so this is a reconciliation flag and not an error status.
+      ...(tipCents > 0 ? { tip_cents: tipCents, tip_recorded: tipOutcome } : {}),
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err

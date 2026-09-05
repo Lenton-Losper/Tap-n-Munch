@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { generatePaymentReference } from '@/lib/payment-reference'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
+import { parseTipCents, recordTip } from '@/lib/payments/tips'
 import {
   amountsMatch,
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
@@ -56,6 +57,25 @@ export async function POST(
           ? String(body.businessOrderNo).trim()
           : ''
     const amount: number = Number(body.amount)
+
+    /**
+     * THE GRATUITY RIDES ALONGSIDE `amount`, NOT INSIDE IT.
+     *
+     * `amount` is checked against the sum of the order totals below (AMOUNT_MISMATCH), and that
+     * check is a money control -- it is what stops a terminal settling a tab for the wrong figure.
+     * Folding a tip into `amount` would mean loosening it to "totals, or totals plus something",
+     * which is not a check at all. So the bill and the gratuity are separate fields and the
+     * existing comparison is untouched.
+     *
+     * The customer is charged the sum of the two in one transaction; the receipt prints both and
+     * then the amount actually charged. Integer cents, never a currency float -- see
+     * lib/payments/tips.ts for why a tip is cents and why it is not consideration for the supply.
+     */
+    const tipParse = parseTipCents(body.tip_cents ?? body.tipCents)
+    if (!tipParse.ok) {
+      return NextResponse.json({ error: tipParse.message, code: tipParse.code }, { status: 400 })
+    }
+    const tipCents = tipParse.tipCents
 
     // Unrecognised methods are rejected, never defaulted -- a typo must not book as a card sale.
     const method = normalizeSettlementPaymentMethod(body.method ?? 'card')
@@ -277,6 +297,83 @@ export async function POST(
       attributedStaffUserId = staffUserId
     }
 
+    /**
+     * WHO IS TAKING THE GRATUITY — AN UNVERIFIED CLAIM, AND DELIBERATELY A SEPARATE FIELD.
+     *
+     * ============================================================================================
+     * WHY NOT `attributedStaffUserId`
+     * ============================================================================================
+     *
+     * That value is VERIFIED: it exists only because a PIN was typed and a single-use
+     * authorization token was consumed against purpose 'cash_settlement'. It is what the audit
+     * trail means by `actor_attribution: 'staff_authorized'`.
+     *
+     * `tip_staff_user_id` is NOT that. It comes from a picker on the terminal with no PIN behind
+     * it: ANYONE HOLDING THE TERMINAL CAN PICK ANYONE. Merging the two would silently downgrade
+     * every existing `staff_user_id` in the audit trail from "proved" to "asserted" -- an
+     * invisible change to the one field that answers "who took the cash".
+     *
+     * So: a distinct wire field, a distinct variable, and a distinct audit key.
+     *
+     * ============================================================================================
+     * WHY UNVERIFIED IS THE RIGHT TRADE HERE, AND WHERE IT WOULD NOT BE
+     * ============================================================================================
+     *
+     * A PIN for gratuities was built and then ruled out, 2026-09-05: friction on every
+     * transaction. And MEASURED ON PRODUCTION, all 23 settlements to date carry NO staff_user_id
+     * at all -- so a PIN gate would not have added friction to tips, it would have blocked 100%
+     * of them.
+     *
+     * A mis-tap here misattributes a gratuity: a payroll correction. The same looseness would be
+     * unacceptable for a REFUND, a CASH SETTLEMENT or a WALKOUT CLOSE, each of which writes away
+     * money or debt. Those keep the PIN, and THIS PATTERN MUST NOT BE REUSED FOR THEM.
+     * A picker is attribution. A PIN is authorisation. They are not interchangeable.
+     *
+     * MANDATORY WHEN A TIP IS KEYED -- the only version with no gap, since a gratuity recorded as
+     * nobody's is what payment_tips.staff_user_id NOT NULL exists to prevent. Refused BEFORE the
+     * claim, so nothing is half-done. A settle with NO tip is unaffected.
+     */
+    const tipStaffUserId = String(body.tip_staff_user_id ?? body.tipStaffUserId ?? '').trim()
+    if (tipCents > 0 && !tipStaffUserId) {
+      return NextResponse.json(
+        {
+          error:
+            'Choose who is taking this gratuity before settling. A tip has to be recorded ' +
+            'against a member of staff.',
+          code: 'TIP_NEEDS_STAFF',
+          tip_cents: tipCents,
+        },
+        { status: 400 },
+      )
+    }
+
+    /**
+     * IT MUST AT LEAST BE SOMEBODY WHO WORKS HERE.
+     *
+     * Unverified does not mean unchecked. `payment_tips.staff_user_id` is an FK to users(id),
+     * which would happily accept a real user from ANOTHER venue, so without this a terminal could
+     * attribute a gratuity to a stranger. Same membership the picker itself lists.
+     */
+    if (tipCents > 0) {
+      const { data: tipMember, error: tipMemberError } = await supabase
+        .from('restaurant_users')
+        .select('user_id')
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('user_id', tipStaffUserId)
+        .is('deleted_at', null)
+        .maybeSingle()
+
+      if (tipMemberError || !tipMember) {
+        return NextResponse.json(
+          {
+            error: 'That staff member is not on this venue, so the gratuity cannot be recorded.',
+            code: 'TIP_STAFF_NOT_A_MEMBER',
+          },
+          { status: 400 },
+        )
+      }
+    }
+
     const paidAt = new Date().toISOString()
     const paymentReference = generatePaymentReference()
     // Cash never carries a gateway artifact. Letting a stale voucher/gateway reference ride
@@ -443,18 +540,24 @@ export async function POST(
     // This is the money record itself. If it fails the orders are paid, the tab is settled and
     // receipts are out, with no row saying the restaurant was paid -- so the failure is recorded
     // in three places that outlive the request: the log, the audit trail below, and the response.
-    const { error: paymentInsertError } = await supabase.from('payments').insert({
-      restaurant_id: terminal.restaurantId,
-      table_id: tab.table_id,
-      tab_id: tabId,
-      order_ids: claimedIds,
-      amount: expectedAmount,
-      method,
-      status: 'completed',
-      gateway_reference: isCashSettlement ? null : gatewayReference,
-      payment_reference: paymentReference,
-      completed_at: paidAt,
-    })
+    // `.select('id')` because a gratuity is recorded against this row -- payment_tips.payment_id
+    // names the settlement the tip rode on, and without the id there is nothing to point at.
+    const { data: paymentRow, error: paymentInsertError } = await supabase
+      .from('payments')
+      .insert({
+        restaurant_id: terminal.restaurantId,
+        table_id: tab.table_id,
+        tab_id: tabId,
+        order_ids: claimedIds,
+        amount: expectedAmount,
+        method,
+        status: 'completed',
+        gateway_reference: isCashSettlement ? null : gatewayReference,
+        payment_reference: paymentReference,
+        completed_at: paidAt,
+      })
+      .select('id')
+      .maybeSingle()
 
     if (paymentInsertError) {
       console.error('[terminal/tabs/settle] payment record insert failed', {
@@ -465,6 +568,55 @@ export async function POST(
         payment_reference: paymentReference,
         error: paymentInsertError,
       })
+    }
+
+    /**
+     * THE GRATUITY, recorded against the payment that carried it.
+     *
+     * AFTER the money, never before: the customer has been charged, and `recordTip` is built not
+     * to throw for exactly this reason -- a gratuity that fails to record must not turn a
+     * completed settlement into a 500 with the table still occupied.
+     *
+     * IF THE PAYMENT ROW DID NOT LAND, NEITHER CAN THE TIP. payment_tips requires a settlement to
+     * point at, and inventing one would be worse than the gap. The outcome is carried into the
+     * audit metadata and the response, the same way payment_record_written already is, so a
+     * gratuity that was taken and not recorded is VISIBLE rather than inferred from silence.
+     */
+    const paymentId = paymentRow?.id ? String(paymentRow.id) : null
+    let tipOutcome: string | null = null
+    if (tipCents > 0) {
+      if (!paymentId) {
+        tipOutcome = 'not_recorded_no_payment_row'
+        console.error('[terminal/tabs/settle] gratuity could not be recorded: no payments row', {
+          tabId,
+          tip_cents: tipCents,
+          // The PICKER value — this log is about the lost gratuity, so it must name who the tip
+          // was for, not who authorised the settlement. Left as attributedStaffUserId until a
+          // mutation harness refused an ambiguous anchor and surfaced it.
+          tip_staff_user_id: tipStaffUserId,
+        })
+      } else {
+        const tip = await recordTip(supabase, {
+          restaurantId: terminal.restaurantId,
+          tipCents,
+          // The gratuity is taken by the same instrument as the bill it rode on.
+          method: isCashSettlement ? 'cash' : 'card',
+          // Non-null by the TIP_NEEDS_ATTRIBUTION gate above, which refuses before the claim.
+          // The PICKER value, not attributedStaffUserId. See the trust note above.
+          staffUserId: tipStaffUserId,
+          tabId,
+          paymentReference,
+          paymentId,
+        })
+        tipOutcome = tip.recorded ? 'recorded' : tip.reason
+        if (!tip.recorded && tip.reason === 'failed') {
+          console.error('[terminal/tabs/settle] gratuity insert failed', {
+            tabId,
+            tip_cents: tipCents,
+            error: tip.error,
+          })
+        }
+      }
     }
 
     // Audit log. Cash carries a real risk of being taken and not recorded, so the trail names
@@ -490,6 +642,23 @@ export async function POST(
         // Whether a payments row exists for this settlement. The audit trail is the only durable
         // record when it does not, so it must say so rather than imply a payment row by silence.
         payment_record_written: !paymentInsertError,
+        /**
+         * The gratuity, if one was keyed. Present ONLY when there was one, so an absent key means
+         * "no tip" and never "a tip we lost". `tip_recorded` carries the outcome verbatim --
+         * recorded | duplicate | failed | not_recorded_no_payment_row -- because a gratuity taken
+         * from a customer and not written down is exactly the thing that must not be silent.
+         */
+        ...(tipCents > 0
+          ? {
+              tip_cents: tipCents,
+              tip_recorded: tipOutcome,
+              tip_method: isCashSettlement ? 'cash' : 'card',
+              // Named apart from staff_user_id on purpose: that one is PIN-proved, this is a
+              // picker claim with nothing behind it. Do not collapse them.
+              tip_staff_user_id: tipStaffUserId,
+              tip_attribution: 'picker_unverified',
+            }
+          : {}),
         // Present only when cash was taken over a card attempt the timeout had declared dead.
         // How long those attempts had actually been hanging is the evidence for whether
         // CARD_IN_FLIGHT_TIMEOUT_SECONDS is set correctly -- it was chosen on reasoning, since
@@ -567,6 +736,10 @@ export async function POST(
       // The settlement still succeeded, so this is not an error status -- it is a reconciliation
       // flag, and the only thing at the call site that can tell the difference.
       payment_record_written: !paymentInsertError,
+      // Same contract as payment_record_written: absent means no gratuity was keyed, and a value
+      // other than 'recorded' means one was taken and needs reconciling. The terminal can print
+      // the receipt either way -- the settlement succeeded.
+      ...(tipCents > 0 ? { tip_cents: tipCents, tip_recorded: tipOutcome } : {}),
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err

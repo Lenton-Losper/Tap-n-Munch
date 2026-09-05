@@ -313,6 +313,16 @@ function drawTotalsBlock(
     bold: true,
     grand: true,
   })
+  // Gratuity, then what was actually charged. PRESENCE-CHECKED: absent means UNKNOWN, not zero.
+  if (typeof snapshot.totals.tip === 'number' && snapshot.totals.tip > 0) {
+    lines.push({ label: 'Gratuity', value: formatMoney(snapshot.totals.tip, currency) })
+    lines.push({
+      label: 'Total',
+      value: formatMoney(snapshot.totals.grand_total + snapshot.totals.tip, currency),
+      bold: true,
+      grand: true,
+    })
+  }
 
   let y = yTop
   for (const line of lines) {

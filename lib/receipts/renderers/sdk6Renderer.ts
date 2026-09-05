@@ -96,6 +96,14 @@ export function renderReceiptSdk6(
     })
   }
   lines.push({ type: 'row', columns: ['Total', money(snapshot, snapshot.totals.grand_total)] })
+  // Gratuity, then what was actually charged. PRESENCE-CHECKED: absent means UNKNOWN, not zero.
+  if (typeof snapshot.totals.tip === 'number' && snapshot.totals.tip > 0) {
+    lines.push({ type: 'row', columns: ['Gratuity', money(snapshot, snapshot.totals.tip)] })
+    lines.push({
+      type: 'row',
+      columns: ['Total', money(snapshot, snapshot.totals.grand_total + snapshot.totals.tip)],
+    })
+  }
   lines.push({ type: 'feed', lines: 1 })
 
   for (const payment of snapshot.payments) {
