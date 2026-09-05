@@ -195,6 +195,8 @@ export default function ServiceTableScreen({route, navigation}: Props) {
     tableName,
     tabId,
     ownerName,
+    // Carried on to the money screen so the gratuity picker can pre-select the table's waiter.
+    ownerUserId,
     adoptedExistingTab,
     handedOverFrom,
   } = route.params;
@@ -397,8 +399,14 @@ export default function ServiceTableScreen({route, navigation}: Props) {
       return;
     }
     navigatingToSettle.current = true;
-    navigation.navigate('TableDetail', {table: moneyTable});
-  }, [moneyTable, navigation, settlementState]);
+    // The live assignment travels with the navigation so the gratuity picker can pre-select it:
+    // this screen already knows who owns the table, and re-fetching it on the money screen would be
+    // a second answer to a question already answered.
+    navigation.navigate('TableDetail', {
+      table: moneyTable,
+      owner: ownerUserId ? {user_id: ownerUserId, name: ownerName ?? ''} : null,
+    });
+  }, [moneyTable, navigation, settlementState, ownerUserId, ownerName]);
 
   const handleAddRound = useCallback(() => {
     if (sessionTable && sessionTable.tabId === tabId) {

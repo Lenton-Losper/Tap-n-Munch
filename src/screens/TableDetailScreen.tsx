@@ -18,6 +18,11 @@ import {Colors, Spacing, Typography} from '../constants/theme';
 import LoadingButton from '../components/LoadingButton';
 import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import StrandedRequestPrompt from '../components/StrandedRequestPrompt';
+import GratuitySection, {
+  GratuityState,
+  gratuityExtras,
+  NO_GRATUITY,
+} from '../components/GratuitySection';
 import {
   ApiRequestError,
   AuthorizedUser,
@@ -160,6 +165,14 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const [strandedMessage, setStrandedMessage] = useState('');
   const [settling, setSettling] = useState(false);
   const [cashSettling, setCashSettling] = useState(false);
+  /**
+   * The gratuity, owned by GratuitySection and read by all three settle paths.
+   *
+   * NO_GRATUITY is the resting state and is what a waiter who takes no tip sends: tipCents 0,
+   * nobody chosen, valid. The settle calls then omit the tip keys entirely, so an absent key on
+   * the wire means "no tip" and never "a tip we dropped".
+   */
+  const [gratuity, setGratuity] = useState<GratuityState>(NO_GRATUITY);
   /**
    * ONE flag for BOTH settle paths, deliberately shared.
    *
@@ -573,6 +586,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
         {
           voucherNo: paymentResult.voucherNo,
           businessOrderNo: paymentResult.businessOrderNo,
+          ...gratuityExtras(gratuity),
         },
       );
 
@@ -708,6 +722,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
           method: 'cash',
           staffUserId: attribution?.staffUserId ?? null,
           authorizationTokenId: attribution?.authorizationTokenId ?? null,
+          ...gratuityExtras(gratuity),
         },
         token,
       );
@@ -785,6 +800,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
         {
           staffUserId: attribution?.staffUserId,
           authorizationTokenId: attribution?.authorizationTokenId,
+          ...gratuityExtras(gratuity),
         },
         'cash',
       );
@@ -1404,6 +1420,18 @@ export default function TableDetailScreen({route, navigation}: Props) {
                   selectedIds.size === 1 ? 'order' : 'orders'
                 } selected — ${formatNad(selectedTotal)}`}
           </Text>
+          {/*
+            ABOVE the payment buttons and BEFORE the charge: the amount and who is taking it are
+            one thought, and a mis-tap is correctable while no money has moved. Collapsed by
+            default, so a waiter taking no gratuity never touches it.
+          */}
+          <GratuitySection
+            assignedWaiterUserId={route.params.owner?.user_id ?? null}
+            assignedWaiterName={route.params.owner?.name ?? null}
+            currency="N$"
+            onChange={setGratuity}
+            disabled={settling || cashSettling}
+          />
           <Pressable
             style={[styles.settleButton, settling && styles.buttonDisabled]}
             disabled={settling}

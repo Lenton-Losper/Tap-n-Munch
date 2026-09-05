@@ -58,7 +58,19 @@ export type MainTabParamList = {
 
 export type MainStackParamList = {
   MainTabs: NavigatorScreenParams<MainTabParamList> | undefined;
-  TableDetail: {table: TableWithTab};
+  TableDetail: {
+    table: TableWithTab;
+    /**
+     * The table's live assignment, when the caller knows it. Used ONLY to pre-select the gratuity
+     * picker, so the common case is confirm-not-choose.
+     *
+     * OPTIONAL because only the waiter floor grid carries it — the other entry points pass nothing
+     * and the picker opens unselected, which is the correct behaviour for a table nobody owns. It
+     * is deliberately NOT back-filled from the tab's opener: that is a different person, and
+     * filling it with a default is how a gratuity gets attributed to someone who was not there.
+     */
+    owner?: {user_id: string; name: string} | null;
+  };
   OrderDetail: {orderId: string};
   Payment: {
     orderId: string;

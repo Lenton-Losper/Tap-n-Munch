@@ -64,3 +64,15 @@ export const GRATUITY_NO_STAFF =
  * about something that will happen anyway.
  */
 export const GRATUITY_NEEDS_STAFF = 'Choose who is taking this gratuity.';
+
+/**
+ * The collapsed entry point. NO GRATUITY IS THE COMMON CASE AND STAYS ONE TAP: a waiter taking
+ * none never touches this, and the payment buttons behave exactly as they did before it existed.
+ */
+export const GRATUITY_ADD = '+ Add gratuity';
+
+/** The amount field's label, once opened. */
+export const GRATUITY_AMOUNT_LABEL = 'Gratuity';
+
+/** Backs out of an opened gratuity entirely — clears the amount and the chosen staff member. */
+export const GRATUITY_REMOVE = 'Remove';
