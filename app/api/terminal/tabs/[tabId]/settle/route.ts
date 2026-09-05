@@ -554,6 +554,7 @@ export async function POST(
           // Non-null by the TIP_NEEDS_ATTRIBUTION gate above, which refuses before the claim.
           staffUserId: String(attributedStaffUserId),
           tabId,
+          paymentReference,
           paymentId,
         })
         tipOutcome = tip.recorded ? 'recorded' : tip.reason

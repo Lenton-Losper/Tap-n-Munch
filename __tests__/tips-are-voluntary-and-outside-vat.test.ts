@@ -80,6 +80,7 @@ const VALID = {
   tipCents: 1250,
   method: 'card' as const,
   staffUserId: 'user-9',
+  paymentReference: 'PR-123',
   paymentId: 'pay-1',
 }
 
@@ -185,6 +186,7 @@ describe('recording a tip', () => {
       tip_cents: 1250,
       method: 'card',
       staff_user_id: 'user-9',
+      payment_reference: 'PR-123',
       tab_id: 'tab-7',
       payment_id: 'pay-1',
       allocation_settlement_id: null,
@@ -198,15 +200,14 @@ describe('recording a tip', () => {
     expect(inserted).toHaveLength(0)
   })
 
-  it('refuses a tip that names no settlement', async () => {
+  it('refuses a tip that names no transaction', async () => {
     const { client, inserted } = supabaseDouble()
     const r = await recordTip(client as never, {
       ...VALID,
-      paymentId: null,
-      allocationSettlementId: null,
+      paymentReference: '',
     })
     expect(r.recorded).toBe(false)
-    if (!r.recorded && r.reason === 'failed') expect(r.error).toMatch(/settlement/)
+    if (!r.recorded && r.reason === 'failed') expect(r.error).toMatch(/transaction/)
     expect(inserted).toHaveLength(0)
   })
 
@@ -242,7 +243,7 @@ describe('the ledger shape', () => {
 
   it('requires a staff member and a settlement at the database level', () => {
     expect(MIGRATION).toMatch(/staff_user_id uuid NOT NULL/)
-    expect(MIGRATION).toMatch(/payment_tips_has_a_settlement/)
+    expect(MIGRATION_CODE).toMatch(/payment_reference text NOT NULL/)
   })
 
   /**
@@ -254,13 +255,8 @@ describe('the ledger shape', () => {
    * a name proves the line exists; it proves nothing about what the line does.
    */
   it('makes one-tip-per-settlement a database property, so a retry cannot double-count', () => {
-    expect(MIGRATION_CODE).toMatch(
-      /CREATE UNIQUE INDEX[^;]*payment_tips_one_per_payment[\s\S]*?WHERE payment_id IS NOT NULL/,
-    )
-    expect(MIGRATION_CODE).toMatch(
-      /CREATE UNIQUE INDEX[^;]*payment_tips_one_per_allocation_settlement[\s\S]*?WHERE allocation_settlement_id IS NOT NULL/,
-    )
-    // Belt and braces: no non-unique index may carry either name.
+    expect(MIGRATION_CODE).toMatch(/CREATE UNIQUE INDEX[^;]*payment_tips_one_per_transaction/)
+    expect(MIGRATION_CODE).toMatch(/(restaurant_id, payment_reference)/)
     expect(MIGRATION_CODE).not.toMatch(/CREATE INDEX[^;]*payment_tips_one_per_/)
   })
 })

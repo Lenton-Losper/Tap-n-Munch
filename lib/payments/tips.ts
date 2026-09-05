@@ -56,7 +56,9 @@ export type TipCaptureInput = {
   /** The settler's users.id. Required: money with no name attached is what this prevents. */
   staffUserId: string
   tabId?: string | null
-  /** Exactly one of these identifies the settlement the tip rode on. */
+  /** The transaction this gratuity rode on. Required: both settle paths generate one per settle. */
+  paymentReference: string
+  /** Optional direct pointers to the money record. The reference above is the identity. */
   paymentId?: string | null
   allocationSettlementId?: string | null
 }
@@ -143,11 +145,11 @@ export async function recordTip(
 ): Promise<TipRecordResult> {
   if (input.tipCents <= 0) return { recorded: false, reason: 'no_tip' }
 
-  if (!input.paymentId && !input.allocationSettlementId) {
+  if (!input.paymentReference) {
     return {
       recorded: false,
       reason: 'failed',
-      error: 'a tip must name the settlement it rode on (payment_id or allocation_settlement_id)',
+      error: 'a tip must name the transaction it rode on (payment_reference)',
     }
   }
   if (!input.staffUserId) {
@@ -161,6 +163,7 @@ export async function recordTip(
       tip_cents: input.tipCents,
       method: input.method,
       staff_user_id: input.staffUserId,
+      payment_reference: input.paymentReference,
       tab_id: input.tabId ?? null,
       payment_id: input.paymentId ?? null,
       allocation_settlement_id: input.allocationSettlementId ?? null,

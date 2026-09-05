@@ -405,6 +405,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
           // Non-null by the TIP_NEEDS_ATTRIBUTION gate above, which refuses before the RPC.
           staffUserId: String(attributedStaffUserId),
           tabId,
+          paymentReference,
           allocationSettlementId: settlementId,
         })
         tipOutcome = tip.recorded ? 'recorded' : tip.reason

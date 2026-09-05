@@ -45,11 +45,22 @@
 -- it is already how the allocations path attributes, and it keeps FlashTap out of having an opinion
 -- on how a venue divides tips. POOLING IS A PAYROLL DECISION AND IS NOT MODELLED HERE.
 --
--- TWO NULLABLE PARENTS, ONE REQUIRED. There are two settlement paths and they are not
--- interchangeable: the whole-tab path writes `payments`, the split path writes
--- `order_line_allocation_settlements`. A tip belongs to whichever settled it, so each is a nullable
--- FK and a CHECK requires at least one. Modelling it as a single parent would mean inventing a
--- shared settlement id that does not exist.
+-- A TIP BELONGS TO THE TRANSACTION, AND `payment_reference` IS WHAT NAMES IT.
+--
+-- Both settlement paths generate one `payment_reference` per settle. The whole-tab path stores it
+-- on the single `payments` row; the split path stores it on EVERY
+-- `order_line_allocation_settlements` row that settle produced -- one per allocation.
+--
+-- An earlier draft pointed the tip at a settlement ROW instead. On the split path that meant
+-- choosing one allocation's row arbitrarily to carry a gratuity the customer gave for the whole
+-- transaction, because there is no per-allocation share of a tip and dividing one would fabricate
+-- numbers nobody agreed to. Ruled 2026-09-05, while this migration was applied nowhere and the
+-- change was still free: the reference is the identity of the transaction, so the reference is
+-- what a tip names.
+--
+-- THE FKs ARE KEPT AS OPTIONAL POINTERS, not as the identity. They make a join to the money record
+-- direct when there is a single obvious one, and both are nullable because neither path always has
+-- one. What is REQUIRED is the reference.
 
 CREATE TABLE IF NOT EXISTS public.payment_tips (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -70,14 +81,18 @@ CREATE TABLE IF NOT EXISTS public.payment_tips (
   -- no tab, and SET NULL rather than CASCADE because deleting a tab must not delete money records.
   tab_id uuid REFERENCES public.tabs(id) ON DELETE SET NULL,
 
-  -- Exactly one of these is the settlement this tip rode on. See the note above.
+  -- THE TRANSACTION THIS GRATUITY RODE ON. Required: a tip with no settlement behind it is money
+  -- from nowhere. Both settle paths generate one of these per settle.
+  payment_reference text NOT NULL,
+
+  -- Optional direct pointers to the money record, for convenience only -- the reference above is
+  -- the identity. Nullable because neither path always has a single row to point at: the split
+  -- path writes one settlement row per allocation, and the whole-tab path's `payments` insert is
+  -- non-fatal and can be absent.
   payment_id uuid REFERENCES public.payments(id),
   allocation_settlement_id uuid REFERENCES public.order_line_allocation_settlements(id),
 
-  recorded_at timestamptz NOT NULL DEFAULT now(),
-
-  CONSTRAINT payment_tips_has_a_settlement
-    CHECK (payment_id IS NOT NULL OR allocation_settlement_id IS NOT NULL)
+  recorded_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- The two questions this table exists to answer: "what did this staff member earn over a period"
@@ -87,13 +102,15 @@ CREATE INDEX IF NOT EXISTS payment_tips_restaurant_recorded_idx
 CREATE INDEX IF NOT EXISTS payment_tips_staff_recorded_idx
   ON public.payment_tips (restaurant_id, staff_user_id, recorded_at DESC);
 
--- One tip per settlement. A retry that re-posts a settle must not double-count a gratuity, and a
--- partial unique index is what makes that a database property rather than a hope. Two indexes
--- because either parent may be null.
-CREATE UNIQUE INDEX IF NOT EXISTS payment_tips_one_per_payment
-  ON public.payment_tips (payment_id) WHERE payment_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS payment_tips_one_per_allocation_settlement
-  ON public.payment_tips (allocation_settlement_id) WHERE allocation_settlement_id IS NOT NULL;
+-- ONE TIP PER TRANSACTION. A retry that re-posts a settle must not double-count a gratuity, and a
+-- unique index is what makes that a database property rather than a hope.
+--
+-- Keyed on (restaurant_id, payment_reference) and NOT on a settlement row id: on the split path
+-- one settle produces several settlement rows, so a per-row key would happily accept one tip per
+-- allocation for a gratuity that was given once. The reference is per-settle, so this is the
+-- constraint that actually says "one gratuity per transaction".
+CREATE UNIQUE INDEX IF NOT EXISTS payment_tips_one_per_transaction
+  ON public.payment_tips (restaurant_id, payment_reference);
 
 ALTER TABLE public.payment_tips ENABLE ROW LEVEL SECURITY;
 
