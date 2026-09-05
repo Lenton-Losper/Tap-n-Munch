@@ -99,10 +99,22 @@ export function parseTipCents(raw: unknown): TipParseResult {
     return { ok: false, code: 'TIP_NOT_A_NUMBER', message: 'Tip must be a number of cents.' }
   }
   if (!Number.isInteger(n)) {
+    /**
+     * STAFF-FACING WORDING, NOT A DEVELOPER'S. Signed 2026-09-05.
+     *
+     * This read "Tip must be whole cents — send 1250 for NAD 12.50, not 12.5": an integration
+     * note on a surface a waiter reads mid-service. Staff key an amount on a keypad and never
+     * see cents.
+     *
+     * It was NOT left as a developer message on the argument that only a developer can reach it,
+     * because that could not be shown — the client that sends this is not written yet, and a
+     * keypad defect would put it in front of a waiter. The CODE carries the technical meaning for
+     * anyone integrating; the MESSAGE is for the person holding the terminal.
+     */
     return {
       ok: false,
       code: 'TIP_NOT_AN_INTEGER',
-      message: 'Tip must be whole cents — send 1250 for NAD 12.50, not 12.5.',
+      message: 'That gratuity amount could not be read. Enter it again.',
     }
   }
   if (n < 0) {

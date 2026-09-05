@@ -144,13 +144,13 @@ describe('parsing a tip', () => {
     if (r.ok) expect(r.tipCents).toBe(1250)
   })
 
-  it('refuses a fractional amount, and says what to send instead', () => {
+  it('refuses a fractional amount', () => {
     const r = parseTipCents(12.5)
     expect(r.ok).toBe(false)
-    if (!r.ok) {
-      expect(r.code).toBe('TIP_NOT_AN_INTEGER')
-      expect(r.message).toMatch(/1250 for NAD 12\.50/)
-    }
+    if (!r.ok) expect(r.code).toBe('TIP_NOT_AN_INTEGER')
+    // The WORDING is pinned in __tests__/gratuity-copy-is-signed.test.ts — it is signed copy, and
+    // this suite is about behaviour. Asserting it in both places means a signed change breaks a
+    // test that has no business having an opinion about it.
   })
 
   it('refuses a negative tip — reversing one is a refund, not a negative gratuity', () => {
