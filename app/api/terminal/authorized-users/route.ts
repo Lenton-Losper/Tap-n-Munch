@@ -34,6 +34,59 @@ export async function GET(req: Request) {
     await validateTerminalRecord(supabase, terminal)
 
     const url = new URL(req.url)
+    const scope = String(url.searchParams.get('scope') || '').trim()
+
+    /**
+     * `?scope=venue_staff` — WHO WORKS HERE. NOT who may authorise anything.
+     *
+     * ============================================================================================
+     * THIS LIST IS FOR ATTRIBUTION, NOT AUTHORISATION. THE DIFFERENCE MATTERS.
+     * ============================================================================================
+     *
+     * The `?purpose=` mode below answers "who may approve this privileged action", and it earns
+     * that by filtering twice: to users holding a terminal PIN credential, and then to users
+     * holding the permission the purpose maps to. Selecting from it is a step toward proving
+     * something, which the PIN then completes.
+     *
+     * This mode answers a different question, for the gratuity picker: WHICH MEMBER OF STAFF IS
+     * TAKING THIS TIP. Nobody is approving anything, so both filters are wrong here:
+     *
+     *   - the PIN-credential filter would hide a waiter who has no PIN, and a waiter without a PIN
+     *     can still be handed a tip;
+     *   - the permission filter has nothing to test, because receiving a gratuity is not a
+     *     permission, and inventing one would drag a tip back toward being an authorisation.
+     *
+     * SO THE RESULT OF THIS MODE IS AN UNVERIFIED CLAIM. Anyone holding the terminal can pick
+     * anyone on it. That is acceptable for a gratuity -- a mis-tap misattributes a tip, which is a
+     * payroll correction -- and it is NOT acceptable for a refund, a cash settlement, or a walkout
+     * close, each of which writes away money or debt and must go through `?purpose=` and a PIN.
+     *
+     * DO NOT REUSE THIS MODE TO SKIP A PIN ON A PRIVILEGED ACTION. If you are reading this because
+     * a PIN is inconvenient, the answer is no.
+     */
+    if (scope === 'venue_staff') {
+      const { data: staff, error: staffError } = await supabase
+        .from('restaurant_users')
+        .select('user_id, users!restaurant_users_user_id_fkey(full_name, name)')
+        .eq('restaurant_id', terminal.restaurantId)
+        .is('deleted_at', null)
+
+      if (staffError) throw staffError
+
+      const venueStaff = ((staff ?? []) as MembershipRow[])
+        .map((row) => ({
+          user_id: String(row.user_id),
+          name: displayNameFromUser(resolveJoinedUser(row.users)),
+        }))
+        // A member with no name cannot be picked meaningfully, and a blank row invites a mis-tap
+        // onto whoever happens to sit next to it.
+        .filter((u) => u.name.trim().length > 0)
+
+      venueStaff.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+      // `verified: false` is on the wire deliberately: the caller is told what it is holding.
+      return NextResponse.json({ users: venueStaff, verified: false })
+    }
+
     const purpose = String(url.searchParams.get('purpose') || '').trim()
     const permission = resolveTerminalAuthorizationPermission(purpose)
 

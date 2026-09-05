@@ -305,26 +305,56 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
     }
 
     /**
-     * A GRATUITY NEEDS A NAME, refused BEFORE the RPC so nothing is half-settled.
+     * WHO IS TAKING THE GRATUITY — AN UNVERIFIED CLAIM, A SEPARATE FIELD FROM THE PIN-PROVED ONE.
      *
-     * Identical rule to the whole-tab settle route, and for the same reason:
-     * payment_tips.staff_user_id is NOT NULL, attribution comes from the authorization token, and
-     * this route does not require one either. Taking the gratuity and dropping it would be money
-     * recorded as nobody's; recording it unattributed defeats the table.
+     * `attributedStaffUserId` above is VERIFIED: a PIN was typed and a single-use token consumed
+     * against purpose 'cash_settlement', and it is what lands on the append-only settlements
+     * ledger. `tip_staff_user_id` is a picker choice with nothing behind it — ANYONE HOLDING THE
+     * TERMINAL CAN PICK ANYONE. Merging them would downgrade the ledger's meaning invisibly.
      *
-     * A settlement with NO tip is unaffected.
+     * Acceptable for a gratuity (a mis-tap is a payroll correction) and NOT acceptable for a
+     * refund, cash settlement or walkout close. THIS PATTERN MUST NOT BE REUSED FOR THOSE.
+     * A picker is attribution; a PIN is authorisation. See the settle route for the full note.
+     *
+     * Mandatory when a tip is keyed, refused before the RPC, so nothing is half-settled.
      */
-    if (tipCents > 0 && !attributedStaffUserId) {
+    const tipStaffUserId = String(
+      (body as { tip_staff_user_id?: unknown; tipStaffUserId?: unknown }).tip_staff_user_id ??
+        (body as { tipStaffUserId?: unknown }).tipStaffUserId ??
+        '',
+    ).trim()
+    if (tipCents > 0 && !tipStaffUserId) {
       return NextResponse.json(
         {
           error:
-            'A gratuity has to be recorded against the staff member taking it, so this settlement ' +
-            'needs a staff PIN. Authorize and try again, or settle without the gratuity.',
-          code: 'TIP_NEEDS_ATTRIBUTION',
+            'Choose who is taking this gratuity before settling. A tip has to be recorded ' +
+            'against a member of staff.',
+          code: 'TIP_NEEDS_STAFF',
           tip_cents: tipCents,
         },
         { status: 400 },
       )
+    }
+
+    // Unverified does not mean unchecked: the FK would accept a real user from another venue.
+    if (tipCents > 0) {
+      const { data: tipMember, error: tipMemberError } = await supabase
+        .from('restaurant_users')
+        .select('user_id')
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('user_id', tipStaffUserId)
+        .is('deleted_at', null)
+        .maybeSingle()
+
+      if (tipMemberError || !tipMember) {
+        return NextResponse.json(
+          {
+            error: 'That staff member is not on this venue, so the gratuity cannot be recorded.',
+            code: 'TIP_STAFF_NOT_A_MEMBER',
+          },
+          { status: 400 },
+        )
+      }
     }
 
     const paymentReference = generatePaymentReference()
@@ -403,7 +433,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
           tipCents,
           method: isCashSettlement ? 'cash' : 'card',
           // Non-null by the TIP_NEEDS_ATTRIBUTION gate above, which refuses before the RPC.
-          staffUserId: String(attributedStaffUserId),
+          // The PICKER value, not attributedStaffUserId. See the trust note above.
+          staffUserId: tipStaffUserId,
           tabId,
           paymentReference,
           allocationSettlementId: settlementId,
@@ -511,7 +542,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
         attribution: attributedStaffUserId ? 'authorized' : 'unattributed',
         // Only when a gratuity was keyed, so an absent key means "no tip" and never "a tip we
         // lost". Any value other than 'recorded' means one was taken and needs reconciling.
-        ...(tipCents > 0 ? { tip_cents: tipCents, tip_recorded: tipOutcome, tip_method: isCashSettlement ? 'cash' : 'card' } : {}),
+        ...(tipCents > 0
+          ? {
+              tip_cents: tipCents,
+              tip_recorded: tipOutcome,
+              tip_method: isCashSettlement ? 'cash' : 'card',
+              // Named apart from staff_user_id: that one is PIN-proved, this is a picker claim.
+              tip_staff_user_id: tipStaffUserId,
+              tip_attribution: 'picker_unverified',
+            }
+          : {}),
         completed_order_ids: completedOrderIds,
         settled_at: new Date().toISOString(),
       },

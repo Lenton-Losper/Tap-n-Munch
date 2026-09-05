@@ -61,21 +61,28 @@ describe('the gratuity never touches the amount check', () => {
 })
 
 describe('a tip with no named staff member is refused before the money moves', () => {
-  it('refuses with TIP_NEEDS_ATTRIBUTION', () => {
-    expect(CODE).toMatch(/TIP_NEEDS_ATTRIBUTION/)
-    expect(CODE).toMatch(/tipCents > 0 && !attributedStaffUserId/)
+  it('refuses with TIP_NEEDS_STAFF when the picker sent nobody', () => {
+    expect(CODE).toMatch(/TIP_NEEDS_STAFF/)
+    expect(CODE).toMatch(/tipCents > 0 && !tipStaffUserId/)
+  })
+
+  it('checks the picked person actually works at this venue', () => {
+    // Unverified is not unchecked: the FK to users(id) would accept another venue's staff.
+    expect(CODE).toMatch(/TIP_STAFF_NOT_A_MEMBER/)
+    expect(CODE).toMatch(/\.eq\('user_id', tipStaffUserId\)/)
+    expect(CODE).toMatch(/\.eq\('restaurant_id', terminal\.restaurantId\)/)
   })
 
   it('that refusal comes BEFORE the orders are claimed', () => {
     // The CLAIM is what flips orders to paid — anchored on `claimQuery`, not on the first
     // `from('orders')`, which is the earlier read of the tab's orders and proves nothing.
     // Refusing after the claim would leave a settled tab and a 400: the worst of both.
-    expect(at('TIP_NEEDS_ATTRIBUTION')).toBeLessThan(at('claimQuery'))
+    expect(at('TIP_NEEDS_STAFF')).toBeLessThan(at('claimQuery'))
   })
 
   it('a settlement with no tip is unaffected by that gate', () => {
-    // The condition is guarded on tipCents > 0, so a tipless cash settle still needs no PIN.
-    expect(CODE).toMatch(/if \(tipCents > 0 && !attributedStaffUserId\)/)
+    // Guarded on tipCents > 0, so a tipless settle is untouched — no picker, no PIN, no change.
+    expect(CODE).toMatch(/if \(tipCents > 0 && !tipStaffUserId\)/)
   })
 
   it('an invalid tip is refused at parse time, before anything else', () => {
@@ -103,8 +110,41 @@ describe('the tip is recorded after the money, against the payment that carried 
     expect(CODE).toMatch(/method: isCashSettlement \? 'cash' : 'card'/)
   })
 
-  it('the settler is the staff member the token identified', () => {
-    expect(CODE).toMatch(/staffUserId: String\(attributedStaffUserId\)/)
+  /**
+   * THE TWO ATTRIBUTIONS MUST NOT MERGE.
+   *
+   * `attributedStaffUserId` is PIN-proved and is what the audit trail calls
+   * `actor_attribution: 'staff_authorized'`. The tip's is a picker choice with nothing behind it.
+   * Using the verified variable for the tip would be harmless; using the PICKER value for the
+   * settlement attribution would silently downgrade every `staff_user_id` ever written from
+   * "proved" to "asserted" — so they are kept apart and this asserts the separation in both
+   * directions.
+   */
+  it('the tip uses the PICKER value, never the PIN-proved one', () => {
+    expect(CODE).toMatch(/staffUserId: tipStaffUserId/)
+    expect(CODE).not.toMatch(/staffUserId: String\(attributedStaffUserId\)/)
+  })
+
+  it('the settlement attribution is still the PIN-proved one, untouched by the picker', () => {
+    /**
+     * SCOPED TO THE AUDIT BLOCK. `staff_user_id: attributedStaffUserId` appears in the audit
+     * metadata AND in the response, so a whole-file match is satisfied by either — mutation
+     * testing caught exactly that: swapping the AUDIT one to the unverified picker value left the
+     * response copy matching, and the suite stayed green while the durable record silently
+     * downgraded from "who proved it" to "who was tapped". Third time this pattern has bitten.
+     */
+    const audit = CODE.slice(at("from('audit_logs')"), at('new_tab_total'))
+    expect(audit).toMatch(/^\s*staff_user_id: attributedStaffUserId/m)
+    // Line-anchored: `tip_staff_user_id: tipStaffUserId` legitimately sits in this same block and
+    // CONTAINS `staff_user_id: tipStaffUserId` as a substring, so an unanchored negative match
+    // fails on correct code.
+    expect(audit).not.toMatch(/^\s*staff_user_id: tipStaffUserId/m)
+    expect(audit).toMatch(/actor_attribution: attributedStaffUserId \? 'staff_authorized' : 'terminal_only'/)
+  })
+
+  it('the audit names the picker claim apart, and says it is unverified', () => {
+    expect(CODE).toMatch(/tip_staff_user_id: tipStaffUserId/)
+    expect(CODE).toMatch(/tip_attribution: 'picker_unverified'/)
   })
 })
 
@@ -172,9 +212,20 @@ describe('the split settle path records the gratuity too', () => {
    * guards did nothing. A marker proves a branch was written; only the condition proves it runs.
    */
   it('refuses an unattributed gratuity BEFORE the settle RPC runs', () => {
-    expect(ALLOC).toMatch(/if \(tipCents > 0 && !attributedStaffUserId\)/)
-    expect(ALLOC).toMatch(/TIP_NEEDS_ATTRIBUTION/)
-    expect(allocAt('TIP_NEEDS_ATTRIBUTION')).toBeLessThan(allocAt("rpc('settle_order_line_allocations'"))
+    expect(ALLOC).toMatch(/if \(tipCents > 0 && !tipStaffUserId\)/)
+    expect(ALLOC).toMatch(/TIP_NEEDS_STAFF/)
+    expect(allocAt('TIP_NEEDS_STAFF')).toBeLessThan(allocAt("rpc('settle_order_line_allocations'"))
+  })
+
+  it('checks the picked person works at this venue, before the RPC', () => {
+    expect(ALLOC).toMatch(/TIP_STAFF_NOT_A_MEMBER/)
+    expect(allocAt('TIP_STAFF_NOT_A_MEMBER')).toBeLessThan(allocAt("rpc('settle_order_line_allocations'"))
+  })
+
+  it('uses the PICKER value for the tip and leaves the ledger attribution PIN-proved', () => {
+    expect(ALLOC).toMatch(/staffUserId: tipStaffUserId/)
+    expect(ALLOC).toMatch(/p_staff_user_id: attributedStaffUserId/)
+    expect(ALLOC).toMatch(/tip_attribution: 'picker_unverified'/)
   })
 
   it('parses the gratuity before anything settles, and acts on a bad value', () => {

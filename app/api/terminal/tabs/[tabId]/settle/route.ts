@@ -298,33 +298,80 @@ export async function POST(
     }
 
     /**
-     * A TIP NEEDS A NAME, AND THE REFUSAL COMES BEFORE THE MONEY MOVES.
+     * WHO IS TAKING THE GRATUITY — AN UNVERIFIED CLAIM, AND DELIBERATELY A SEPARATE FIELD.
      *
-     * `payment_tips.staff_user_id` is NOT NULL: the whole point of the table is that a gratuity
-     * is attributed to the person who took it. Attribution here comes from the authorization
-     * token, and a cash settlement is deliberately NOT gated on holding one (see
-     * lib/terminal-auth/purpose-permissions.ts), so a settle can legitimately arrive with no
-     * staff member named.
+     * ============================================================================================
+     * WHY NOT `attributedStaffUserId`
+     * ============================================================================================
      *
-     * When that happens AND a tip was keyed, this refuses rather than proceeding, because both
-     * alternatives are worse: settling and then silently dropping the gratuity takes money that
-     * is never recorded as anyone's, and recording it unattributed is the exact thing the table
-     * exists to prevent.
+     * That value is VERIFIED: it exists only because a PIN was typed and a single-use
+     * authorization token was consumed against purpose 'cash_settlement'. It is what the audit
+     * trail means by `actor_attribution: 'staff_authorized'`.
      *
-     * It refuses BEFORE the claim, so nothing is half-done -- the operator re-keys the settle
-     * with a PIN and the tip lands attributed. A settle with NO tip is unaffected.
+     * `tip_staff_user_id` is NOT that. It comes from a picker on the terminal with no PIN behind
+     * it: ANYONE HOLDING THE TERMINAL CAN PICK ANYONE. Merging the two would silently downgrade
+     * every existing `staff_user_id` in the audit trail from "proved" to "asserted" -- an
+     * invisible change to the one field that answers "who took the cash".
+     *
+     * So: a distinct wire field, a distinct variable, and a distinct audit key.
+     *
+     * ============================================================================================
+     * WHY UNVERIFIED IS THE RIGHT TRADE HERE, AND WHERE IT WOULD NOT BE
+     * ============================================================================================
+     *
+     * A PIN for gratuities was built and then ruled out, 2026-09-05: friction on every
+     * transaction. And MEASURED ON PRODUCTION, all 23 settlements to date carry NO staff_user_id
+     * at all -- so a PIN gate would not have added friction to tips, it would have blocked 100%
+     * of them.
+     *
+     * A mis-tap here misattributes a gratuity: a payroll correction. The same looseness would be
+     * unacceptable for a REFUND, a CASH SETTLEMENT or a WALKOUT CLOSE, each of which writes away
+     * money or debt. Those keep the PIN, and THIS PATTERN MUST NOT BE REUSED FOR THEM.
+     * A picker is attribution. A PIN is authorisation. They are not interchangeable.
+     *
+     * MANDATORY WHEN A TIP IS KEYED -- the only version with no gap, since a gratuity recorded as
+     * nobody's is what payment_tips.staff_user_id NOT NULL exists to prevent. Refused BEFORE the
+     * claim, so nothing is half-done. A settle with NO tip is unaffected.
      */
-    if (tipCents > 0 && !attributedStaffUserId) {
+    const tipStaffUserId = String(body.tip_staff_user_id ?? body.tipStaffUserId ?? '').trim()
+    if (tipCents > 0 && !tipStaffUserId) {
       return NextResponse.json(
         {
           error:
-            'A gratuity has to be recorded against the staff member taking it, so this settlement ' +
-            'needs a staff PIN. Authorize and try again, or settle without the gratuity.',
-          code: 'TIP_NEEDS_ATTRIBUTION',
+            'Choose who is taking this gratuity before settling. A tip has to be recorded ' +
+            'against a member of staff.',
+          code: 'TIP_NEEDS_STAFF',
           tip_cents: tipCents,
         },
         { status: 400 },
       )
+    }
+
+    /**
+     * IT MUST AT LEAST BE SOMEBODY WHO WORKS HERE.
+     *
+     * Unverified does not mean unchecked. `payment_tips.staff_user_id` is an FK to users(id),
+     * which would happily accept a real user from ANOTHER venue, so without this a terminal could
+     * attribute a gratuity to a stranger. Same membership the picker itself lists.
+     */
+    if (tipCents > 0) {
+      const { data: tipMember, error: tipMemberError } = await supabase
+        .from('restaurant_users')
+        .select('user_id')
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('user_id', tipStaffUserId)
+        .is('deleted_at', null)
+        .maybeSingle()
+
+      if (tipMemberError || !tipMember) {
+        return NextResponse.json(
+          {
+            error: 'That staff member is not on this venue, so the gratuity cannot be recorded.',
+            code: 'TIP_STAFF_NOT_A_MEMBER',
+          },
+          { status: 400 },
+        )
+      }
     }
 
     const paidAt = new Date().toISOString()
@@ -543,7 +590,10 @@ export async function POST(
         console.error('[terminal/tabs/settle] gratuity could not be recorded: no payments row', {
           tabId,
           tip_cents: tipCents,
-          staff_user_id: attributedStaffUserId,
+          // The PICKER value — this log is about the lost gratuity, so it must name who the tip
+          // was for, not who authorised the settlement. Left as attributedStaffUserId until a
+          // mutation harness refused an ambiguous anchor and surfaced it.
+          tip_staff_user_id: tipStaffUserId,
         })
       } else {
         const tip = await recordTip(supabase, {
@@ -552,7 +602,8 @@ export async function POST(
           // The gratuity is taken by the same instrument as the bill it rode on.
           method: isCashSettlement ? 'cash' : 'card',
           // Non-null by the TIP_NEEDS_ATTRIBUTION gate above, which refuses before the claim.
-          staffUserId: String(attributedStaffUserId),
+          // The PICKER value, not attributedStaffUserId. See the trust note above.
+          staffUserId: tipStaffUserId,
           tabId,
           paymentReference,
           paymentId,
@@ -598,7 +649,15 @@ export async function POST(
          * from a customer and not written down is exactly the thing that must not be silent.
          */
         ...(tipCents > 0
-          ? { tip_cents: tipCents, tip_recorded: tipOutcome, tip_method: isCashSettlement ? 'cash' : 'card' }
+          ? {
+              tip_cents: tipCents,
+              tip_recorded: tipOutcome,
+              tip_method: isCashSettlement ? 'cash' : 'card',
+              // Named apart from staff_user_id on purpose: that one is PIN-proved, this is a
+              // picker claim with nothing behind it. Do not collapse them.
+              tip_staff_user_id: tipStaffUserId,
+              tip_attribution: 'picker_unverified',
+            }
           : {}),
         // Present only when cash was taken over a card attempt the timeout had declared dead.
         // How long those attempts had actually been hanging is the evidence for whether
