@@ -78,8 +78,68 @@ else
   echo "  client bundle will point at: ${NEXT_PUBLIC_SUPABASE_URL:-<from .env.local>}"
 fi
 
-echo "=== npm ci ==="
-npm ci --no-audit --no-fund
+# ---------------------------------------------------------------------------
+# npm ci, AND THE ONE WAY TO SKIP IT.
+#
+# WHY AN OPT-OUT EXISTS. This is the only step in the build that has ever failed on the machine
+# that runs it. Twice on 2026-09-05, the host killed the run during `npm ci` under memory pressure
+# -- and a killed build leaves the PREVIOUS artifact in .open-next, complete and valid, which then
+# passes every gate and ships under the new commit's tag. So the reliability of this step is not a
+# convenience question; it is what stops a stale artifact reaching production.
+#
+# WHEN SKIPPING IS SAFE, AND IT IS NARROW. node_modules is a named Docker volume that survives
+# between builds. If it was installed from EXACTLY the package-lock.json we are about to build
+# against, `npm ci` is a no-op that deletes the tree and reinstalls it byte for byte. The stamp
+# below records which lockfile produced the install, so "exactly" is checked rather than assumed.
+#
+# IT REFUSES RATHER THAN FALLING BACK. If you asked to skip and it cannot be shown safe, the build
+# STOPS. It does not quietly run `npm ci` instead: you asked to skip because the full install is
+# what fails here, so silently doing the slow, failing thing is the worst of both.
+#
+# THE STAMP LIVES IN node_modules, NOT IN THE REPO, deliberately -- it describes the INSTALLED
+# TREE, so it must travel with the volume and vanish when the volume does. A stamp in the repo
+# would still be there after somebody deleted node_modules, and would then be a lie.
+#
+# BOOTSTRAP: an install made before this change has no stamp, so the first build after it must run
+# `npm ci` once (and will write one). That is correct: an unstamped tree is one nothing can vouch
+# for, and skipping on it would be trusting an assertion nobody made.
+# ---------------------------------------------------------------------------
+LOCK_SHA="$(sha256sum package-lock.json | cut -d' ' -f1)"
+STAMP="node_modules/.flashtap-lockfile-sha256"
+
+if [ "${FLASHTAP_SKIP_NPM_CI:-0}" = "1" ]; then
+  echo "=== npm ci (skip requested) ==="
+  if [ ! -d node_modules ] || [ -z "$(ls -A node_modules 2>/dev/null)" ]; then
+    echo "REFUSING to skip npm ci: node_modules is missing or empty."
+    echo "  There is nothing installed to reuse. Re-run without FLASHTAP_SKIP_NPM_CI=1."
+    exit 1
+  fi
+  if [ ! -f "$STAMP" ]; then
+    echo "REFUSING to skip npm ci: $STAMP does not exist."
+    echo "  This tree was installed before the stamp existed, or by something other than this"
+    echo "  script, so nothing can vouch for which lockfile produced it. Run once without"
+    echo "  FLASHTAP_SKIP_NPM_CI=1 to install and stamp it."
+    exit 1
+  fi
+  INSTALLED_SHA="$(cat "$STAMP")"
+  if [ "$INSTALLED_SHA" != "$LOCK_SHA" ]; then
+    echo "REFUSING to skip npm ci: package-lock.json has changed since this tree was installed."
+    echo "  installed from : $INSTALLED_SHA"
+    echo "  lockfile now   : $LOCK_SHA"
+    echo "  The dependencies you would build against are not the ones on disk. Re-run without"
+    echo "  FLASHTAP_SKIP_NPM_CI=1."
+    exit 1
+  fi
+  echo "  skipped: node_modules was installed from this exact package-lock.json"
+  echo "  lockfile sha256: $LOCK_SHA"
+else
+  echo "=== npm ci ==="
+  npm ci --no-audit --no-fund
+  # Stamp only AFTER a successful install -- `set -e` means we do not get here otherwise, so the
+  # stamp can never describe a tree that was half-written.
+  printf '%s\n' "$LOCK_SHA" > "$STAMP"
+  echo "  stamped $STAMP with $LOCK_SHA"
+fi
 
 # ---------------------------------------------------------------------------
 # THE COMMIT SHA, BAKED IN AT BUILD TIME.
