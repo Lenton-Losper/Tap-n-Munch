@@ -192,7 +192,25 @@ if (run('node', smokeArgs).code !== 0) fail('the preview is not healthy. Do not 
 
 banner('RECORD THE ROLLBACK TARGET — before promoting, not after')
 const deployments = run('npx', [WRANGLER, 'deployments', 'list', '--config', CONFIG], { capture: true })
-const current = (deployments.out.match(/\(100%\)\s*([0-9a-f-]{36})/) || [])[1] ?? null
+/**
+ * THE LAST `(100%)`, NOT THE FIRST.
+ *
+ * `wrangler deployments list` prints EVERY deployment it retains, OLDEST FIRST, and each one has
+ * its own `Version(s):  (100%) <id>` line -- that marker describes the split within a deployment,
+ * not which deployment is live. A non-global `.match()` returns the first hit, so this recorded
+ * the OLDEST deployment on the list and called it the rollback target.
+ *
+ * Measured on the 2026-09-05 promotion: ten deployments listed, the first created 2026-09-03T00:43
+ * and the last 2026-09-04T00:30. It recorded 9fcbd1df (the first). `wrangler versions deploy`, in
+ * the very next stage, named 6d335f8a as the current version -- a day and nine deployments newer.
+ * A rollback to what was written would have restored a worker that had not served in 24 hours,
+ * from the one stage whose whole purpose is to know the recovery point before it is needed.
+ */
+const hundredPercent = [...deployments.out.matchAll(/\(100%\)\s*([0-9a-f-]{36})/g)].map((m) => m[1])
+const current = hundredPercent.at(-1) ?? null
+if (hundredPercent.length > 1) {
+  console.log(`  ${hundredPercent.length} deployments listed; taking the newest (last) as current.`)
+}
 if (!current) {
   console.log('  Could not parse the current 100% version. Record it by hand before promoting.')
 } else {

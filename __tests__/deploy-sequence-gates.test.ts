@@ -139,6 +139,57 @@ describe('the ordering is the safety property', () => {
     expect(source.indexOf('RECORD THE ROLLBACK TARGET')).toBeLessThan(source.indexOf('PROMOTE TO 100%'))
   })
 
+  /**
+   * Recording the target early is worthless if the target is the wrong version.
+   *
+   * `wrangler deployments list` prints every retained deployment OLDEST FIRST, and each carries
+   * its own `Version(s): (100%) <id>` line — that marker is the traffic split WITHIN a deployment,
+   * not a mark on the live one. A non-global `.match()` therefore returned the OLDEST. Measured on
+   * the 2026-09-05 promotion: ten deployments, it recorded one from a day and nine deployments
+   * earlier, while `wrangler versions deploy` named the real current version in the next stage.
+   *
+   * The fixture below is that real output, trimmed to its first and last entries.
+   */
+  describe('the recorded target is the version that was actually serving', () => {
+    const LIST = [
+      'Created:     2026-09-03T00:43:31.864Z',
+      'Version(s):  (100%) 9fcbd1df-0fda-4729-bfa6-68c97aec2608',
+      '',
+      'Created:     2026-09-04T00:30:47.191Z',
+      'Version(s):  (100%) 6d335f8a-4b97-41d4-bbda-e5c6fc7da517',
+    ].join('\n')
+    const NEWEST = '6d335f8a-4b97-41d4-bbda-e5c6fc7da517'
+    const OLDEST = '9fcbd1df-0fda-4729-bfa6-68c97aec2608'
+
+    /** The extraction the script performs, modelled here so the property is executable. */
+    const pick = (out: string) =>
+      [...out.matchAll(/\(100%\)\s*([0-9a-f-]{36})/g)].map((m) => m[1]).at(-1) ?? null
+
+    it('picks the newest deployment, not the first one printed', () => {
+      expect(pick(LIST)).toBe(NEWEST)
+      expect(pick(LIST)).not.toBe(OLDEST)
+    })
+
+    it('still works when there is exactly one deployment', () => {
+      expect(pick(`Version(s):  (100%) ${NEWEST}`)).toBe(NEWEST)
+    })
+
+    it('answers null — not undefined — when nothing can be parsed, so the by-hand branch fires', () => {
+      expect(pick('')).toBeNull()
+    })
+
+    it('the script uses that extraction, and not the first-match form that was wrong', () => {
+      const stage = source.slice(
+        source.indexOf('RECORD THE ROLLBACK TARGET'),
+        source.indexOf('PROMOTE TO 100%'),
+      )
+      expect(stage).toMatch(/matchAll\(\/\\\(100%\\\)/)
+      expect(stage).toMatch(/\.at\(-1\)/)
+      // The exact expression that recorded a stale target. It must not come back.
+      expect(stage).not.toMatch(/out\.match\(\/\\\(100%\\\)/)
+    })
+  })
+
   it('the live check samples rather than spot-checking, because rollout is gradual', () => {
     const liveCheck = source.slice(source.indexOf('LIVE HEALTH'))
     expect(liveCheck).toMatch(/--samples', '20'/)
