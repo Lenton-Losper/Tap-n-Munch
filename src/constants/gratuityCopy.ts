@@ -68,8 +68,13 @@ export const GRATUITY_NEEDS_STAFF = 'Choose who is taking this gratuity.';
 /**
  * The collapsed entry point. NO GRATUITY IS THE COMMON CASE AND STAYS ONE TAP: a waiter taking
  * none never touches this, and the payment buttons behave exactly as they did before it existed.
+ *
+ * NO LEADING PLUS. The owner's edit at signing, 2026-09-05: two buttons reading "+ Add something"
+ * side by side is how a waiter taps the wrong one mid-service. The neighbouring control is
+ * TABLE_ADD_ROUND_BUTTON in serviceCopy.ts, which reads "Add Round" — no plus — so dropping it
+ * removes the collision AND matches the house style that was already there.
  */
-export const GRATUITY_ADD = '+ Add gratuity';
+export const GRATUITY_ADD = 'Add gratuity';
 
 /** The amount field's label, once opened. */
 export const GRATUITY_AMOUNT_LABEL = 'Gratuity';
