@@ -114,6 +114,15 @@ export const CASH_UP_REPORT_FAILED =
 export const CASH_UP_PRINTED = 'Cash-up printed.';
 
 /**
+ * Under the Settings button when no printer is paired, because the cash-up is printed and there is
+ * nothing to print to. Says the one thing that unblocks it, on the screen where they can do it.
+ *
+ * DRAFTED 2026-09-06, NOT YET SIGNED — the twenty-first string, added after the owner signed the
+ * first twenty. It is listed for signature; the lock test counts 21 so it cannot be forgotten.
+ */
+export const CASH_UP_NEEDS_PRINTER = 'Set up a printer first.';
+
+/**
  * A period with no trade at all. Said on screen rather than left to the paper, because a manager
  * who prints a blank slip checks the printer rather than believing the number.
  */

@@ -72,7 +72,7 @@ describe('something actually navigates to it', () => {
 
   it('the button carries the signed label rather than an invented one', () => {
     // So the entry point cannot drift from the copy that was signed for it.
-    expect(SETTINGS).toMatch(/import \{CASH_UP_PRINT\} from '\.\.\/constants\/cashUpCopy'/);
+    expect(SETTINGS).toMatch(/import \{CASH_UP_NEEDS_PRINTER, CASH_UP_PRINT\} from '\.\.\/constants\/cashUpCopy'/);
     expect(SETTINGS).toMatch(/\{CASH_UP_PRINT\}/);
   });
 
@@ -86,8 +86,33 @@ describe('something actually navigates to it', () => {
      */
     expect(SETTINGS).toMatch(/React\.useContext\(NavigationContext\)/);
     expect(SETTINGS).toMatch(/import \{NavigationContext\} from '@react-navigation\/native'/);
-    // And it must be DISABLED rather than throwing when there is no navigator.
-    expect(SETTINGS).toMatch(/disabled=\{!navigation\}/);
+    // And it must be DISABLED rather than throwing when there is no navigator — and equally when
+    // there is no printer, which is the state that used to hide the button entirely.
+    expect(SETTINGS).toMatch(/disabled=\{!navigation \|\| !printerConfig\}/);
+  });
+});
+
+describe('the button is visible even with no printer paired', () => {
+  /**
+   * It used to live inside the `printerConfig ?` branch, so a terminal with no printer showed NO
+   * BUTTON — a manager had to already know the cash-up was conditional on a printer. Absent and
+   * disabled look the same across a room, and only one of them can be acted on.
+   */
+  it('is rendered outside the printerConfig branch', () => {
+    const printerBranch = SETTINGS.slice(
+      SETTINGS.indexOf(') : printerConfig ? ('),
+      SETTINGS.indexOf('<Text style={styles.sectionTitle}>Actions</Text>'),
+    );
+    const button = printerBranch.indexOf('testID="settings-cash-up"');
+    const branchClose = printerBranch.indexOf(') : (');
+    expect(button).toBeGreaterThan(-1);
+    // After the whole conditional closes, not inside its configured arm.
+    expect(button).toBeGreaterThan(branchClose);
+  });
+
+  it('says what unblocks it, rather than vanishing', () => {
+    expect(SETTINGS).toMatch(/settings-cash-up-needs-printer/);
+    expect(SETTINGS).toMatch(/\{CASH_UP_NEEDS_PRINTER\}/);
   });
 });
 

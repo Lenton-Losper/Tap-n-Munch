@@ -14,7 +14,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import {NavigationContext} from '@react-navigation/native';
 import type {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import type {MainStackParamList} from '../navigation/AppNavigator';
-import {CASH_UP_PRINT} from '../constants/cashUpCopy';
+import {CASH_UP_NEEDS_PRINTER, CASH_UP_PRINT} from '../constants/cashUpCopy';
 import {useAuth} from '../context/AuthContext';
 import {useStreamConnection} from '../context/StreamContext';
 import {APP_VERSION} from '../constants';
@@ -563,14 +563,6 @@ export default function SettingsScreen() {
                 * nothing because the takings are behind the PIN, not behind the navigation.
                 */}
               <Pressable
-                testID="settings-cash-up"
-                disabled={!navigation}
-                onPress={() => navigation?.navigate('CashUp')}
-                style={styles.printerActionButton}>
-                <Text style={styles.printerActionText}>{CASH_UP_PRINT}</Text>
-              </Pressable>
-
-              <Pressable
                 disabled={forgettingPrinter}
                 onPress={handleForgetPrinter}
                 style={styles.deactivateRow}>
@@ -598,6 +590,33 @@ export default function SettingsScreen() {
               </Pressable>
             </>
           )}
+
+          {/**
+            * THE CASH-UP, OUTSIDE THE printerConfig BRANCH ON PURPOSE.
+            *
+            * It sat inside, so a terminal with no printer paired showed NO BUTTON AT ALL — a
+            * manager looking for the cash-up had to already know it was conditional on a printer,
+            * which is not something the screen ever told them. Absent and disabled look the same
+            * from the far side of the room, and only one of them can be acted on.
+            *
+            * Disabled with the reason underneath instead. Everything the button leads to still
+            * needs a printer, and the screen that unblocks it is the one they are already on.
+            */}
+          <Pressable
+            testID="settings-cash-up"
+            disabled={!navigation || !printerConfig}
+            onPress={() => navigation?.navigate('CashUp')}
+            style={[
+              styles.printerActionButton,
+              (!navigation || !printerConfig) && styles.buttonDisabled,
+            ]}>
+            <Text style={styles.printerActionText}>{CASH_UP_PRINT}</Text>
+          </Pressable>
+          {!printerConfigLoading && !printerConfig ? (
+            <Text style={styles.hintText} testID="settings-cash-up-needs-printer">
+              {CASH_UP_NEEDS_PRINTER}
+            </Text>
+          ) : null}
         </View>
 
         <View style={styles.section}>

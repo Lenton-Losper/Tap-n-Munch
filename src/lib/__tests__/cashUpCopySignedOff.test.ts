@@ -69,7 +69,18 @@ describe(`the signed cash-up copy (signed ${SIGNED_ON})`, () => {
     );
   });
 
-  it('twenty strings, and no twenty-first added without a signature', () => {
+  it('the drafted twenty-first is listed for signature, not slipped in', () => {
+    /**
+     * CASH_UP_NEEDS_PRINTER was added 2026-09-06, AFTER the owner signed the first twenty, to give
+     * the Settings button a disabled state instead of hiding it. It is drafted, not signed.
+     *
+     * Asserted separately so it cannot be quietly absorbed into the signed set: when it is signed,
+     * move it into "reads exactly as signed" above and delete this test.
+     */
+    expect(Copy.CASH_UP_NEEDS_PRINTER).toBe('Set up a printer first.');
+  });
+
+  it('twenty-one strings, and no twenty-second added without a signature', () => {
     /**
      * THE COUNT IS TWENTY, AND IT WAS PRESENTED FOR SIGNATURE AS "19".
      *
@@ -81,7 +92,7 @@ describe(`the signed cash-up copy (signed ${SIGNED_ON})`, () => {
     const exported = Object.keys(Copy).filter(
       k => typeof (Copy as Record<string, unknown>)[k] === 'string',
     );
-    expect(exported).toHaveLength(20);
+    expect(exported).toHaveLength(21);
   });
 
   it('every refusal tells the manager nothing printed', () => {
