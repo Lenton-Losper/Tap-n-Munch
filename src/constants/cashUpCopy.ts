@@ -19,7 +19,12 @@
  * anything printed — a manager who does not know whether the slip came out will print it twice
  * and then wonder which one is right.
  *
- * SIGNED: pending.
+ * SIGNED BY THE OWNER 2026-09-06, all twenty as written, no changes.
+ * Pinned in src/lib/__tests__/cashUpCopySignedOff.test.ts.
+ *
+ * THE PRINTED DOCUMENT'S OWN STRINGS ARE NOT HERE. It is rendered SERVER-SIDE, so its headings and
+ * bridge lines are signed in the web repo (lib/reports/cash-up-copy.ts) and pinned there. This
+ * file is the screen a manager touches; that one is the paper that comes out.
  */
 
 /** The screen. Named for what it produces, not for the report it runs. */
