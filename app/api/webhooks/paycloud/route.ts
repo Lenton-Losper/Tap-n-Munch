@@ -1,7 +1,12 @@
 import { NextResponse } from 'next/server'
 import { enforceWebhookRateLimit, verifyWebhook } from '@/payments/webhook'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { resolveOrderIdsByMerchantOrderNo } from '@/lib/payments/resolve-order-by-merchant-order'
+import {
+  resolveOrderIdsByMerchantOrderNo,
+  type ResolvedReference,
+} from '@/lib/payments/resolve-order-by-merchant-order'
+import { markIntentConfirmed } from '@/lib/payments/payment-intents'
+import { settleAllocationsForIntent } from '@/lib/payments/settle-allocations-for-intent'
 import { confirmWebhookOrderViaFinaticFallback } from '@/lib/payments/webhook-sig-fallback'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import {
@@ -344,7 +349,7 @@ export async function POST(req: Request) {
 
     const supabase = createServerSupabaseClient()
 
-    let resolved: { orderIds: string[]; source: 'orders' | 'payment_events' | null }
+    let resolved: ResolvedReference
     try {
       resolved = await resolveOrderIdsByMerchantOrderNo(supabase, merchantOrderNo)
     } catch (e) {
@@ -385,6 +390,89 @@ export async function POST(req: Request) {
       source: resolved.source,
       path,
     })
+
+    /**
+     * ============================================================================================
+     * A SPLIT PAYMENT SETTLES ITEMS, NOT ORDERS.
+     * ============================================================================================
+     *
+     * Every branch below this marks whole ORDERS paid, which is right for every reference that
+     * existed before intents. For a part-order charge it would be catastrophic in the quiet way:
+     * the reference names one diner's items, and closing the order would mark three other people's
+     * food paid for by a card that never covered it.
+     *
+     * The fork is on `scope`, which only an intent can answer. Nothing reaching the code below has
+     * one, so that path is untouched.
+     *
+     * SAME WRITER AS THE DEVICE. settleAllocationsForIntent is what
+     * POST .../record-split-payment calls, and the two race by design: whichever proves the charge
+     * first settles, and the other applies nothing and is told so. The RPC refuses an already-
+     * settled allocation, which is what makes the race harmless.
+     */
+    if (resolved.intent && resolved.intent.scope === 'allocations') {
+      const intent = resolved.intent
+
+      if (intent.status === 'confirmed') {
+        // Already settled, by the device or by an earlier delivery of this same webhook.
+        console.log('[WEBHOOK] split payment already confirmed:', merchantOrderNo)
+        return webhookAck()
+      }
+      if (intent.status === 'failed') {
+        /**
+         * THE GATEWAY SAYS PAID AND THE DEVICE SAID FAILED. The device's report is a claim about
+         * what a reader displayed; this is the gateway's own record of money. It is NOT resolved
+         * silently either way — the items are not settled on a failed intent, because releasing
+         * and then settling would be two contradictory answers written a second apart, and a human
+         * needs to see this.
+         */
+        console.error('[WEBHOOK] gateway reports paid for an intent the device reported FAILED', {
+          merchantOrderNo,
+          intentId: intent.id,
+        })
+        await supabase.from('audit_logs').insert({
+          restaurant_id: intent.restaurantId,
+          action: 'payment.split_intent_gateway_disagrees',
+          entity_type: 'payment_intent',
+          entity_id: intent.id,
+          metadata: {
+            merchantOrderNo,
+            deviceOutcome: 'failed',
+            gatewayOutcome: 'paid',
+            allocationIds: intent.allocationIds,
+            note: 'The gateway says this was paid and the terminal reported a failure. Items were NOT settled automatically. Reconcile against the gateway before taking payment again.',
+          },
+        })
+        return webhookAck()
+      }
+
+      const settled = await settleAllocationsForIntent(supabase, {
+        intent,
+        paymentReference: merchantOrderNo,
+        source: 'webhook/paycloud',
+      })
+
+      if (!settled.ok) {
+        /**
+         * 503 SO FINATIC RETRIES. The charge is real and the items are still unsettled; the intent
+         * is deliberately left holding them rather than being marked failed, so nothing releases
+         * food that has been paid for.
+         */
+        console.error('[WEBHOOK] split settlement failed', {
+          merchantOrderNo,
+          intentId: intent.id,
+          reason: settled.reason,
+        })
+        return NextResponse.json({ error: 'Split settlement failed' }, { status: 503 })
+      }
+
+      await markIntentConfirmed(supabase, intent.id)
+      console.log('[WEBHOOK] split payment settled:', merchantOrderNo, {
+        settled: settled.settledAllocationIds.length,
+        ordersClosed: settled.ordersClosed.length,
+        alreadySettled: settled.alreadySettled,
+      })
+      return webhookAck()
+    }
 
     if (!resolved.orderIds.length) {
       console.error(
@@ -451,7 +539,7 @@ export async function POST(req: Request) {
   const stagingStub = payload.__stagingFinaticStub
   const supabase = createServerSupabaseClient()
 
-  let resolved: { orderIds: string[]; source: 'orders' | 'payment_events' | null }
+  let resolved: ResolvedReference
   try {
     resolved = await resolveOrderIdsByMerchantOrderNo(supabase, merchantOrderNo)
   } catch (e) {

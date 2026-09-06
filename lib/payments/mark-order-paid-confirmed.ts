@@ -162,14 +162,52 @@ export async function markOrderPaidConfirmed(
     // app/api/terminal/orders/[orderId]/payment/route.ts recomputes canClose two statements
     // later: while these disagreed, one request wrote can_close true and a tab total that
     // still owed money, and /api/terminal/tables hands staff both figures at once.
-    const { data: tabOrderRows } = await supabase
+    const { data: tabOrderRows, error: tabOrderRowsError } = await supabase
       .from('orders')
       .select('total, payment_status')
       .eq('tab_id', tabId)
-    const newTotal = (tabOrderRows ?? [])
-      .filter((o: { payment_status: unknown }) => owesMoney(o.payment_status))
-      .reduce((sum: number, o: { total: unknown }) => sum + Number(o.total), 0)
-    await supabase.from('tabs').update({ total: newTotal }).eq('id', tabId)
+
+    /**
+     * A FAILED READ MUST NOT BECOME A TAB TOTAL OF ZERO.
+     *
+     * The error used to be discarded, so `tabOrderRows` came back null on any failure, `?? []`
+     * turned it into an empty list, and the reduce produced 0 — which was then WRITTEN. A
+     * transient database failure set a tab that still owed money to N$0.00.
+     *
+     * That is precisely the defect the comment above says this code exists to prevent: a tab total
+     * that disagrees with what is owed, handed to staff by /api/terminal/tables alongside a
+     * can_close figure computed from something else. The guard against it could produce it.
+     *
+     * Absence and failure lead to different actions. A tab whose orders cannot be read keeps the
+     * total it already has — stale, and honest about being stale — rather than being overwritten
+     * with a number nothing computed. The next settle on the tab recomputes it.
+     */
+    if (tabOrderRowsError) {
+      console.error(`[markOrderPaidConfirmed:${source}] tab total NOT recomputed; read failed`, {
+        tabId,
+        orderId,
+        error: tabOrderRowsError.message,
+        note: 'the tab keeps its previous total rather than being zeroed',
+      })
+    } else {
+      const newTotal = (tabOrderRows ?? [])
+        .filter((o: { payment_status: unknown }) => owesMoney(o.payment_status))
+        .reduce((sum: number, o: { total: unknown }) => sum + Number(o.total), 0)
+
+      // The write's own error was discarded too, so a total that silently failed to persist looked
+      // exactly like one that succeeded.
+      const { error: tabUpdateError } = await supabase
+        .from('tabs')
+        .update({ total: newTotal })
+        .eq('id', tabId)
+      if (tabUpdateError) {
+        console.error(`[markOrderPaidConfirmed:${source}] tab total write failed`, {
+          tabId,
+          newTotal,
+          error: tabUpdateError.message,
+        })
+      }
+    }
   }
 
   await safeIssueReceiptForOrder(orderId, source)
