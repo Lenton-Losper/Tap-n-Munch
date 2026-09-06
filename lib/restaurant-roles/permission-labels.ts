@@ -20,9 +20,9 @@ const LABELS: Record<Permission, { label: string; description: string }> = {
     label: 'Update Orders',
     description: 'Change order status, items, and table assignments.',
   },
-  [PERMISSIONS.ORDERS_DELETE]: {
-    label: 'Delete Orders',
-    description: 'Remove or void orders permanently.',
+  [PERMISSIONS.ORDERS_VOID]: {
+    label: 'Void Items',
+    description: 'Approve taking items off a bill. Needs a PIN at the terminal.',
   },
   [PERMISSIONS.ORDERS_STATION_KITCHEN]: {
     label: 'Kitchen station scope',
@@ -129,6 +129,10 @@ const LABELS: Record<Permission, { label: string; description: string }> = {
     label: 'View Analytics',
     description: 'Open sales analytics, charts, and performance reports.',
   },
+  [PERMISSIONS.REPORTS_CASH_UP]: {
+    label: 'Print Cash-Up',
+    description: "Print the day's takings at the terminal. Needs a PIN.",
+  },
   [PERMISSIONS.DOCUMENTS_READ]: {
     label: 'View Documents',
     description: 'View quotes, invoices, and billing profile details.',
@@ -149,7 +153,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     permissions: [
       PERMISSIONS.ORDERS_READ,
       PERMISSIONS.ORDERS_UPDATE,
-      PERMISSIONS.ORDERS_DELETE,
+      PERMISSIONS.ORDERS_VOID,
       PERMISSIONS.ORDERS_STATION_KITCHEN,
       PERMISSIONS.ORDERS_STATION_BAR,
     ].map((key) => ({ key, ...LABELS[key] })),
@@ -215,7 +219,10 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
   },
   {
     domain: 'Analytics',
-    permissions: [PERMISSIONS.ANALYTICS_VIEW].map((key) => ({ key, ...LABELS[key] })),
+    permissions: [PERMISSIONS.ANALYTICS_VIEW, PERMISSIONS.REPORTS_CASH_UP].map((key) => ({
+      key,
+      ...LABELS[key],
+    })),
   },
   {
     domain: 'Documents',

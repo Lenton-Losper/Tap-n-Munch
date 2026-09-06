@@ -1,4 +1,5 @@
 import { renderReceiptEscPos } from '../lib/receipts/renderers/escposRenderer'
+import { createHash } from 'crypto'
 import type { ReceiptSnapshot } from '../lib/receipts/issueReceipt'
 
 const SNAPSHOT: ReceiptSnapshot = {
@@ -125,5 +126,33 @@ describe('renderReceiptEscPos', () => {
     const wideLines = wide.split('\n').filter((l) => l.length > 0)
     expect(Math.max(...narrowLines.map((l) => l.length))).toBeLessThanOrEqual(24)
     expect(Math.max(...wideLines.map((l) => l.length))).toBeLessThanOrEqual(48)
+  })
+})
+
+describe('the bytes are frozen', () => {
+  /**
+   * A BYTE-LEVEL GOLDEN, added 2026-09-07 before extracting this file's private builder and layout
+   * helpers into thermal-primitives.ts so the cash-up renderer could share them.
+   *
+   * Every other test here asserts a property — a line is present, a reference is masked. None of
+   * them would notice a changed ESC/GS command byte, a lost bold toggle, or a one-character shift
+   * in padding, and those are exactly what a refactor of the builder breaks. A receipt is a tax
+   * document printed for a customer; "the tests still pass" is not the same claim as "the paper is
+   * identical".
+   *
+   * IF THIS FAILS, THE PRINTED RECEIPT CHANGED. That may be intended — then update the hash in the
+   * same commit as the change, and say what moved. It must never be updated to make a red suite
+   * green without reading the diff.
+   */
+  it.each([
+    [32, '3082bdbe0cf851dc7b8105624704d22bcd8b874725406dde8debfcfbcc584124'],
+    [48, '58de35e6da453a28744aef8c3b0a631a42186ad0626814396e8035b2ed7b11b6'],
+  ])('renders identical bytes at width %i', (width, sha) => {
+    const bytes = renderReceiptEscPos(SNAPSHOT, {
+      characterWidth: width,
+      documentNumber: 'RCT-000187',
+      issuedAt: '2026-09-06T18:00:00.000Z',
+    })
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(sha)
   })
 })

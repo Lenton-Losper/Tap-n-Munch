@@ -132,7 +132,7 @@ async function main() {
         restaurant_id: restaurant.id,
         role_slug: 'owner',
         display_name: 'Owner',
-        permissions: ['orders:read', 'orders:update', 'orders:delete'],
+        permissions: ['orders:read', 'orders:update'],
         is_system: true,
       })
       assert(!roleErr, `restaurant_roles insert failed: ${roleErr?.message}`)

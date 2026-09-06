@@ -1,6 +1,11 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import { ReportData, ReportOrder } from './get-report-data'
 import { formatReportDateTime } from './format-report-datetime'
+import {
+  cashUpReconciliation,
+  cashUpRows,
+  NO_PAYMENTS_RECORDED,
+} from './payment-method-split'
 
 // A4 landscape (points)
 const PAGE_WIDTH = 841.89
@@ -29,6 +34,20 @@ const ROW_LINE_HEIGHT = 10
 const ROW_PADDING_Y = 5
 const MIN_ROW_HEIGHT = 16
 const TABLE_HEADER_HEIGHT = 18
+
+/**
+ * TAKINGS BY PAYMENT METHOD — the end-of-day cash-up block, drawn under the summary cards.
+ *
+ * ITS HEIGHT IS COMPUTED, NOT GUESSED, and the same function feeds both the drawer and the
+ * page-layout budget in buildPagePlans. The budget hardcodes the header and summary heights as
+ * literals (78 and 60); adding a third block that way would mean two numbers that must agree and
+ * no way to notice when they stop. A block taller than its budget silently overprints the first
+ * rows of the orders table.
+ */
+const CASHUP_TITLE_SIZE = 9
+const CASHUP_ROW_HEIGHT = 12
+const CASHUP_TITLE_GAP = 14
+const CASHUP_BOTTOM_GAP = 10
 
 type ColumnKey =
   | 'orderNo'
@@ -271,6 +290,77 @@ function drawSummaryCards(
   return y - 16
 }
 
+/** Rows the block will draw: one per method, then Gross Taken / Less Refunds / Net Revenue. */
+function cashUpLineCount(report: ReportData): number {
+  return Math.max(1, cashUpRows(report).length) + 3
+}
+
+/** Total vertical space the block occupies. Used by the drawer AND by buildPagePlans. */
+function cashUpBlockHeight(report: ReportData): number {
+  return CASHUP_TITLE_GAP + cashUpLineCount(report) * CASHUP_ROW_HEIGHT + CASHUP_BOTTOM_GAP
+}
+
+/**
+ * The cash-up itself. Three columns — method, order count, gross — then the bridge from what was
+ * taken to what the headline revenue figure says, because the parts are GROSS of refunds and the
+ * headline is net. A manager counting a drawer against a report whose parts do not sum to its
+ * total assumes the report is wrong.
+ */
+function drawCashUp(
+  page: PDFPage,
+  report: ReportData,
+  fonts: { regular: PDFFont; bold: PDFFont },
+  yTop: number,
+): number {
+  const rows = cashUpRows(report)
+  const recon = cashUpReconciliation(report)
+  const contentWidth = PAGE_WIDTH - MARGIN * 2
+  const ordersX = MARGIN + contentWidth * 0.5
+  const grossX = MARGIN + contentWidth * 0.72
+
+  let y = yTop - CASHUP_TITLE_GAP
+  page.drawText('TAKINGS BY PAYMENT METHOD', {
+    x: MARGIN,
+    y,
+    size: CASHUP_TITLE_SIZE,
+    font: fonts.bold,
+    color: TEXT_DARK,
+  })
+
+  const line = (
+    label: string,
+    orders: string,
+    gross: string,
+    font: PDFFont,
+    color = TEXT_DARK,
+  ) => {
+    y -= CASHUP_ROW_HEIGHT
+    page.drawText(label, { x: MARGIN, y, size: BODY_SIZE, font, color })
+    if (orders) page.drawText(orders, { x: ordersX, y, size: BODY_SIZE, font, color })
+    page.drawText(gross, { x: grossX, y, size: BODY_SIZE, font, color })
+  }
+
+  if (rows.length === 0) {
+    // A zero-order day is a real answer and must not render as an empty block.
+    line(NO_PAYMENTS_RECORDED, '', formatCurrency(0), fonts.regular, TEXT_MUTED)
+  } else {
+    for (const row of rows) {
+      line(row.label, `${row.orders} order${row.orders === 1 ? '' : 's'}`, formatCurrency(row.gross), fonts.regular)
+    }
+  }
+
+  line(
+    'Gross taken',
+    `${recon.orders} order${recon.orders === 1 ? '' : 's'}`,
+    formatCurrency(recon.grossTaken),
+    fonts.bold,
+  )
+  line('Less refunds', '', formatCurrency(-recon.refunded), fonts.regular, TEXT_MUTED)
+  line('Net revenue', '', formatCurrency(recon.net), fonts.bold)
+
+  return y - CASHUP_BOTTOM_GAP
+}
+
 function drawTableHeader(
   page: PDFPage,
   fonts: { regular: PDFFont; bold: PDFFont },
@@ -382,7 +472,7 @@ interface PagePlan {
   includeSummary: boolean
 }
 
-function buildPagePlans(rows: RowLayout[]): PagePlan[] {
+function buildPagePlans(rows: RowLayout[], report: ReportData): PagePlan[] {
   const contentWidth = PAGE_WIDTH - MARGIN * 2
   const minY = MARGIN + FOOTER_AREA
   const plans: PagePlan[] = []
@@ -395,6 +485,8 @@ function buildPagePlans(rows: RowLayout[]): PagePlan[] {
     if (isFirst) {
       y -= 78 // header block
       y -= 60 // summary cards
+      // Computed, not a literal, so the budget cannot drift from what drawCashUp actually draws.
+      y -= cashUpBlockHeight(report)
     }
     y = drawTableHeaderVirtual(y)
     const pageRows: RowLayout[] = []
@@ -442,7 +534,7 @@ export async function generatePdfBytes(report: ReportData): Promise<Uint8Array> 
   const widths = columnWidths(contentWidth)
   const positions = columnXPositions(contentWidth)
   const rowLayouts = layoutRows(report.orders, regular, widths, report.restaurant.timezone)
-  const pagePlans = buildPagePlans(rowLayouts)
+  const pagePlans = buildPagePlans(rowLayouts, report)
   const totalPages = pagePlans.length
 
   pagePlans.forEach((plan, pageIndex) => {
@@ -454,6 +546,7 @@ export async function generatePdfBytes(report: ReportData): Promise<Uint8Array> 
     }
     if (plan.includeSummary) {
       y = drawSummaryCards(page, report, fonts, y)
+      y = drawCashUp(page, report, fonts, y)
     }
 
     y = drawTableHeader(page, fonts, y, contentWidth, positions, widths)

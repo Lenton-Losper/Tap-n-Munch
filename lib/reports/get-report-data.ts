@@ -4,6 +4,7 @@ import {
   sumDistinctRefundedAmounts,
   type PaymentStatus,
 } from '@/lib/payments/get-payment-projection'
+import { aggregateItemsSold } from '@/lib/reports/items-sold'
 import {
   calendarDateRangeToUtcIso,
   DEFAULT_REPORT_TIMEZONE,
@@ -48,6 +49,11 @@ export interface ReportData {
     refundedTotal: number
     /** Paid orders grouped by payment_method, GROSS of refunds. Sums to totalRevenue + refundedTotal. */
     paymentMethodSplit: Array<{ method: string; orders: number; gross: number }>
+    /**
+     * Every item sold in the period, with quantity and VAT-INCLUSIVE gross. UNCAPPED — a cash-up
+     * lists what was sold, not the highlights. Sorted by quantity, then name.
+     */
+    itemsSold: Array<{ name: string; quantity: number; gross: number }>
     /** Non-cancelled orders that are not paid -- stranded/pending, surfaced same-day. */
     unresolvedOrders: number
   }
@@ -218,6 +224,20 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
     .sort((a, b) => b.gross - a.gross)
 
   /**
+   * WHAT WAS SOLD — see lib/reports/items-sold.ts for the three decisions it encodes (uncapped,
+   * VAT-inclusive, a missing quantity counts as one) and for why it is a separate pure function:
+   * written inline here it needed a database to reach, so nothing tested it, and a mutation sweep
+   * found three defects that every test stayed green through.
+   *
+   * SAME ORDER SET as the takings above, so the two halves of the document always agree. NOT the
+   * one in lib/supabase/analytics.ts, which buckets a day as UTC while this report resolves
+   * boundaries in the venue's timezone — at UTC+2 that puts the first two hours of every trading
+   * day in the previous one, and a cash-up whose items and takings count different days is one a
+   * manager cannot reconcile. (It is also dead code: nothing imports its only consumer.)
+   */
+  const itemsSold = aggregateItemsSold(reportedOrders)
+
+  /**
    * WHAT IS STILL OWED — `owesMoney`, not a hand-rolled "not paid" (#232, and #139's
    * consolidation).
    *
@@ -291,6 +311,7 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
       averageOrderValue,
       refundedTotal: Math.round(refundedDistinct * 100) / 100,
       paymentMethodSplit,
+      itemsSold,
       unresolvedOrders,
     },
     orders,

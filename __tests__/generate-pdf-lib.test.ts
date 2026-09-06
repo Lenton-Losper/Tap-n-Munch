@@ -37,6 +37,7 @@ function sampleReport(orderCount: number): ReportData {
       paymentMethodSplit: [
         { method: 'card', orders: orders.length, gross: orders.reduce((sum, o) => sum + o.total, 0) },
       ],
+      itemsSold: [],
       unresolvedOrders: 0,
     },
     orders,

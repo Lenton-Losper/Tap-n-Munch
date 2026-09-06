@@ -1,5 +1,10 @@
 import { ReportData, ReportOrder } from './get-report-data'
 import { formatReportDateTime } from './format-report-datetime'
+import {
+  cashUpReconciliation,
+  cashUpRows,
+  NO_PAYMENTS_RECORDED,
+} from './payment-method-split'
 
 const formatCurrency = (amount: number) => amount.toFixed(2)
 
@@ -37,6 +42,36 @@ export function generateCsv(report: ReportData): string {
   lines.push(`Total Revenue,N$${formatCurrency(report.summary.totalRevenue)}`)
   lines.push(`Total Orders,${report.summary.totalOrders}`)
   lines.push(`Average Order Value,N$${formatCurrency(report.summary.averageOrderValue)}`)
+  lines.push(``)
+
+  /**
+   * TAKINGS BY PAYMENT METHOD — the end-of-day cash-up.
+   *
+   * getReportData has always computed this and the daily email has always rendered it. The export
+   * called the same function and threw it away, so the only way to see how much of a day was cash
+   * was to total the Payment Method column of the rows below, by hand, in a spreadsheet.
+   *
+   * THE PARTS ARE GROSS AND THE HEADLINE IS NET, so the bridge between them is printed rather than
+   * left to the reader. Without it the section reads as an arithmetic error to whoever is counting
+   * the drawer, which is the one person this is for.
+   */
+  const split = cashUpRows(report)
+  const recon = cashUpReconciliation(report)
+  lines.push(`Takings by Payment Method`)
+  lines.push(['Method', 'Orders', 'Gross (N$)'].map(escapeCell).join(','))
+  if (split.length === 0) {
+    // A zero-order day is a real answer. An empty section reads as a broken report.
+    lines.push([NO_PAYMENTS_RECORDED, 0, formatCurrency(0)].map(escapeCell).join(','))
+  } else {
+    for (const row of split) {
+      lines.push([row.label, row.orders, formatCurrency(row.gross)].map(escapeCell).join(','))
+    }
+  }
+  lines.push(
+    ['Gross Taken', recon.orders, formatCurrency(recon.grossTaken)].map(escapeCell).join(','),
+  )
+  lines.push(['Less Refunds', '', formatCurrency(-recon.refunded)].map(escapeCell).join(','))
+  lines.push(['Net Revenue', '', formatCurrency(recon.net)].map(escapeCell).join(','))
   lines.push(``)
 
   // Orders table header

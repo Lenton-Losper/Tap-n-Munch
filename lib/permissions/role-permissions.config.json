@@ -3,7 +3,7 @@
   "owner": [
     "orders:read",
     "orders:update",
-    "orders:delete",
+    "orders:void",
     "menu:read",
     "menu:write",
     "tables:read",
@@ -26,6 +26,7 @@
     "recipe:view",
     "recipe:edit",
     "analytics:view",
+    "reports:cash_up",
     "documents:read",
     "documents:write",
     "terminal:auth:manage"
@@ -33,6 +34,7 @@
   "manager": [
     "orders:read",
     "orders:update",
+    "orders:void",
     "menu:read",
     "menu:write",
     "tables:read",
@@ -51,6 +53,7 @@
     "recipe:view",
     "recipe:edit",
     "analytics:view",
+    "reports:cash_up",
     "documents:read",
     "documents:write",
     "terminal:auth:manage"

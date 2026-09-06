@@ -57,6 +57,62 @@ export const TERMINAL_AUTHORIZATION_PURPOSES = {
    * DEVICE it happened on, which answers "which box" and never "who".
    */
   walkout_close: PERMISSIONS.TABS_CLOSE_UNPAID,
+  /**
+   * VOIDING A LINE — taking food off a bill after it was ordered.
+   *
+   * WHY A PIN. A void reduces what the customer owes, with no money moving and no receipt to
+   * check it against afterwards. The waiter holding the terminal took the order and is the person
+   * with the most reason to remove it; asking them to approve their own void is not a control.
+   * The PIN puts a second, named person on the record before the food leaves the bill.
+   *
+   * THE PERMISSION IS ORDERS_VOID, NOT ORDERS_UPDATE. `orders:update` rides on the terminal's own
+   * JWT and every waiter holds it, so gating on it would mean anyone who can ring a dish up can
+   * make it disappear from the bill — which is the gap this closes. Manager and owner only.
+   *
+   * THE IDENTITY THIS PRODUCES IS A users.id, and that is what fixes the hole this feature
+   * shipped with: `app/api/terminal/tabs/[tabId]/amend/route.ts` passed `p_actor_user_id: null`,
+   * so a void recorded NO HUMAN AT ALL — only that "a terminal" did it.
+   *
+   * *** ADDING A PURPOSE HERE IS HALF THE JOB. *** The database keeps its own allow-list on
+   * `privileged_authorization_tokens.purpose`, and it has been forgotten THREE times already
+   * (service_session, menu_availability, walkout_close). When it is missed, POST
+   * /api/terminal/authorize passes every application check — membership, permission, PIN,
+   * lockout — and then fails on the INSERT with a 23514: the staff member types a correct PIN and
+   * is told authorization failed, every time. See
+   * supabase/migrations/20260906120000_authorization_purpose_line_void.sql.
+   */
+  line_void: PERMISSIONS.ORDERS_VOID,
+  /**
+   * PRINTING THE END-OF-DAY CASH-UP on the terminal's own printer.
+   *
+   * WHY A PIN, when nothing is being written. Every other purpose here guards a WRITE; this one
+   * guards a READ, and it is the first. The reason is the device: a P5 sits on a bar counter for
+   * a whole service, unlocked, and the document this prints is the day's takings — cash and card,
+   * gross, order counts, everything sold. That is not something whoever picks the terminal up
+   * should be able to produce by tapping a tile. The PIN also puts a NAME on the print, which is
+   * what a cash-up is for: it is the start of somebody being accountable for a drawer.
+   *
+   * THE PERMISSION IS REPORTS_CASH_UP, not ANALYTICS_VIEW and not TABS_CLOSE_UNPAID. Measured
+   * against the shipped role config:
+   *
+   *     analytics:view      owner, manager    -- dashboard charts, on a logged-in browser
+   *     tabs:close_unpaid   owner, manager    -- authority to WRITE OFF a debt
+   *
+   * Both land on the same two roles today, which is exactly why reusing one would be a mistake
+   * nobody notices until the day they need to differ: reading the day's money and writing off a
+   * customer's debt are different authorities that happen to be held by the same people.
+   *
+   * THE IDENTITY THIS PRODUCES IS A users.id, and it is recorded against the print.
+   *
+   * *** ADDING A PURPOSE HERE IS HALF THE JOB. *** The database keeps its own allow-list on
+   * `privileged_authorization_tokens.purpose`, and it has now been forgotten FOUR times
+   * (service_session, menu_availability, walkout_close, line_void). When it is missed, POST
+   * /api/terminal/authorize passes every application check — membership, permission, PIN,
+   * lockout — and then fails on the INSERT with a 23514: a correct PIN, told authorization
+   * failed, every time. See
+   * supabase/migrations/20260907090000_authorization_purpose_cash_up.sql.
+   */
+  cash_up: PERMISSIONS.REPORTS_CASH_UP,
 } as const satisfies Record<string, Permission>
 
 export type TerminalAuthorizationPurpose = keyof typeof TERMINAL_AUTHORIZATION_PURPOSES
