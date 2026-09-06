@@ -63,8 +63,28 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
     const supabase = createServerSupabaseClient()
     await validateTerminalRecord(supabase, terminal)
 
-    if (!terminal.permissions.includes('payments:process')) {
-      return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    /**
+     * orders:update -- THE PERMISSION THE DEVICE ACTUALLY HOLDS.
+     *
+     * This gated on `payments:process` until 2026-09-09, and no terminal could call it. Terminal
+     * tokens carry exactly `orders:read`, `orders:update`, `tables:read` (TERMINAL_JWT_PERMISSIONS
+     * in lib/terminals/terminal-jwt.ts), spread literally into every token by signTerminalJwt with
+     * no per-restaurant or per-role variation. `payments:process` is a USER-ROLE permission --
+     * owner, manager, cashier -- and a terminal JWT is a DEVICE identity, so the gate was not
+     * merely too tight, it was uncloseable.
+     *
+     * orders:update is what the WHOLE-ORDER card path uses (tabs/[tabId]/settle) and what the
+     * cash-by-item path uses (tabs/[tabId]/settle-allocations). Charging part of an order is a
+     * subset of charging all of it; gating the subset harder than the whole was the error.
+     *
+     * The invariant is now enforced: __tests__/terminal-route-permissions.test.ts fails if any
+     * terminal route requires a permission the token cannot carry.
+     */
+    if (!terminal.permissions.includes('orders:update')) {
+      return NextResponse.json(
+        { error: 'This terminal cannot take payments', code: 'MISSING_PERMISSION' },
+        { status: 403 },
+      )
     }
 
     const { tabId } = await params
