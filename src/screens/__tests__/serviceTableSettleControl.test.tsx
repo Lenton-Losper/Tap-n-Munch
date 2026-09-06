@@ -231,7 +231,15 @@ describe('the settle control on the waiter table view', () => {
       buttonWithText(tree.root, SETTLE_LABEL).props.onPress();
     });
 
-    expect(navigation.navigate).toHaveBeenCalledWith('TableDetail', {table});
+    /**
+     * `owner` TRAVELS WITH THE NAVIGATION, added 2026-09-05 for the gratuity picker: the money
+     * screen pre-selects the table's live assignment so the common case is confirm-not-choose.
+     *
+     * NULL HERE IS THE ASSERTION, not an accident of the fixture. This screen renders without an
+     * ownerUserId, and a table nobody owns must arrive as `null` so the picker opens UNSELECTED —
+     * it must never be back-filled from the tab's opener, who is a different person.
+     */
+    expect(navigation.navigate).toHaveBeenCalledWith('TableDetail', {table, owner: null});
   });
 
   /**
