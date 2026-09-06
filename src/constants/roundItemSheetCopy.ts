@@ -23,7 +23,8 @@
  * modelled them — a RoundLine is item, quantity, note and nothing else — and building that to
  * mirror a sheet would be the wrong order. Owner's ruling, 2026-09-06.
  *
- * SIGNED: pending.
+ * SIGNED BY THE OWNER 2026-09-06, with one change — see ITEM_SHEET_NOTE_HINT.
+ * Pinned in src/lib/__tests__/roundItemSheetCopySignedOff.test.ts.
  */
 
 /**
@@ -36,9 +37,14 @@ export const ITEM_SHEET_NOTE_PLACEHOLDER = 'e.g. medium rare, no onions';
 /**
  * Under the note field. THE POINT OF THE WHOLE CHANGE, said once where it is actionable: a note
  * belongs to what you are adding now, so two steaks cooked differently are two taps.
+ *
+ * CHANGED AT SIGNING, 2026-09-06. The draft read "…for everything you add here. For a different
+ * note, add it separately." The owner's objection, kept because it is the rule for this whole
+ * file: "here" was vague about what it referred to, and the second sentence was an instruction
+ * that never said what it achieved. The signed wording says WHAT HAPPENS and WHAT TO DO INSTEAD.
  */
 export const ITEM_SHEET_NOTE_HINT =
-  'This note goes to the kitchen for everything you add here. For a different note, add it separately.';
+  'This note goes to the kitchen for all of them. Add separately if they need different notes.';
 
 /** Above the stepper. */
 export const ITEM_SHEET_QUANTITY_LABEL = 'How many?';
