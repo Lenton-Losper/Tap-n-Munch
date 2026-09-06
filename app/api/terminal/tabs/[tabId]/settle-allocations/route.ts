@@ -43,6 +43,10 @@
  *   allocation ids", matching amend_order_lines()'s own "trusts its caller" convention.
  */
 import { NextResponse } from 'next/server'
+import {
+  allocationIdsHeldByLiveCard,
+  intentHoldsExactly,
+} from '@/lib/payments/payment-intents'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
@@ -94,6 +98,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       allocation_ids?: unknown
       allocated_to?: unknown
       method?: unknown
+      /** The intent settling its own allocations, exempt from its own hold. */
+      settling_intent_id?: unknown
       gateway_reference?: unknown
       staff_user_id?: unknown
       staffUserId?: unknown
@@ -220,6 +226,61 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       return NextResponse.json({ error: 'Could not read these allocations' }, { status: 500 })
     }
     const affectedOrderIds = [...new Set((allocationOrders ?? []).map((r) => String(r.order_id)))]
+
+    /**
+     * ============================================================================================
+     * THE ALLOCATION-SCOPED HOLD — a card live on THESE ITEMS, not on this order.
+     * ============================================================================================
+     *
+     * The order-scoped guard below reads orders.terminal_pushed_at, which is set by the WHOLE-ORDER
+     * push/poll flow. A split card payment never sets it: it mints an intent naming allocations and
+     * drives the reader directly. So that guard cannot see a split card at all, and without this
+     * one a second person could pay for items the first person's card is still settling.
+     *
+     * BOTH METHODS, unlike the guard below. Cash over a live card double-charges; so does a second
+     * CARD over a live card. The hold is a property of the items, not of how the second payment is
+     * being taken.
+     *
+     * `launched` AND `uncertain` hold — see allocationIdsHeldByLiveCard. An uncertain intent holds
+     * hardest: E04111 means no record, never not-paid, and the gateway may still answer yes.
+     *
+     * THE INTENT SETTLING ITS OWN ALLOCATIONS IS EXEMPT. When the split flow confirms a charge it
+     * calls this route with `settling_intent_id`, and an intent must not be blocked by its own
+     * hold. Anything else — including a different intent on the same items — is refused.
+     */
+    const settlingIntentId = String(body.settling_intent_id ?? '').trim() || null
+    let heldAllocationIds: string[] = []
+    try {
+      heldAllocationIds = await allocationIdsHeldByLiveCard(supabase, {
+        restaurantId: terminal.restaurantId,
+        allocationIds,
+      })
+    } catch (holdError) {
+      // FAILS CLOSED, for the same reason the in-flight read below does: not being able to read
+      // the hold is not permission to take the money a second time.
+      console.error('[terminal/tabs/settle-allocations] hold check failed', holdError)
+      return NextResponse.json(
+        { error: 'Could not confirm no card payment is in progress for these items', code: 'HOLD_CHECK_FAILED' },
+        { status: 503 },
+      )
+    }
+
+    if (heldAllocationIds.length > 0) {
+      const ownHold = settlingIntentId
+        ? await intentHoldsExactly(supabase, settlingIntentId, heldAllocationIds)
+        : false
+      if (!ownHold) {
+        return NextResponse.json(
+          {
+            error:
+              'A card payment is in progress for some of these items. Wait for it to finish, or cancel it on the terminal.',
+            code: 'ITEMS_HELD_BY_CARD',
+            allocation_ids: heldAllocationIds,
+          },
+          { status: 409 },
+        )
+      }
+    }
 
     const settleNow = new Date()
     if (isCashSettlement && affectedOrderIds.length > 0) {

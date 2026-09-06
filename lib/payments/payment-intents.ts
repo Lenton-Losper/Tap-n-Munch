@@ -212,6 +212,40 @@ export async function allocationIdsHeldByLiveCard(
   return [...held]
 }
 
+/**
+ * Does THIS intent account for every one of these held allocations?
+ *
+ * The exemption that lets an intent settle its own items. It is deliberately narrow: the answer is
+ * true only when the intent covers ALL of them, so an intent holding a1 cannot be used to settle a1
+ * AND a2 while a different intent holds a2. Anything less than complete containment is a refusal,
+ * because a partial exemption is how one payment settles another payment's items.
+ *
+ * A failed read is `false` — refuse — rather than a throw, because the caller has already decided
+ * to refuse by the time it asks; this only says whether to lift that refusal.
+ */
+export async function intentHoldsExactly(
+  supabase: Supabase,
+  intentId: string,
+  allocationIds: string[],
+): Promise<boolean> {
+  if (!intentId || allocationIds.length === 0) return false
+
+  const { data, error } = await supabase
+    .from('terminal_payment_intents')
+    .select('allocation_ids, status')
+    .eq('id', intentId)
+    .maybeSingle()
+
+  if (error || !data) return false
+
+  const row = data as { allocation_ids: string[] | null; status: string }
+  // A resolved intent holds nothing, so it cannot exempt anything either.
+  if (row.status !== 'launched' && row.status !== 'uncertain') return false
+
+  const mine = new Set((row.allocation_ids ?? []).map(String))
+  return allocationIds.every((id) => mine.has(String(id)))
+}
+
 /** Terminal states. Each stamps resolved_at; none of them is reachable from a timer. */
 export async function markIntentConfirmed(supabase: Supabase, intentId: string): Promise<void> {
   await setStatus(supabase, intentId, 'confirmed')

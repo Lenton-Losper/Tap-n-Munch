@@ -27,6 +27,7 @@ import {
   allocationIdsHeldByLiveCard,
   markIntentConfirmed,
   markIntentUncertain,
+  intentHoldsExactly,
 } from '@/lib/payments/payment-intents'
 import { resolveOrderIdsByMerchantOrderNo } from '@/lib/payments/resolve-order-by-merchant-order'
 
@@ -391,5 +392,45 @@ describe('the hold FAILS CLOSED', () => {
     await expect(
       allocationIdsHeldByLiveCard(db, { restaurantId: 'r1', allocationIds: ['a1'] }),
     ).rejects.toThrow(/allocationIdsHeldByLiveCard/)
+  })
+})
+
+describe('the exemption that lets an intent settle its own items', () => {
+  /**
+   * When the split flow confirms a charge it calls settle-allocations with `settling_intent_id`,
+   * and an intent must not be blocked by its own hold. The exemption is deliberately NARROW: a
+   * partial one is how a payment comes to settle a different payment's items.
+   */
+  const db = () =>
+    fakeSupabase({
+      terminal_payment_intents: [
+        { id: 'mine', status: 'launched', allocation_ids: ['a1', 'a2'] },
+        { id: 'other', status: 'launched', allocation_ids: ['a3'] },
+        { id: 'done', status: 'confirmed', allocation_ids: ['a4'] },
+      ],
+    })
+
+  it('exempts an intent from its own hold', async () => {
+    expect(await intentHoldsExactly(db(), 'mine', ['a1', 'a2'])).toBe(true)
+    expect(await intentHoldsExactly(db(), 'mine', ['a1'])).toBe(true)
+  })
+
+  it('refuses when the intent covers only SOME of the held items', async () => {
+    // a2 is mine, a3 is somebody else's. Settling both under my id would pay for their items.
+    expect(await intentHoldsExactly(db(), 'mine', ['a2', 'a3'])).toBe(false)
+  })
+
+  it('refuses for another intent entirely', async () => {
+    expect(await intentHoldsExactly(db(), 'other', ['a1'])).toBe(false)
+  })
+
+  it('a resolved intent exempts nothing, because it holds nothing', async () => {
+    expect(await intentHoldsExactly(db(), 'done', ['a4'])).toBe(false)
+  })
+
+  it('refuses on a missing intent or an empty ask', async () => {
+    expect(await intentHoldsExactly(db(), 'nope', ['a1'])).toBe(false)
+    expect(await intentHoldsExactly(db(), 'mine', [])).toBe(false)
+    expect(await intentHoldsExactly(db(), '', ['a1'])).toBe(false)
   })
 })
