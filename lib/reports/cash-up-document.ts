@@ -1,9 +1,20 @@
 import type { ReportData } from './get-report-data'
+import { cashUpReconciliation, cashUpRows } from './payment-method-split'
 import {
-  cashUpReconciliation,
-  cashUpRows,
-  NO_PAYMENTS_RECORDED,
-} from './payment-method-split'
+  CASH_UP_GRATUITIES_HEADING,
+  CASH_UP_GRATUITIES_NOTE,
+  CASH_UP_GROSS_TAKEN,
+  CASH_UP_HEADING,
+  CASH_UP_ITEMS_HEADING,
+  CASH_UP_LESS_REFUNDS,
+  CASH_UP_NET_REVENUE,
+  CASH_UP_NO_PAYMENTS,
+  CASH_UP_NOT_A_TAX_INVOICE,
+  CASH_UP_NOTHING_SOLD,
+  CASH_UP_ORDERS,
+  CASH_UP_PRINTED_BY,
+  CASH_UP_TAKINGS_HEADING,
+} from './cash-up-copy'
 import {
   centered,
   DEFAULT_CHARACTER_WIDTH,
@@ -88,7 +99,7 @@ export function buildCashUpRows(report: ReportData, options: CashUpDocumentOptio
   const recon = cashUpReconciliation(report)
   const out: Row[] = []
 
-  out.push({ kind: 'title', text: 'CASH-UP' })
+  out.push({ kind: 'title', text: CASH_UP_HEADING })
   out.push({ kind: 'meta', text: report.restaurant.name })
   out.push({ kind: 'meta', text: options.periodLabel })
   out.push({
@@ -100,10 +111,10 @@ export function buildCashUpRows(report: ReportData, options: CashUpDocumentOptio
   })
   out.push({ kind: 'divider' })
 
-  out.push({ kind: 'heading', text: 'TAKINGS' })
+  out.push({ kind: 'heading', text: CASH_UP_TAKINGS_HEADING })
   if (rows.length === 0) {
     // A quiet day is a real answer. An empty section reads as a broken print.
-    out.push({ kind: 'pair', left: NO_PAYMENTS_RECORDED, right: money(0) })
+    out.push({ kind: 'pair', left: CASH_UP_NO_PAYMENTS, right: money(0) })
   } else {
     for (const row of rows) {
       out.push({
@@ -113,14 +124,14 @@ export function buildCashUpRows(report: ReportData, options: CashUpDocumentOptio
       })
     }
   }
-  out.push({ kind: 'pair', left: 'Gross taken', right: money(recon.grossTaken), bold: true })
+  out.push({ kind: 'pair', left: CASH_UP_GROSS_TAKEN, right: money(recon.grossTaken), bold: true })
   if (recon.refunded > 0) {
     // Printed only when there were refunds. A "Less refunds N$0.00" line on an ordinary day is
     // noise on paper somebody has to read at the end of a shift.
-    out.push({ kind: 'pair', left: 'Less refunds', right: money(-recon.refunded) })
+    out.push({ kind: 'pair', left: CASH_UP_LESS_REFUNDS, right: money(-recon.refunded) })
   }
-  out.push({ kind: 'pair', left: 'Net revenue', right: money(recon.net), bold: true })
-  out.push({ kind: 'pair', left: 'Orders', right: String(recon.orders) })
+  out.push({ kind: 'pair', left: CASH_UP_NET_REVENUE, right: money(recon.net), bold: true })
+  out.push({ kind: 'pair', left: CASH_UP_ORDERS, right: String(recon.orders) })
 
   /**
    * GRATUITIES, SEPARATE FROM TAKINGS AND SEPARATE FROM REVENUE.
@@ -136,19 +147,19 @@ export function buildCashUpRows(report: ReportData, options: CashUpDocumentOptio
    */
   if (options.gratuityTotal != null) {
     out.push({ kind: 'divider' })
-    out.push({ kind: 'heading', text: 'GRATUITIES' })
+    out.push({ kind: 'heading', text: CASH_UP_GRATUITIES_HEADING })
     out.push({
       kind: 'pair',
       left: options.gratuityCount != null ? gratuityCountLabel(options.gratuityCount) : 'Total',
       right: money(options.gratuityTotal),
     })
-    out.push({ kind: 'meta', text: 'Not part of takings above.' })
+    out.push({ kind: 'meta', text: CASH_UP_GRATUITIES_NOTE })
   }
 
   out.push({ kind: 'divider' })
-  out.push({ kind: 'heading', text: 'ITEMS SOLD' })
+  out.push({ kind: 'heading', text: CASH_UP_ITEMS_HEADING })
   if (report.summary.itemsSold.length === 0) {
-    out.push({ kind: 'pair', left: 'Nothing sold', right: '' })
+    out.push({ kind: 'pair', left: CASH_UP_NOTHING_SOLD, right: '' })
   } else {
     for (const item of report.summary.itemsSold) {
       out.push({ kind: 'pair', left: `${item.quantity} x ${item.name}`, right: money(item.gross) })
@@ -157,9 +168,9 @@ export function buildCashUpRows(report: ReportData, options: CashUpDocumentOptio
 
   out.push({ kind: 'divider' })
   // WHO printed it, not which device. The PIN exists to put a name on this.
-  out.push({ kind: 'meta', text: `Printed by ${options.printedByName}` })
+  out.push({ kind: 'meta', text: CASH_UP_PRINTED_BY.replace('{name}', options.printedByName) })
   out.push({ kind: 'meta', text: options.printedAt })
-  out.push({ kind: 'meta', text: 'Not a tax invoice.' })
+  out.push({ kind: 'meta', text: CASH_UP_NOT_A_TAX_INVOICE })
 
   return out
 }
