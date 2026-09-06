@@ -14,7 +14,6 @@ export const PERMISSIONS = {
   // Orders
   ORDERS_READ:    'orders:read',
   ORDERS_UPDATE:  'orders:update',
-  ORDERS_DELETE:  'orders:delete',
   ORDERS_STATION_KITCHEN: 'orders:station:kitchen',
   ORDERS_STATION_BAR: 'orders:station:bar',
 

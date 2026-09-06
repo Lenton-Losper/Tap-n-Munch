@@ -37,7 +37,7 @@ const MANAGER_A_EMAIL = 'manual-qa-manager-downtown@flashtap-test.invalid'
 const MANAGER_B_EMAIL = 'manual-qa-manager-uptown@flashtap-test.invalid'
 
 const OWNER_PERMISSIONS = [
-  'orders:read', 'orders:update', 'orders:delete', 'menu:read', 'menu:write', 'tables:read',
+  'orders:read', 'orders:update', 'menu:read', 'menu:write', 'tables:read',
   'tables:manage', 'payments:process', 'payments:view', 'payments:configure', 'staff:manage',
   'settings:read', 'settings:write', 'stock:view', 'stock:receive', 'stock:adjust',
   'stock:view_costs', 'stock:delete_grv', 'stock:transfer_create', 'stock:transfer_dispatch',

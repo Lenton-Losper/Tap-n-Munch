@@ -1,0 +1,52 @@
+-- @env: both
+--
+-- Retire `orders:delete` — remove it from every role row that carries it.
+--
+-- ============================================================================================
+-- IT WAS NEVER A GATE. IT WAS A LABEL.
+-- ============================================================================================
+--
+-- `orders:delete` was defined in lib/permissions/index.ts, granted to the owner role at seed time
+-- (20260704161000_auth_v2_restaurant_roles_seed.sql), and carried by 15 role rows on production.
+--
+-- IT WAS NEVER CHECKED ANYWHERE. Measured 2026-09-05: the only occurrence in app/ or lib/ was the
+-- constant's own definition. No `requirePermission`, no `authorize()`, no route. A permission that
+-- nothing enforces does not restrict anything — it only tells whoever reads the staff page that
+-- deleting orders is a controlled action, which was not true.
+--
+-- The real control is `orders:void`, which IS enforced: at the amend route, through the
+-- `line_void` authorization purpose, manager and owner only, with a PIN and a recorded reason.
+--
+-- ============================================================================================
+-- WHY THIS IS SAFE TO APPLY IN EITHER ORDER
+-- ============================================================================================
+--
+-- A REVOKE normally has to ship AFTER the code that stops relying on the grant, or the old code
+-- keeps running against something that has been taken away (see
+-- 20260825020000_tabs_revoke_anon_select.sql, where applying first would have evicted live
+-- customers). THAT HAZARD DOES NOT EXIST HERE, and the reason is precisely why this permission is
+-- being retired: NOTHING READS IT. There is no code path whose behaviour changes when it goes, so
+-- apply-before-deploy and deploy-before-apply are equivalent.
+--
+-- Stated rather than assumed, because "it's only a revoke" is exactly the reasoning that would be
+-- wrong for almost any other permission.
+--
+-- ============================================================================================
+-- SHAPE
+-- ============================================================================================
+--
+-- IDEMPOTENT: the WHERE clause skips rows that do not carry it, so re-running changes nothing.
+--
+-- IT TOUCHES NOTHING ELSE: array_remove takes out one element and leaves every other permission
+-- in place, so a venue that has customised its roles on the staff page keeps every customisation.
+--
+-- REVERSIBLE: the inverse is an array_append of the same value. Nothing is destroyed beyond the
+-- grant itself, and the seed migration that first added it is left untouched — it is a record of
+-- what happened in July, not a thing to rewrite now.
+--
+-- NO SCHEMA CHANGE HERE. This is a data write to live rows and nothing else, which is the only
+-- shape it is allowed to have (ruled 2026-09-02).
+
+UPDATE public.restaurant_roles
+SET permissions = array_remove(permissions, 'orders:delete')
+WHERE permissions @> ARRAY['orders:delete']::text[];

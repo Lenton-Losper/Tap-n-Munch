@@ -4,7 +4,6 @@
     "orders:read",
     "orders:update",
     "orders:void",
-    "orders:delete",
     "menu:read",
     "menu:write",
     "tables:read",

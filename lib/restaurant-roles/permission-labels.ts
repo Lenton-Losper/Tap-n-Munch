@@ -24,10 +24,6 @@ const LABELS: Record<Permission, { label: string; description: string }> = {
     label: 'Void Items',
     description: 'Approve taking items off a bill. Needs a PIN at the terminal.',
   },
-  [PERMISSIONS.ORDERS_DELETE]: {
-    label: 'Delete Orders',
-    description: 'Remove or void orders permanently.',
-  },
   [PERMISSIONS.ORDERS_STATION_KITCHEN]: {
     label: 'Kitchen station scope',
     description: 'On the dashboard, only see orders routed to the kitchen.',
@@ -154,7 +150,6 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       PERMISSIONS.ORDERS_READ,
       PERMISSIONS.ORDERS_UPDATE,
       PERMISSIONS.ORDERS_VOID,
-      PERMISSIONS.ORDERS_DELETE,
       PERMISSIONS.ORDERS_STATION_KITCHEN,
       PERMISSIONS.ORDERS_STATION_BAR,
     ].map((key) => ({ key, ...LABELS[key] })),
