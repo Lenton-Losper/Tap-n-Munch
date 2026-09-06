@@ -1,5 +1,6 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+import { findIntentByMerchantOrderNo, type PaymentIntent } from '@/lib/payments/payment-intents'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -50,12 +51,55 @@ const ORDER_REFERENCE_COLUMNS = ['paycloud_merchant_order_no', 'payment_referenc
  *
  * The `payment_events` leg below was always `.eq()` and was never affected.
  */
+export type ResolvedReference = {
+  orderIds: string[]
+  source: 'intent' | 'orders' | 'payment_events' | null
+  /**
+   * WHAT THIS MONEY PAYS FOR, when the reference is an intent.
+   *
+   * Absent for every reference minted before intents existed, which is every reference on
+   * production today. A caller that ignores this field behaves exactly as it did before — see the
+   * note on the intent leg below.
+   */
+  intent?: PaymentIntent | null
+}
+
 export async function resolveOrderIdsByMerchantOrderNo(
   supabase: Supabase,
   merchantOrderNo: string,
-): Promise<{ orderIds: string[]; source: 'orders' | 'payment_events' | null }> {
+): Promise<ResolvedReference> {
   const mo = merchantOrderNo.trim()
   if (!mo) return { orderIds: [], source: null }
+
+  /**
+   * ============================================================================================
+   * LEG 0 — THE INTENT. Checked FIRST, and it is the only leg that can say "allocations".
+   * ============================================================================================
+   *
+   * A split card payment mints its own reference (terminal_payment_intents) rather than reusing
+   * the order's, because `orders.paycloud_merchant_order_no` is one value per ORDER and a second
+   * charge against the same order would be indistinguishable from the first.
+   *
+   * WHY IT MUST BE FIRST, AND WHY THAT CHANGES NOTHING FOR EXISTING REFERENCES. An intent's
+   * merchant_order_no is freshly minted and unique, so it can never be a value the two legs below
+   * would also match. Every reference that resolves today therefore misses this leg entirely and
+   * reaches exactly the code it reaches now, with exactly the same result. Nothing is backfilled
+   * into that table — the six production orders carrying an old merchant_order_no (Digi Cofee #18
+   * pending, #19/#28/#29/#39 cancelled, #40 paid) still resolve through `orders` below.
+   *
+   * THE CALLER MUST FORK ON `scope`. An allocations intent returns the orders its allocations sit
+   * on, so a caller that only reads `orderIds` still sees something sane — but marking those
+   * orders paid would close orders three quarters of which nobody has paid for. The webhook forks;
+   * see app/api/webhooks/paycloud/route.ts.
+   */
+  const intent = await findIntentByMerchantOrderNo(supabase, mo)
+  if (intent) {
+    if (intent.scope === 'orders') {
+      return { orderIds: intent.orderIds, source: 'intent', intent }
+    }
+    const orderIds = await orderIdsForAllocations(supabase, intent)
+    return { orderIds, source: 'intent', intent }
+  }
 
   // Union in JS rather than in one parsed filter. Both columns are queried on every call, so the
   // result set does not depend on which one happens to be checked first.
@@ -110,4 +154,47 @@ export async function resolveOrderIdsByMerchantOrderNo(
 
   if (ids.size === 0) return { orderIds: [], source: null }
   return { orderIds: [...ids], source: 'payment_events' }
+}
+
+/**
+ * The orders an allocations intent touches, so a caller has somewhere to look even though it must
+ * settle the ALLOCATIONS rather than the orders.
+ *
+ * Read through the allocations themselves rather than stored on the intent: an allocation's order
+ * is a property of the allocation, and duplicating it would create a second place for it to be
+ * wrong.
+ */
+async function orderIdsForAllocations(
+  supabase: Supabase,
+  intent: PaymentIntent,
+): Promise<string[]> {
+  if (intent.allocationIds.length === 0) return []
+
+  /**
+   * PostgREST types an embedded row as an ARRAY even on a to-one relationship, and returns it as
+   * an object at runtime. Both shapes are handled rather than asserted away — getGratuityReport
+   * carries the same note for the same reason.
+   */
+  type AllocationRow = {
+    order_line_id: string
+    order_lines: { order_id: string } | Array<{ order_id: string }> | null
+  }
+
+  const rows = await fetchAllRows<AllocationRow>(
+    supabase
+      .from('order_line_allocations')
+      .select('order_line_id, order_lines!inner(order_id)')
+      .in('id', intent.allocationIds) as never,
+    { label: 'resolveOrderIdsByMerchantOrderNo allocations' },
+  )
+
+  const ids = new Set<string>()
+  for (const row of rows ?? []) {
+    const embedded = row.order_lines
+    const orderId = Array.isArray(embedded)
+      ? String(embedded[0]?.order_id ?? '').trim()
+      : String(embedded?.order_id ?? '').trim()
+    if (orderId) ids.add(orderId)
+  }
+  return [...ids]
 }

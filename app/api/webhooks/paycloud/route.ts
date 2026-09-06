@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server'
 import { enforceWebhookRateLimit, verifyWebhook } from '@/payments/webhook'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { resolveOrderIdsByMerchantOrderNo } from '@/lib/payments/resolve-order-by-merchant-order'
+import {
+  resolveOrderIdsByMerchantOrderNo,
+  type ResolvedReference,
+} from '@/lib/payments/resolve-order-by-merchant-order'
 import { confirmWebhookOrderViaFinaticFallback } from '@/lib/payments/webhook-sig-fallback'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import {
@@ -344,7 +347,7 @@ export async function POST(req: Request) {
 
     const supabase = createServerSupabaseClient()
 
-    let resolved: { orderIds: string[]; source: 'orders' | 'payment_events' | null }
+    let resolved: ResolvedReference
     try {
       resolved = await resolveOrderIdsByMerchantOrderNo(supabase, merchantOrderNo)
     } catch (e) {
@@ -451,7 +454,7 @@ export async function POST(req: Request) {
   const stagingStub = payload.__stagingFinaticStub
   const supabase = createServerSupabaseClient()
 
-  let resolved: { orderIds: string[]; source: 'orders' | 'payment_events' | null }
+  let resolved: ResolvedReference
   try {
     resolved = await resolveOrderIdsByMerchantOrderNo(supabase, merchantOrderNo)
   } catch (e) {

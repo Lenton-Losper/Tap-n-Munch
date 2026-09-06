@@ -77,16 +77,31 @@ type FakeClient = {
   client: Parameters<typeof resolveOrderIdsByMerchantOrderNo>[0]
   orCallsOnOrders: string[]
   eqCallsOnOrders: Array<[string, unknown]>
+  /** The same two, for the intents leg added 2026-09-06. It reads the same unauthenticated value. */
+  orCallsOnIntents: string[]
+  eqCallsOnIntents: Array<[string, unknown]>
 }
 
-function makeFakeSupabase(options?: { ordersError?: string; eventsError?: string }): FakeClient {
+function makeFakeSupabase(options?: {
+  ordersError?: string
+  eventsError?: string
+  intentsError?: string
+}): FakeClient {
   const orCallsOnOrders: string[] = []
   const eqCallsOnOrders: Array<[string, unknown]> = []
+  const orCallsOnIntents: string[] = []
+  const eqCallsOnIntents: Array<[string, unknown]> = []
 
-  const builder = (table: 'orders' | 'payment_events') => {
+  const builder = (table: 'orders' | 'payment_events' | 'terminal_payment_intents') => {
     const predicates: Predicate[] = []
     let limit = Infinity
-    const rows = () => (table === 'orders' ? ORDERS : EVENTS) as unknown as Array<Record<string, unknown>>
+    // terminal_payment_intents is EMPTY here on purpose. Every reference these tests use is an
+    // old-style one, so the intent leg must miss and fall through — which is exactly the
+    // whole-order guarantee this suite now also covers.
+    const rows = () =>
+      (table === 'orders' ? ORDERS : table === 'payment_events' ? EVENTS : []) as unknown as Array<
+        Record<string, unknown>
+      >
 
     const self = {
       select: () => self,
@@ -96,11 +111,13 @@ function makeFakeSupabase(options?: { ordersError?: string; eventsError?: string
       },
       eq(column: string, value: unknown) {
         if (table === 'orders') eqCallsOnOrders.push([column, value])
+        if (table === 'terminal_payment_intents') eqCallsOnIntents.push([column, value])
         predicates.push((row) => row[column] === value)
         return self
       },
       or(expression: string) {
         if (table === 'orders') orCallsOnOrders.push(expression)
+        if (table === 'terminal_payment_intents') orCallsOnIntents.push(expression)
         const terms = expression.split(',').map(termPredicate)
         predicates.push((row) => terms.some((p) => p(row)))
         return self
@@ -123,6 +140,24 @@ function makeFakeSupabase(options?: { ordersError?: string; eventsError?: string
           .slice(0, limit)
         return Promise.resolve({ data: matched.slice(from, to + 1), error: null })
       },
+      /**
+       * Added 2026-09-06 with the payment-intents leg, which reads a single row. Without it every
+       * test here died on "maybeSingle is not a function" BEFORE reaching an assertion — the same
+       * way the whole suite went dark for three weeks when .range() was missing. A suite that
+       * cannot run is not protecting anything.
+       *
+       * It records its filter on the intents table too, so the new leg is held to the same
+       * parser-free rule as the two below: this value is unauthenticated on the path that reaches
+       * it.
+       */
+      maybeSingle() {
+        if (table === 'terminal_payment_intents') {
+          const err = options?.intentsError
+          if (err) return Promise.resolve({ data: null, error: { message: err } })
+        }
+        const matched = rows().filter((row) => predicates.every((p) => p(row)))
+        return Promise.resolve({ data: matched[0] ?? null, error: null })
+      },
       then(resolve: (r: { data: unknown; error: { message: string } | null }) => void) {
         const err = table === 'orders' ? options?.ordersError : options?.eventsError
         if (err) return resolve({ data: null, error: { message: err } })
@@ -136,11 +171,14 @@ function makeFakeSupabase(options?: { ordersError?: string; eventsError?: string
   }
 
   return {
-    client: { from: (table: string) => builder(table as 'orders' | 'payment_events') } as unknown as Parameters<
-      typeof resolveOrderIdsByMerchantOrderNo
-    >[0],
+    client: {
+      from: (table: string) =>
+        builder(table as 'orders' | 'payment_events' | 'terminal_payment_intents'),
+    } as unknown as Parameters<typeof resolveOrderIdsByMerchantOrderNo>[0],
     orCallsOnOrders,
     eqCallsOnOrders,
+    orCallsOnIntents,
+    eqCallsOnIntents,
   }
 }
 
@@ -245,6 +283,48 @@ describe('resolveOrderIdsByMerchantOrderNo — behaviour that must not change', 
     const fake = makeFakeSupabase({ eventsError: 'statement timeout' })
     await expect(resolveOrderIdsByMerchantOrderNo(fake.client, 'NO-SUCH-REF')).rejects.toThrow(
       'resolveOrderIdsByMerchantOrderNo payment_events: statement timeout',
+    )
+  })
+})
+
+describe('the intents leg is held to the same parser-free rule', () => {
+  /**
+   * Added 2026-09-06 with terminal_payment_intents. This leg reads the SAME merchant_order_no from
+   * the SAME unauthenticated webhook body on the SAME path where signature verification failed —
+   * so it carries the same exposure #242 closed, and needs the same cover.
+   */
+  const INJECTED = 'NONEXISTENT-REF-ZZZZZZ,id.not.is.null'
+
+  it('never issues a parsed .or() against the intents table', async () => {
+    const fake = makeFakeSupabase()
+    await resolveOrderIdsByMerchantOrderNo(fake.client, INJECTED)
+    expect(fake.orCallsOnIntents).toEqual([])
+  })
+
+  it('filters the intents table with one opaque .eq() on the reference column', async () => {
+    const fake = makeFakeSupabase()
+    await resolveOrderIdsByMerchantOrderNo(fake.client, INJECTED)
+    // One filter, one column, and the whole injected string as its VALUE — nowhere for a second
+    // column name to appear.
+    expect(fake.eqCallsOnIntents).toEqual([['merchant_order_no', INJECTED]])
+  })
+
+  it('an injected reference still resolves to nothing', async () => {
+    const fake = makeFakeSupabase()
+    const resolved = await resolveOrderIdsByMerchantOrderNo(fake.client, INJECTED)
+    expect(resolved.orderIds).toEqual([])
+    expect(resolved.intent ?? null).toBeNull()
+  })
+
+  it('a failed intents read THROWS rather than falling through to the order legs', async () => {
+    /**
+     * Falling through would answer from `orders` for a reference whose intent could not be read —
+     * and for a split payment that means marking whole orders paid. Unreadable is not the same as
+     * absent.
+     */
+    const fake = makeFakeSupabase({ intentsError: 'connection reset' })
+    await expect(resolveOrderIdsByMerchantOrderNo(fake.client, 'FT17847971551076190')).rejects.toThrow(
+      /findIntentByMerchantOrderNo/,
     )
   })
 })
