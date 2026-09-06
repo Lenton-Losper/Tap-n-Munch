@@ -69,14 +69,33 @@ const RETIRED = new Set(['TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER'])
 /** Must NOT be in any bundle. If this is "found", the search is broken, not the build. */
 const NEGATIVE_CONTROL = 'zzz-this-string-is-in-no-bundle-anywhere-9f2a'
 
+/**
+ * THE SOURCE FORM IS NOT THE RUNTIME FORM, and the search must use the runtime form.
+ *
+ * A signed string containing an apostrophe is written either double-quoted ("This table's
+ * bill") or single-quoted with an escape. Both produce the SAME runtime string, and it is the
+ * runtime string that ends up in the bundle -- so a non-greedy match to the next quote would
+ * stop dead at an escape, hand back a truncated fragment, and then report the string as MISSING
+ * because the fragment was not found.
+ *
+ * That is the same class of false negative as the Hermes UTF-16 one this whole script exists
+ * for: an instrument reporting absence because it looked for the wrong bytes.
+ */
+function unescapeJs(text) {
+  return text.replace(/\\([\'\"\\nrt])/g, (_, c) =>
+    c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c,
+  )
+}
+
 function extractStringLiterals(file) {
   const src = readFileSync(file, 'utf8')
   const out = []
-  // export const NAME = 'text';  or  export const NAME =\n  'text';
-  const re = /export const ([A-Z0-9_]+)\s*=\s*(?:\r?\n\s*)?(['"])([\s\S]*?)\2\s*;/g
+  // Either quote style, escapes honoured so the delimiter search cannot end early.
+  const re =
+    /export const ([A-Z0-9_]+)\s*=\s*(?:\r?\n\s*)?(['"])((?:\\.|(?!\2)[\s\S])*)\2\s*;/g
   let m
   while ((m = re.exec(src))) {
-    out.push({ name: m[1], text: m[3], file })
+    out.push({ name: m[1], text: unescapeJs(m[3]), file })
   }
   return out
 }

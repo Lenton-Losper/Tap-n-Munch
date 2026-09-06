@@ -46,6 +46,7 @@ import {
   recordSplitPayment,
 } from '../lib/api';
 import {
+  type SplitCardPhase,
   mustNotOfferPaymentAgain,
   outcomeForDeviceResult,
   splitCardFailureMessage,
@@ -1189,6 +1190,18 @@ export default function TableDetailScreen({route, navigation}: Props) {
       if (settleInFlight.current) return;
       settleInFlight.current = true;
       setSettling(true);
+
+      /**
+       * WHICH HALF WE ARE IN, and it decides what a waiter is told if anything throws.
+       *
+       * It flips to 'record' at the moment the reader is launched and never flips back. Everything
+       * before that point charged nothing, so a failure there can safely offer cash; everything
+       * after it may have charged the customer, so a failure there must forbid cash AND forbid
+       * charging again -- including the case no server code can describe, where the request never
+       * reaches us at all.
+       */
+      let phase: SplitCardPhase = 'prepare';
+      let heldOnFailure: string[] = [];
       try {
         const token = await getTerminalToken();
         if (!token) {
@@ -1231,9 +1244,14 @@ export default function TableDetailScreen({route, navigation}: Props) {
           Alert.alert('Take Payment', SPLIT_CARD_ITEMS_GONE);
           return;
         }
+        // Captured for the catch below: once the reader has run, these are the items whose fate is
+        // unknown, and they must stop being selectable whatever went wrong.
+        heldOnFailure = allocationIds;
 
         const intent = await prepareSplitPayment(tabId, allocationIds, token);
 
+        // From here on the customer may have been charged. See `phase` above.
+        phase = 'record';
         const result = await processPaymentIntent(
           intent.amountCents / 100,
           // The reference the server minted. NOT an order id: this charge belongs to items.
@@ -1269,12 +1287,32 @@ export default function TableDetailScreen({route, navigation}: Props) {
         setSelectedLineIds(new Set());
         await refreshTable();
       } catch (err) {
+        /**
+         * NO `?? err.message`. THAT FALLBACK IS THE DEFECT, NOT THE SAFETY NET.
+         *
+         * It is how a waiter at Digi Cofee read "Missing permission" -- a string written for a
+         * server log -- off a card machine with a customer waiting. splitCardFailureMessage now
+         * always returns signed copy, falling back BY PHASE when it does not recognise a code, so
+         * there is no path out of here that shows anybody a server author's words.
+         */
         const code = err instanceof ApiRequestError ? err.code ?? null : null;
-        Alert.alert(
-          'Take Payment',
-          splitCardFailureMessage(code) ??
-            (err instanceof Error ? err.message : 'The payment could not be taken.'),
-        );
+        const message = splitCardFailureMessage(code, phase);
+
+        /**
+         * A RECORD-SIDE FAILURE HOLDS THE ITEMS ON THIS SCREEN TOO.
+         *
+         * The server may never have heard the outcome, so nothing there is holding them. The
+         * message tells the waiter not to take cash; making the rows unselectable is what stops
+         * them reaching for it anyway while they read it.
+         */
+        if (phase === 'record') {
+          setHeldAllocationIds((prev: string[]) => [
+            ...new Set([...prev, ...heldOnFailure]),
+          ]);
+          Alert.alert(SPLIT_CARD_PENDING_TITLE, message);
+        } else {
+          Alert.alert('Take Payment', message);
+        }
       } finally {
         setSettling(false);
         settleInFlight.current = false;

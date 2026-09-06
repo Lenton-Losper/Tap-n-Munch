@@ -85,18 +85,63 @@ describe('what the waiter is told', () => {
   });
 
   it('every server refusal maps to a signed string', () => {
-    expect(splitCardFailureMessage('ITEMS_HELD_BY_CARD')).toBe(Copy.SPLIT_CARD_ITEMS_HELD);
-    expect(splitCardFailureMessage('ALLOCATION_NOT_PAYABLE')).toBe(Copy.SPLIT_CARD_ITEMS_GONE);
-    expect(splitCardFailureMessage('ALLOCATION_NOT_ON_TAB')).toBe(Copy.SPLIT_CARD_ITEMS_GONE);
-    expect(splitCardFailureMessage('NO_FINATIC_CREDENTIALS')).toBe(Copy.SPLIT_CARD_NOT_SET_UP);
-    expect(splitCardFailureMessage('SETTLEMENT_FAILED_AFTER_CHARGE')).toBe(
-      Copy.SPLIT_CARD_CHARGED_NOT_RECORDED,
-    );
+    const cases: Array<[string, string]> = [
+      ['ITEMS_HELD_BY_CARD', Copy.SPLIT_CARD_ITEMS_HELD],
+      ['ALLOCATION_NOT_PAYABLE', Copy.SPLIT_CARD_ITEMS_GONE],
+      ['ALLOCATION_NOT_ON_TAB', Copy.SPLIT_CARD_ITEMS_GONE],
+      ['NO_FINATIC_CREDENTIALS', Copy.SPLIT_CARD_NOT_SET_UP],
+      ['SETTLEMENT_FAILED_AFTER_CHARGE', Copy.SPLIT_CARD_CHARGED_NOT_RECORDED],
+      ['MISSING_PERMISSION', Copy.SPLIT_CARD_TERMINAL_NOT_ALLOWED],
+      ['STATION_SCREENS_DISABLED', Copy.SPLIT_CARD_BY_ITEM_NOT_ENABLED],
+      ['BAD_TAB_ID', Copy.SPLIT_CARD_TABLE_OUT_OF_DATE],
+      ['INVALID_ALLOCATION_ID', Copy.SPLIT_CARD_TABLE_OUT_OF_DATE],
+      ['ITEMS_READ_FAILED', Copy.SPLIT_CARD_TABLE_OUT_OF_DATE],
+      ['NO_ALLOCATIONS', Copy.SPLIT_CARD_NOTHING_TO_CHARGE],
+      ['NOT_CHARGEABLE', Copy.SPLIT_CARD_NOTHING_TO_CHARGE],
+      ['HOLD_CHECK_FAILED', Copy.SPLIT_CARD_HOLD_UNKNOWN],
+      ['PREPARE_FAILED', Copy.SPLIT_CARD_NOT_STARTED],
+      ['RECORD_BAD_TAB_ID', Copy.SPLIT_CARD_OUTCOME_NOT_RECORDED],
+      ['NO_REFERENCE', Copy.SPLIT_CARD_OUTCOME_NOT_RECORDED],
+      ['INTENT_LOOKUP_FAILED', Copy.SPLIT_CARD_OUTCOME_NOT_RECORDED],
+      ['NO_INTENT', Copy.SPLIT_CARD_OUTCOME_NOT_RECORDED],
+      ['WRONG_SCOPE', Copy.SPLIT_CARD_OUTCOME_NOT_RECORDED],
+      ['RECORD_FAILED', Copy.SPLIT_CARD_OUTCOME_NOT_RECORDED],
+    ];
+    for (const [code, expected] of cases) {
+      // The phase is irrelevant for a code that maps -- asserted with the WRONG one deliberately,
+      // so a mapping quietly falling through to the phase fallback shows up here.
+      expect({code, msg: splitCardFailureMessage(code, 'prepare')}).toEqual({code, msg: expected});
+      expect({code, msg: splitCardFailureMessage(code, 'record')}).toEqual({code, msg: expected});
+    }
   });
 
-  it('hands an unknown code back rather than inventing wording', () => {
-    expect(splitCardFailureMessage('SOMETHING_NEW')).toBeNull();
-    expect(splitCardFailureMessage(null)).toBeNull();
+  it('NEVER returns raw server text -- an unknown code falls back BY PHASE', () => {
+    /**
+     * The defect this replaced: the screen ended its lookup with `?? err.message`, so a waiter at
+     * Digi Cofee read "Missing permission" -- a string written for a server log -- off a card
+     * machine. There must be no path out of here that is not signed copy.
+     *
+     * The phase is enough to be honest. Before the reader runs, nothing has been charged. After it
+     * runs, something may have been.
+     */
+    expect(splitCardFailureMessage('SOMETHING_NEW', 'prepare')).toBe(Copy.SPLIT_CARD_NOT_STARTED);
+    expect(splitCardFailureMessage(null, 'prepare')).toBe(Copy.SPLIT_CARD_NOT_STARTED);
+    expect(splitCardFailureMessage('SOMETHING_NEW', 'record')).toBe(
+      Copy.SPLIT_CARD_OUTCOME_NOT_RECORDED,
+    );
+    expect(splitCardFailureMessage(null, 'record')).toBe(Copy.SPLIT_CARD_OUTCOME_NOT_RECORDED);
+  });
+
+  it('a record-phase unknown NEVER offers cash, and a prepare-phase one does', () => {
+    /**
+     * The load-bearing contrast in the whole set, asserted on the fallbacks specifically -- those
+     * are the ones reached when nobody planned for the failure, which is exactly when a waiter is
+     * most likely to improvise.
+     */
+    expect(splitCardFailureMessage(null, 'record')).toMatch(/do not take cash/i);
+    expect(splitCardFailureMessage(null, 'record')).toMatch(/do not charge again/i);
+    expect(splitCardFailureMessage(null, 'prepare')).toMatch(/take cash/i);
+    expect(splitCardFailureMessage(null, 'prepare')).not.toMatch(/do not take cash/i);
   });
 
   it('the held message is never shown for a decline, and vice versa', () => {
