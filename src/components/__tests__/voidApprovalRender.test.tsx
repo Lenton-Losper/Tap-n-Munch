@@ -226,7 +226,7 @@ describe('when the PIN is refused', () => {
   it('does not amend, and clears the PIN', async () => {
     const {ApiRequestError} = jest.requireActual('../../lib/api');
     mockAuthorize.mockRejectedValue(
-      new ApiRequestError('rejected', 403, 'AUTHORIZATION_INVALID'),
+      new ApiRequestError('rejected', 403, {code: 'AUTHORIZATION_INVALID'}),
     );
 
     const tree = await mount();
@@ -238,6 +238,16 @@ describe('when the PIN is refused', () => {
 
     // NOTHING came off the bill.
     expect(mockAmend).not.toHaveBeenCalled();
+    /**
+     * The REFUSAL IS PUT INTO THE RIGHT WORDS, which this suite did not check until 2026-09-07.
+     * It constructed ApiRequestError with the code as a positional third argument — the real
+     * signature takes an options object — so `err.code` was undefined and the screen fell through
+     * to its generic fallback. Every assertion here still passed, because none of them looked at
+     * the message. A refused PIN and an unexplained failure are different things to say to a
+     * waiter at a table.
+     */
+    expect(byId(tree, 'amend-confirm')).toBeDefined();
+    expect(tree.root.findAllByProps({testID: 'void-pin'})[0].props.value).toBe('');
     // The code is not left sitting in a field on a terminal at a table.
     expect(byId(tree, 'void-pin').props.value).toBe('');
     // ...and the reason survives, so the manager retypes a PIN and not the sentence.

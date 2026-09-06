@@ -843,7 +843,13 @@ export async function settleTab(
 export async function authorizeTerminalAction(
   userId: string,
   pin: string,
-  purpose: 'cash_settlement' | 'refund' | 'walkout_close' | 'menu_availability' | 'line_void',
+  purpose:
+    | 'cash_settlement'
+    | 'refund'
+    | 'walkout_close'
+    | 'menu_availability'
+    | 'line_void'
+    | 'cash_up',
   token: string,
 ): Promise<{token_id: string; expires_at: string}> {
   const response = await terminalFetch(
@@ -2626,6 +2632,85 @@ export async function amendTabLines(
     applied: Array.isArray(data.applied) ? data.applied : [],
     refused: Array.isArray(data.refused) ? data.refused : [],
   };
+}
+
+/**
+ * POST /api/terminal/reports/cash-up -- the end-of-day cash-up, rendered for this terminal.
+ *
+ * Contract read off app/api/terminal/reports/cash-up/route.ts, not inferred.
+ *
+ * THE SERVER RENDERS THE DOCUMENT. This returns both printer formats already composed --
+ * `escposBase64` for a paired Bluetooth printer and `sdk6Lines` for the P5 built-in, which has no
+ * raw-byte write. Same division as receipts: the device pushes bytes, it does not lay out paper.
+ *
+ * IT NEEDS A PIN, and unlike every other purpose that PIN guards a READ. The document is the day's
+ * takings and the terminal sits on a counter all evening. A build that omits the token is refused
+ * with CASH_UP_NEEDS_AUTHORIZATION rather than served.
+ *
+ * PRESETS ONLY. The server keeps its own allow-list of three and refuses anything else with
+ * INVALID_PRESET, so widening this type alone would not widen the feature.
+ *
+ * 401 ONLY evicts. Every refusal here is 400 or 403 -- INVALID_PRESET,
+ * CASH_UP_NEEDS_AUTHORIZATION, AUTHORIZATION_INVALID -- so a mistyped PIN cannot sign the terminal
+ * out in the middle of closing up.
+ */
+export type CashUpPreset = 'today' | 'yesterday' | 'thisWeek';
+
+export interface CashUpReport {
+  period: {preset: string; label: string; startDate: string; endDate: string; timezone: string};
+  summary: {
+    paymentMethodSplit: Array<{method: string; orders: number; gross: number}>;
+    totalRevenue: number;
+    totalOrders: number;
+    refundedTotal: number;
+    itemsSold: Array<{name: string; quantity: number; gross: number}>;
+    /** null when the venue does not report tips yet. NEVER read as zero. */
+    gratuityTotal: number | null;
+    gratuityCount: number | null;
+  };
+  escposBase64: string;
+  sdk6Lines: Sdk6ReceiptLine[];
+}
+
+export async function getCashUpReport(
+  params: {
+    preset: CashUpPreset;
+    staffUserId: string;
+    authorizationTokenId: string;
+    characterWidth?: number | null;
+  },
+  token: string,
+): Promise<CashUpReport> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/reports/cash-up`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        preset: params.preset,
+        staff_user_id: params.staffUserId,
+        authorization_token_id: params.authorizationTokenId,
+        ...(params.characterWidth ? {character_width: params.characterWidth} : {}),
+      }),
+    },
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as Partial<CashUpReport>;
+
+  if (typeof data.escposBase64 !== 'string' || !Array.isArray(data.sdk6Lines)) {
+    // Both formats or neither: a terminal cannot know which printer it will use until it reads its
+    // own config, and half a response would fail at the printer rather than here.
+    throw new Error('Cash-up response is missing a printable format');
+  }
+
+  return data as CashUpReport;
 }
 
 export async function getTabLines(
