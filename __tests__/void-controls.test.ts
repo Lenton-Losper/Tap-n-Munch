@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PERMISSIONS } from '@/lib/permissions'
 import { TERMINAL_AUTHORIZATION_PURPOSES, resolveTerminalAuthorizationPermission } from '@/lib/terminal-auth/purpose-permissions'
+import { PERMISSION_GROUPS } from '@/lib/restaurant-roles/permission-labels'
 
 const ROOT = join(__dirname, '..')
 const read = (...p: string[]) => readFileSync(join(ROOT, ...p), 'utf8')
@@ -190,9 +191,28 @@ describe('the reason goes on the fulfilment record, not the kitchen note', () =>
 })
 
 describe('the permission is surfaced to whoever edits roles', () => {
-  it('has a label and description on the staff page', () => {
-    const labels = read('lib', 'restaurant-roles', 'permission-labels.ts')
-    expect(labels).toMatch(/PERMISSIONS\.ORDERS_VOID/)
-    expect(labels).toMatch(/Void Items/)
+  /**
+   * THIS ORIGINALLY GREPPED THE LABELS FILE, AND THAT WAS THE SAME MISTAKE A FIFTH TIME.
+   *
+   * `expect(labels).toMatch(/PERMISSIONS\.ORDERS_VOID/)` passed on a permission that had a label
+   * and appeared in NO PERMISSION GROUP — so the staff page never rendered a checkbox for it, and
+   * nobody could grant or revoke a void from the UI at all. The string was present; the capability
+   * was not. Asserted through the exported structure now, which is what the page actually renders.
+   */
+  it('is offered in the Orders group, so the staff page can grant it', () => {
+    const orders = PERMISSION_GROUPS.find((g) => g.domain === 'Orders')
+    expect(orders).toBeDefined()
+    expect(orders!.permissions.map((p) => p.key)).toContain(PERMISSIONS.ORDERS_VOID)
+  })
+
+  it('carries text that says a PIN is needed, not a bare key', () => {
+    // A checkbox reading "orders:void" tells an owner nothing about what they are handing out.
+    const entry = PERMISSION_GROUPS.flatMap((g) => g.permissions).find(
+      (p) => p.key === PERMISSIONS.ORDERS_VOID
+    )
+    expect(entry).toBeDefined()
+    expect(entry!.label).not.toBe(PERMISSIONS.ORDERS_VOID)
+    expect(entry!.label.length).toBeGreaterThan(0)
+    expect(entry!.description).toMatch(/PIN/)
   })
 })
