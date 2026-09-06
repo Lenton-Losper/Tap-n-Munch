@@ -18,7 +18,8 @@
  * a terminal did it and named no human. It now needs a manager or owner PIN and a reason, and
  * these are the words the person at the table reads while that happens.
  *
- * SIGNED: pending.
+ * SIGNED BY THE OWNER 2026-09-06, with one change — see VOID_NEEDS_AUTHORIZATION.
+ * Pinned in src/lib/__tests__/voidCopySignedOff.test.ts.
  */
 
 /**
@@ -83,9 +84,14 @@ export const VOID_REASON_TOO_LONG =
 /**
  * Server code VOID_NEEDS_AUTHORIZATION (403). Reached when a build that does not ask for a PIN
  * talks to a server that requires one. It must NOT read as a fault the waiter caused.
+ *
+ * CHANGED AT SIGNING, 2026-09-06. The draft said the terminal "is out of date" and told the reader
+ * to "Update the app". A WAITER CANNOT UPDATE IT, so that sentence is a dead end in the middle of
+ * service with a customer waiting. The dashboard is the route they can actually take, so it is the
+ * only one offered. Do not put the update instruction back.
  */
 export const VOID_NEEDS_AUTHORIZATION =
-  'This terminal is out of date and cannot take items off a bill. Nothing has changed. Update the app, or ask a manager to remove it from the dashboard.';
+  'This terminal needs updating before items can come off a bill. Nothing has changed. Ask a manager to remove it from the dashboard.';
 
 /**
  * A REDUCTION THAT IS NOT ZERO IS STILL A VOID.
