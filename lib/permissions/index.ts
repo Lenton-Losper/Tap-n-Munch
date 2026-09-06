@@ -18,6 +18,23 @@ export const PERMISSIONS = {
   ORDERS_STATION_KITCHEN: 'orders:station:kitchen',
   ORDERS_STATION_BAR: 'orders:station:bar',
 
+  /**
+   * VOIDING A LINE — taking food off a bill after it was ordered.
+   *
+   * SEPARATE FROM orders:update, DELIBERATELY. `orders:update` is taking and amending an order,
+   * which every waiter needs. Voiding is writing food off, which is the same authority shape as a
+   * walkout close. Gating a void on orders:update would mean anyone who can ring a dish up can
+   * make it vanish from the bill — which is precisely the control this adds.
+   *
+   * MANAGER AND OWNER ONLY. Not cashier, not waiter: the waiter who took the order is the one
+   * with a reason to remove it, and asking them to sign off their own void is not a control.
+   *
+   * NOT `orders:delete`, WHICH THIS REPLACES. That one was defined, granted to 15 role rows on
+   * production, and NEVER CHECKED ANYWHERE — a permission nobody enforces is a label, not a gate.
+   * Its retirement is a separate commit so either change can be reverted without the other.
+   */
+  ORDERS_VOID: 'orders:void',
+
   // Menu
   MENU_READ:      'menu:read',
   MENU_WRITE:     'menu:write',

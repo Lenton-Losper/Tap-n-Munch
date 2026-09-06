@@ -20,6 +20,10 @@ const LABELS: Record<Permission, { label: string; description: string }> = {
     label: 'Update Orders',
     description: 'Change order status, items, and table assignments.',
   },
+  [PERMISSIONS.ORDERS_VOID]: {
+    label: 'Void Items',
+    description: 'Approve taking items off a bill. Needs a PIN at the terminal.',
+  },
   [PERMISSIONS.ORDERS_DELETE]: {
     label: 'Delete Orders',
     description: 'Remove or void orders permanently.',
