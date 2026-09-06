@@ -29,7 +29,7 @@
  * That mistake produced five defects on 2026-09-05 and 09-06, the last of them a permission with
  * a perfectly good label that no page offered. So the CONDITIONS are what is asserted.
  */
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { PERMISSIONS } from '@/lib/permissions'
 import { TERMINAL_AUTHORIZATION_PURPOSES, resolveTerminalAuthorizationPermission } from '@/lib/terminal-auth/purpose-permissions'
@@ -40,6 +40,29 @@ const read = (...p: string[]) => readFileSync(join(ROOT, ...p), 'utf8')
 const sql = (s: string) => s.replace(/^\s*--.*$/gm, '')
 
 const CHECK_MIG = sql(read('supabase', 'migrations', '20260906120000_authorization_purpose_line_void.sql'))
+
+/**
+ * THE CONSTRAINT AS IT ENDS UP, WHICH IS THE LATEST purpose migration — NOT THIS ONE.
+ *
+ * Each of these migrations DROPs the constraint by name and rebuilds it whole, so the live
+ * allow-list is whatever the highest-versioned one says. Asserting the application map against
+ * THIS file's snapshot was right until a seventh purpose was added, at which point it failed on
+ * correct code: 20260906120000 has no reason to know about `cash_up`.
+ *
+ * Reading the newest by filename is what makes this invariant survive the next purpose. A test
+ * that has to be edited every time somebody adds one is a test that gets edited without being
+ * read.
+ */
+const LATEST_PURPOSE_MIG = sql(
+  read(
+    'supabase',
+    'migrations',
+    readdirSync(join(ROOT, 'supabase', 'migrations'))
+      .filter((f) => /_authorization_purpose_.*\.sql$/.test(f))
+      .sort()
+      .at(-1)!,
+  ),
+)
 const REASON_MIG = sql(read('supabase', 'migrations', '20260906120100_order_line_events_void_reason.sql'))
 const GRANT_MIG = sql(read('supabase', 'migrations', '20260906120200_grant_orders_void.sql'))
 const ROLES = JSON.parse(read('lib', 'permissions', 'role-permissions.config.json'))
@@ -87,13 +110,16 @@ describe('the line_void purpose reaches BOTH allow-lists', () => {
      * walkout_close). When it is, /api/terminal/authorize passes every application check and then
      * fails on the INSERT with a 23514 — a correct PIN, told authorization failed, every time.
      */
+    // line_void is THIS migration's own subject, so it is asserted here...
+    expect(CHECK_MIG).toContain(`'line_void'::text`)
+    // ...and the full agreement is asserted against the constraint as it actually ends up.
     for (const purpose of Object.keys(TERMINAL_AUTHORIZATION_PURPOSES)) {
-      expect(CHECK_MIG).toContain(`'${purpose}'::text`)
+      expect(LATEST_PURPOSE_MIG).toContain(`'${purpose}'::text`)
     }
   })
 
   it('the two allow-lists agree exactly — neither has a value the other lacks', () => {
-    const inSql = [...CHECK_MIG.matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1]).sort()
+    const inSql = [...LATEST_PURPOSE_MIG.matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1]).sort()
     const inApp = Object.keys(TERMINAL_AUTHORIZATION_PURPOSES).sort()
     expect(inSql).toEqual(inApp)
   })

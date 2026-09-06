@@ -87,6 +87,23 @@ export const PERMISSIONS = {
   // Analytics
   ANALYTICS_VIEW: 'analytics:view',
 
+  /**
+   * PRINTING THE END-OF-DAY CASH-UP AT THE TERMINAL.
+   *
+   * SEPARATE FROM analytics:view, DELIBERATELY. That one opens the dashboard's charts on a
+   * browser somebody logged into. This is a P5 sitting on a bar counter all evening, and the
+   * document it prints is the day's takings — what was in the drawer, split by method. Whoever
+   * picks the device up should not be able to read that by tapping a tile.
+   *
+   * NOT tabs:close_unpaid REUSED EITHER. That is authority to write off a debt; this is authority
+   * to read the day's money. They happen to land on the same two roles today, and a permission
+   * that means two things stops being reviewable the moment those two things need to differ.
+   *
+   * MANAGER AND OWNER ONLY, and it is proved with a PIN through the `cash_up` purpose rather than
+   * carried on the terminal JWT — the JWT belongs to the device, and the device is on the counter.
+   */
+  REPORTS_CASH_UP: 'reports:cash_up',
+
   // Business documents (quotes / invoices)
   DOCUMENTS_READ: 'documents:read',
   DOCUMENTS_WRITE: 'documents:write',

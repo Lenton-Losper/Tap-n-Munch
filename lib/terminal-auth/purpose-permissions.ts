@@ -82,6 +82,37 @@ export const TERMINAL_AUTHORIZATION_PURPOSES = {
    * supabase/migrations/20260906120000_authorization_purpose_line_void.sql.
    */
   line_void: PERMISSIONS.ORDERS_VOID,
+  /**
+   * PRINTING THE END-OF-DAY CASH-UP on the terminal's own printer.
+   *
+   * WHY A PIN, when nothing is being written. Every other purpose here guards a WRITE; this one
+   * guards a READ, and it is the first. The reason is the device: a P5 sits on a bar counter for
+   * a whole service, unlocked, and the document this prints is the day's takings — cash and card,
+   * gross, order counts, everything sold. That is not something whoever picks the terminal up
+   * should be able to produce by tapping a tile. The PIN also puts a NAME on the print, which is
+   * what a cash-up is for: it is the start of somebody being accountable for a drawer.
+   *
+   * THE PERMISSION IS REPORTS_CASH_UP, not ANALYTICS_VIEW and not TABS_CLOSE_UNPAID. Measured
+   * against the shipped role config:
+   *
+   *     analytics:view      owner, manager    -- dashboard charts, on a logged-in browser
+   *     tabs:close_unpaid   owner, manager    -- authority to WRITE OFF a debt
+   *
+   * Both land on the same two roles today, which is exactly why reusing one would be a mistake
+   * nobody notices until the day they need to differ: reading the day's money and writing off a
+   * customer's debt are different authorities that happen to be held by the same people.
+   *
+   * THE IDENTITY THIS PRODUCES IS A users.id, and it is recorded against the print.
+   *
+   * *** ADDING A PURPOSE HERE IS HALF THE JOB. *** The database keeps its own allow-list on
+   * `privileged_authorization_tokens.purpose`, and it has now been forgotten FOUR times
+   * (service_session, menu_availability, walkout_close, line_void). When it is missed, POST
+   * /api/terminal/authorize passes every application check — membership, permission, PIN,
+   * lockout — and then fails on the INSERT with a 23514: a correct PIN, told authorization
+   * failed, every time. See
+   * supabase/migrations/20260907090000_authorization_purpose_cash_up.sql.
+   */
+  cash_up: PERMISSIONS.REPORTS_CASH_UP,
 } as const satisfies Record<string, Permission>
 
 export type TerminalAuthorizationPurpose = keyof typeof TERMINAL_AUTHORIZATION_PURPOSES

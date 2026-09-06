@@ -26,6 +26,7 @@
     "recipe:view",
     "recipe:edit",
     "analytics:view",
+    "reports:cash_up",
     "documents:read",
     "documents:write",
     "terminal:auth:manage"
@@ -52,6 +53,7 @@
     "recipe:view",
     "recipe:edit",
     "analytics:view",
+    "reports:cash_up",
     "documents:read",
     "documents:write",
     "terminal:auth:manage"
