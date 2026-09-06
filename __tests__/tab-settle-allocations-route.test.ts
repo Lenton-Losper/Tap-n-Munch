@@ -60,6 +60,20 @@ let rpcCalls: Array<{ name: string; args: unknown }>
 let inFlightOrderRows: Row[]
 let inFlightOrdersError: { message: string } | null
 
+/**
+ * THE ALLOCATION-SCOPED CARD HOLD (terminal_payment_intents).
+ *
+ * A part-order card charge holds the allocations it named for as long as its intent is unresolved
+ * -- `launched` or `uncertain`. This route asks who holds what before it settles anything.
+ *
+ * `heldIntentRows` are the rows the overlap query returns; `intentByIdRows` is what a lookup of one
+ * intent by id returns, which is how an intent settles its OWN items without being blocked by its
+ * own hold. `intentsReadError` models the read failing, which must refuse rather than proceed.
+ */
+let heldIntentRows: Row[]
+let intentByIdRow: Row | null
+let intentsReadError: { message: string } | null
+
 function makeSupabase() {
   return {
     from(table: string) {
@@ -128,9 +142,36 @@ function makeSupabase() {
           }),
         }
       }
+      if (table === 'terminal_payment_intents') {
+        return {
+          select: () => ({
+            eq: () => ({
+              // allocationIdsHeldByLiveCard: .eq(restaurant).eq(scope).in(status).overlaps(ids)
+              eq: () => ({
+                in: () => ({
+                  overlaps: async () => ({
+                    data: intentsReadError ? null : heldIntentRows,
+                    error: intentsReadError,
+                  }),
+                }),
+              }),
+              // intentHoldsExactly: .eq(id).maybeSingle()
+              maybeSingle: async () => ({
+                data: intentsReadError ? null : intentByIdRow,
+                error: intentsReadError,
+              }),
+            }),
+          }),
+        }
+      }
       if (table === 'audit_logs') {
         return { insert: async () => ({ data: null, error: null }) }
       }
+      /**
+       * LOUD, DELIBERATELY. A fake that quietly returned an empty result for a table it does not
+       * model would let a hold read as "nobody holds these" -- the exact fail-open this route was
+       * changed to close. Throwing turns a missing branch into a 503 somebody has to look at.
+       */
       throw new Error(`unexpected table ${table}`)
     },
     rpc: async (name: string, args: unknown) => {
@@ -177,6 +218,9 @@ beforeEach(() => {
   // No card in flight by default: the guard is off the happy path.
   inFlightOrderRows = [{ id: 'order-1', payment_status: 'pending', terminal_pushed_at: null }]
   inFlightOrdersError = null
+  heldIntentRows = []
+  intentByIdRow = null
+  intentsReadError = null
   consumeResult = { ok: true }
   consumeShouldThrow = false
   consumeCalls.length = 0
@@ -438,5 +482,123 @@ describe('cash-authorization token', () => {
     )
     const call = rpcCalls.find((c) => c.name === 'settle_order_line_allocations')
     expect((call!.args as { p_staff_user_id: string | null }).p_staff_user_id).toBeNull()
+  })
+})
+
+/**
+ * ================================================================================================
+ * THE ALLOCATION-SCOPED CARD HOLD
+ * ================================================================================================
+ *
+ * The card-in-flight guard above is ORDER-scoped: it asks whether a whole-order card push is
+ * outstanding. It cannot see a part-order card charge, because that charge is not attached to an
+ * order at all -- it names allocations. So a second guard asks who holds these particular items.
+ *
+ * WHAT GOES WRONG WITHOUT IT: three people are splitting a bill, one is mid-charge on their share,
+ * and the waiter takes cash for the same items from somebody else. The card lands. The table has
+ * paid twice for one plate of food, and only one of the two payments is visible on the terminal.
+ *
+ * An UNCERTAIN intent holds too, and that is the point of it. "We did not get a yes" is not "the
+ * customer was not charged" -- E04111 from this gateway means no record, never not paid -- so the
+ * items stay held until a webhook or a human resolves it, and nothing auto-releases them.
+ */
+describe('the allocation-scoped card hold', () => {
+  const HELD = { allocation_ids: ['alloc-1'], status: 'launched' }
+
+  it('refuses cash for items a live card charge is holding, and takes no money doing it', async () => {
+    heldIntentRows = [HELD]
+    const res = await POST(req({ allocation_ids: ['alloc-1'], method: 'cash' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.code).toBe('ITEMS_HELD_BY_CARD')
+    expect(body.allocation_ids).toEqual(['alloc-1'])
+
+    // The assertion that matters: a guard that refuses AFTER settling has not guarded anything.
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(0)
+    expect(orderUpdateCalls).toHaveLength(0)
+  })
+
+  it('an UNCERTAIN intent holds exactly as hard as a launched one', async () => {
+    /**
+     * The whole reason the hold exists. An ambiguous reader result is the case where the customer
+     * most likely HAS been charged and the terminal cannot prove it -- releasing the items there
+     * is how the same food gets paid for twice.
+     */
+    heldIntentRows = [{ allocation_ids: ['alloc-1'], status: 'uncertain' }]
+    const res = await POST(req({ allocation_ids: ['alloc-1'], method: 'cash' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('ITEMS_HELD_BY_CARD')
+  })
+
+  it('refuses a CARD settlement on held items too -- the hold is not cash-specific', async () => {
+    // Unlike the order-scoped in-flight guard, which only blocks cash. Two card charges against
+    // the same items is the same double payment as card-and-cash.
+    heldIntentRows = [HELD]
+    const res = await POST(req({ allocation_ids: ['alloc-1'], method: 'card' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(res.status).toBe(409)
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(0)
+  })
+
+  it('an intent settles its OWN held items', async () => {
+    /**
+     * The exemption that makes the feature work at all. The charge that placed the hold is the one
+     * that comes back to settle against it; without this it would be refused by its own hold.
+     */
+    heldIntentRows = [HELD]
+    intentByIdRow = { allocation_ids: ['alloc-1'], status: 'launched' }
+    const res = await POST(
+      req({ allocation_ids: ['alloc-1'], method: 'card', settling_intent_id: 'intent-1' }),
+      { params: Promise.resolve({ tabId: TAB_ID }) },
+    )
+    expect(res.status).toBe(200)
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(1)
+  })
+
+  it("but NOT another intent's held items", async () => {
+    /**
+     * The exemption is containment, not merely "an intent was named". An intent holding alloc-1
+     * must not be able to settle alloc-1 AND alloc-2 while a different intent holds alloc-2 --
+     * that is one payment settling another payment's items.
+     */
+    heldIntentRows = [{ allocation_ids: ['alloc-1', 'alloc-2'], status: 'launched' }]
+    intentByIdRow = { allocation_ids: ['alloc-1'], status: 'launched' }
+    const res = await POST(
+      req({ allocation_ids: ['alloc-1', 'alloc-2'], method: 'card', settling_intent_id: 'intent-1' }),
+      { params: Promise.resolve({ tabId: TAB_ID }) },
+    )
+    expect(res.status).toBe(409)
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(0)
+  })
+
+  it('a hold read that FAILS refuses rather than proceeding', async () => {
+    /**
+     * FAIL CLOSED. Not being able to read the hold is not permission to take the money again -- the
+     * failure mode this replaced returned an empty list on error, which reads as "nobody holds
+     * these" and settles.
+     */
+    intentsReadError = { message: 'connection reset' }
+    const res = await POST(req({ allocation_ids: ['alloc-1'], method: 'cash' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(res.status).toBe(503)
+    expect((await res.json()).code).toBe('HOLD_CHECK_FAILED')
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(0)
+  })
+
+  it('settles normally when nothing is held', async () => {
+    // The positive control. A guard suite made only of refusals cannot tell a working guard from a
+    // route that refuses everything.
+    heldIntentRows = []
+    const res = await POST(req({ allocation_ids: ['alloc-1'], method: 'cash' }), {
+      params: Promise.resolve({ tabId: TAB_ID }),
+    })
+    expect(res.status).toBe(200)
+    expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(1)
   })
 })
