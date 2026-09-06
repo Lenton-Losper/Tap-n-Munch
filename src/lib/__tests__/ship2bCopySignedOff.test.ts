@@ -90,3 +90,46 @@ describe('round-screen split copy — signed 2026-09-04', () => {
     expect(SIGNED_ROUND.ROUND_SPLIT_ONE_OFF).not.toBe('Split');
   });
 });
+
+describe('the two round strings are retired, not merely unused', () => {
+  /**
+   * ROUND_SPLIT_ONE_OFF and ROUND_NOTE_APPLIES_TO_ALL were signed 2026-09-04 and shipped in 127.
+   * The item sheet (2026-09-06) replaced the arrangement they belonged to: the note is asked for
+   * when the item is added, and addLine merges only into a line with the same note, so there is
+   * nothing to split and no multi-unit line for a note to be silently applied across.
+   *
+   * They stay in the file because deleting a signed string makes the signature unauditable. This
+   * asserts they render NOWHERE, so wiring one back in is a decision somebody has to make on
+   * purpose rather than a revert nobody notices.
+   */
+  it('nothing in the app renders either of them', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const {readFileSync, readdirSync, statSync} = require('fs') as {
+      readFileSync: (p: string, e: string) => string;
+      readdirSync: (p: string) => string[];
+      statSync: (p: string) => {isDirectory: () => boolean};
+    };
+    const resolve = (require as unknown as {resolve: (m: string) => string}).resolve;
+    // Normalised to forward slashes so the same cut works on Windows and on CI.
+    const resolved = resolve('../../constants/serviceCopy').split('\\').join('/');
+    const SRC = resolved.slice(0, resolved.lastIndexOf('/constants/'));
+
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        if (name === '__tests__') continue;
+        const full = dir + '/' + name;
+        if (statSync(full).isDirectory()) {
+          walk(full);
+        } else if (/\.(ts|tsx)$/.test(name) && !full.endsWith('/constants/serviceCopy.ts')) {
+          const text = readFileSync(full, 'utf8');
+          if (/ROUND_SPLIT_ONE_OFF|ROUND_NOTE_APPLIES_TO_ALL/.test(text)) {
+            offenders.push(full.slice(SRC.length + 1));
+          }
+        }
+      }
+    };
+    walk(SRC);
+    expect(offenders).toEqual([]);
+  });
+});

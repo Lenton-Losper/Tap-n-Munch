@@ -76,23 +76,57 @@ export function formatSecondsOpen(seconds: number | null | undefined): string {
 }
 
 /**
- * Adds one unit of a menu item to the basket.
+ * THE SAME LIMITS THE CUSTOMER'S QR SHEET ENFORCES, and for the same reason.
  *
- * MERGES ONLY INTO A LINE THAT HAS NO NOTE. Merging into a noted line would silently apply
- * "well done" to a steak nobody asked to be well done — a wrong instruction reaching the kitchen is
- * worse than an extra row on screen. When every existing line for this item carries a note, a fresh
- * un-noted line is started instead.
+ * `lib/orders/quantity-limits.ts` in the web repo clamps the customer's stepper to 1..20 so nobody
+ * builds a line the server will refuse and finds out at submit. The terminal had NO clamp at all:
+ * `adjustLineQuantity` added the delta with no ceiling, so a waiter could ring up 30 and discover
+ * the refusal with a table waiting. Carried across on the owner's ruling, 2026-09-06.
+ *
+ * MAX_NOTE_LENGTH matches MAX_INSTRUCTIONS_LENGTH (280) rather than the 140 the old inline note
+ * field used. The rounds route refuses a note that is not text and imposes no length of its own, so
+ * this is a deliberate house limit, chosen to match what a customer can type about the same dish.
+ */
+export const MIN_LINE_QUANTITY = 1;
+export const MAX_LINE_QUANTITY = 20;
+export const MAX_NOTE_LENGTH = 280;
+
+/** Clamped, never rejected: a stepper that stops is kinder than one that errors. */
+export function clampLineQuantity(quantity: number): number {
+  if (!Number.isFinite(quantity)) return MIN_LINE_QUANTITY;
+  return Math.min(MAX_LINE_QUANTITY, Math.max(MIN_LINE_QUANTITY, Math.round(quantity)));
+}
+
+/**
+ * Adds a menu item to the basket, with the quantity and note the waiter chose in the item sheet.
+ *
+ * ONE ITEM, ONE NOTE, DECIDED AT THE MOMENT OF ADDING. This used to add a single un-noted unit and
+ * leave the note to a field on the basket row, with a Split button to peel a unit off when a note
+ * had to apply to only some of them. That put the note somewhere other than where the waiter was
+ * thinking about it, and made per-unit notes a two-step recovery rather than the natural outcome.
+ *
+ * MERGES ONLY INTO A LINE WITH THE SAME NOTE. Tapping Cappuccino twice with different notes gives
+ * two lines, which is the behaviour the owner asked for and falls out of this rule rather than
+ * needing a Split affordance. Two taps with NO note still merge, so the ordinary case stays one
+ * row. Merging across different notes would silently apply one instruction to units nobody asked
+ * it for — a wrong instruction reaching the kitchen is worse than an extra row on screen.
  */
 export function addLine(
   lines: RoundLine[],
   item: {id: string; name: string; base_price: number},
+  options: {quantity?: number; note?: string} = {},
 ): RoundLine[] {
+  const note = (options.note ?? '').trim();
+  const quantity = clampLineQuantity(options.quantity ?? 1);
+
   const index = lines.findIndex(
-    line => line.menuItemId === item.id && line.note.trim() === '',
+    line => line.menuItemId === item.id && line.note.trim() === note,
   );
   if (index >= 0) {
     return lines.map((line, i) =>
-      i === index ? {...line, quantity: line.quantity + 1} : line,
+      i === index
+        ? {...line, quantity: clampLineQuantity(line.quantity + quantity)}
+        : line,
     );
   }
   return [
@@ -102,8 +136,8 @@ export function addLine(
       menuItemId: item.id,
       name: item.name,
       unitPrice: Number.isFinite(item.base_price) ? item.base_price : 0,
-      quantity: 1,
-      note: '',
+      quantity,
+      note,
     },
   ];
 }
@@ -117,7 +151,15 @@ export function adjustLineQuantity(
   return lines
     .map(line =>
       line.lineId === lineId
-        ? {...line, quantity: line.quantity + delta}
+        ? // Clamped at the top, NOT at the bottom: zero still removes the row, which is the
+          // existing behaviour and the only way to delete from the stepper.
+          {
+            ...line,
+            quantity:
+              line.quantity + delta <= 0
+                ? 0
+                : clampLineQuantity(line.quantity + delta),
+          }
         : line,
     )
     .filter(line => line.quantity > 0);

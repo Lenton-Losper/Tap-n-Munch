@@ -34,6 +34,13 @@
  * under tsc even though jest runs them happily. A suite that passes while tsc is red is how a red
  * build gets ignored.
  */
+/**
+ * MAKES THIS FILE A MODULE. Without an import or export, TypeScript treats a test file as a global
+ * script, and two suites declaring the same top-level `readFileSync` shim collide with TS2451 even
+ * though both pass under jest. Same reason apiHarness was extracted.
+ */
+export {};
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {readFileSync} = require('fs') as {readFileSync: (p: string, e: string) => string};
 const resolve = (require as unknown as {resolve: (m: string) => string}).resolve;

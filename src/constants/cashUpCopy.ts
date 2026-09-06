@@ -19,7 +19,7 @@
  * anything printed — a manager who does not know whether the slip came out will print it twice
  * and then wonder which one is right.
  *
- * SIGNED BY THE OWNER 2026-09-06, all twenty as written, no changes.
+ * SIGNED BY THE OWNER 2026-09-06, all twenty-one as written, no changes.
  * Pinned in src/lib/__tests__/cashUpCopySignedOff.test.ts.
  *
  * THE PRINTED DOCUMENT'S OWN STRINGS ARE NOT HERE. It is rendered SERVER-SIDE, so its headings and
@@ -117,8 +117,8 @@ export const CASH_UP_PRINTED = 'Cash-up printed.';
  * Under the Settings button when no printer is paired, because the cash-up is printed and there is
  * nothing to print to. Says the one thing that unblocks it, on the screen where they can do it.
  *
- * DRAFTED 2026-09-06, NOT YET SIGNED — the twenty-first string, added after the owner signed the
- * first twenty. It is listed for signature; the lock test counts 21 so it cannot be forgotten.
+ * SIGNED BY THE OWNER 2026-09-06, as written. The twenty-first string, added after the first
+ * twenty were signed, so the button could be shown disabled instead of hidden.
  */
 export const CASH_UP_NEEDS_PRINTER = 'Set up a printer first.';
 

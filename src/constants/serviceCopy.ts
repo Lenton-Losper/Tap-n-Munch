@@ -206,5 +206,22 @@ export const TAB_LABEL_ORDERS = 'Orders';
  * ROUND_SPLIT_ONE_OFF says what the button does to the basket rather than naming the operation.
  * "Split" alone was accurate and meant nothing at the moment it mattered.
  */
+/**
+ * ================================================================================================
+ * RETIRED 2026-09-06 — SIGNED, SHIPPED IN 127, AND NO LONGER RENDERED.
+ * ================================================================================================
+ *
+ * Both belonged to the arrangement the item sheet replaced: a note field on the basket row, with a
+ * Split button to peel a unit off when the note applied to only some units, and a warning when a
+ * note landed on a multi-unit line.
+ *
+ * The sheet asks for the note AT THE MOMENT OF ADDING, and addLine merges only into a line
+ * carrying the same note — so two taps with different notes give two lines. There is nothing left
+ * to split, and no multi-unit line for a note to be silently applied across.
+ *
+ * KEPT RATHER THAN DELETED because they were signed, and a signed string vanishing from the file
+ * makes the signature unauditable. They are exported, referenced by the lock test, and rendered
+ * NOWHERE — which is asserted, so nobody wires them back in without a fresh decision.
+ */
 export const ROUND_NOTE_APPLIES_TO_ALL = 'This note goes to the kitchen for all {count}.';
 export const ROUND_SPLIT_ONE_OFF = 'Split one off';

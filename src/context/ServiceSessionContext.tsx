@@ -12,7 +12,7 @@ import {
   removeLine,
   RoundLine,
   setLineNote,
-  splitLine,
+  clampLineQuantity,
 } from '../lib/serviceRound';
 
 /**
@@ -48,11 +48,14 @@ interface ServiceSessionValue {
   idempotencyKey: string | null;
   orderInstructions: string;
   beginSession: (waiter: ServiceWaiter | null, table: ServiceTable) => void;
-  addItem: (item: {id: string; name: string; base_price: number}) => void;
+  addItem: (
+    item: {id: string; name: string; base_price: number},
+    options?: {quantity?: number; note?: string},
+  ) => void;
   adjustQuantity: (lineId: string, delta: number) => void;
   removeItem: (lineId: string) => void;
   setNote: (lineId: string, note: string) => void;
-  splitOne: (lineId: string) => void;
+  updateLine: (lineId: string, next: {quantity: number; note: string}) => void;
   setOrderInstructions: (text: string) => void;
   /** Empties the basket and retires the idempotency key, keeping the waiter and table. */
   clearBasket: () => void;
@@ -101,12 +104,15 @@ export function ServiceSessionProvider({
   );
 
   const addItem = useCallback(
-    (item: {id: string; name: string; base_price: number}) => {
+    (
+      item: {id: string; name: string; base_price: number},
+      options?: {quantity?: number; note?: string},
+    ) => {
       // Ringing up the first item starts the round, and with it the key. `?? prev` keeps it stable
       // for every subsequent item and for every retry of this round — a 500 is explicitly
       // retryable with the SAME key, and a new key on retry is how a round gets billed twice.
       setIdempotencyKey(prev => prev ?? newRoundIdempotencyKey());
-      setLines(prev => addLine(prev, item));
+      setLines(prev => addLine(prev, item, options));
     },
     [],
   );
@@ -123,9 +129,24 @@ export function ServiceSessionProvider({
     setLines(prev => setLineNote(prev, lineId, note));
   }, []);
 
-  const splitOne = useCallback((lineId: string) => {
-    setLines(prev => splitLine(prev, lineId));
-  }, []);
+  /**
+   * Applies a sheet edit to an existing line. Replaces splitOne: peeling a unit off existed so a
+   * note could apply to some units and not others, and the sheet makes that two separate adds.
+   */
+  const updateLine = useCallback(
+    (lineId: string, next: {quantity: number; note: string}) => {
+      setLines(prev =>
+        prev
+          .map(line =>
+            line.lineId === lineId
+              ? {...line, quantity: clampLineQuantity(next.quantity), note: next.note.trim()}
+              : line,
+          )
+          .filter(line => line.quantity > 0),
+      );
+    },
+    [],
+  );
 
   const setOrderInstructions = useCallback((text: string) => {
     setOrderInstructionsState(text);
@@ -157,7 +178,7 @@ export function ServiceSessionProvider({
       adjustQuantity,
       removeItem,
       setNote,
-      splitOne,
+      updateLine,
       setOrderInstructions,
       clearBasket,
       endSession,
@@ -173,7 +194,7 @@ export function ServiceSessionProvider({
       adjustQuantity,
       removeItem,
       setNote,
-      splitOne,
+      updateLine,
       setOrderInstructions,
       clearBasket,
       endSession,

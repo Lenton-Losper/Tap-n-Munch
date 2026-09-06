@@ -17,6 +17,7 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import * as Copy from '../constants/serviceCopy';
+import RoundItemSheet, {type RoundItemSheetTarget} from '../components/RoundItemSheet';
 import {getMenuCategories, getMenuItems, MenuCategory, MenuItem} from '../lib/api';
 import {applyAvailabilityOverrides} from '../lib/menuAvailabilityOverrides';
 import {basketCount, basketSubtotal, RoundLine} from '../lib/serviceRound';
@@ -47,8 +48,8 @@ interface BasketRowProps {
   flagged: boolean;
   onAdjust: (delta: number) => void;
   onRemove: () => void;
-  onNote: (note: string) => void;
-  onSplit: () => void;
+  /** Reopens the item sheet on this line, to change its note or quantity. */
+  onEdit: () => void;
 }
 
 function BasketRow({
@@ -56,8 +57,7 @@ function BasketRow({
   flagged,
   onAdjust,
   onRemove,
-  onNote,
-  onSplit,
+  onEdit,
 }: BasketRowProps) {
   return (
     <View style={[styles.basketRow, flagged && styles.basketRowFlagged]}>
@@ -96,45 +96,22 @@ function BasketRow({
         </Pressable>
       </View>
 
-      {/* The per-line note is the field the kitchen reads. It rides with the line, and it is the
-          only way to say which of three steaks is the rare one. */}
-      <TextInput
-        style={styles.noteInput}
-        value={line.note}
-        onChangeText={onNote}
-        placeholder="Note for the kitchen (e.g. medium)"
-        placeholderTextColor={Colors.textMuted}
-        maxLength={140}
-      />
-
       {/**
-        * SPLIT LIVES HERE, BESIDE THE NOTE, NOT UP IN THE QUANTITY ROW.
+        * THE NOTE IS SHOWN HERE, NOT EDITED HERE.
         *
-        * It used to sit between "+" and the bin, where it reads as a quantity control. It is not
-        * one — it is the thing that makes a per-unit note possible, and a waiter only wants it at
-        * the moment they are typing a note. The owner hit the trap personally on a first attempt,
-        * which is the evidence that the old placement did not communicate what it was for.
+        * It used to be a TextInput on this row, with a Split button beside it to peel a unit off
+        * when the note applied to only some of them. Both are gone: the note is decided in the
+        * item sheet at the moment of adding, and two taps with different notes give two lines
+        * because addLine merges only into a line carrying the same note. Split has nothing left
+        * to do.
         *
-        * THE WARNING IS THE REAL FIX. serviceRound.addLine already refuses to merge into a noted
-        * line, so "tap, note, tap" has always produced two separately-noted lines. It fails in
-        * exactly ONE order of operations — tap, tap, note — where the note lands on a quantity-2
-        * line and silently applies to both units. That case is now called out at the moment it
-        * happens, in terms of what actually goes to the kitchen.
+        * Tapping the row reopens that sheet, so correcting a note is the interaction the waiter
+        * already used rather than a second, different editor.
         */}
-      {line.quantity > 1 ? (
-        <View style={styles.splitPrompt}>
-          {line.note.trim() ? (
-            <Text style={styles.splitPromptText} testID={`split-warning-${line.lineId}`}>
-              {Copy.ROUND_NOTE_APPLIES_TO_ALL.replace('{count}', String(line.quantity))}
-            </Text>
-          ) : null}
-          <Pressable
-            style={styles.splitButton}
-            onPress={onSplit}
-            testID={`split-one-off-${line.lineId}`}>
-            <Text style={styles.splitButtonText}>{Copy.ROUND_SPLIT_ONE_OFF}</Text>
-          </Pressable>
-        </View>
+      {line.note.trim() ? (
+        <Pressable onPress={onEdit} testID={`basket-note-${line.lineId}`}>
+          <Text style={styles.basketNote}>{line.note.trim()}</Text>
+        </Pressable>
       ) : null}
 
       {flagged ? (
@@ -155,9 +132,12 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
     adjustQuantity,
     removeItem,
     setNote,
-    splitOne,
+    updateLine,
     endSession,
   } = useServiceSession();
+
+  /** The item whose sheet is open, or null. Also carries the line being edited, when reopening. */
+  const [sheetTarget, setSheetTarget] = useState<RoundItemSheetTarget | null>(null);
 
   const [token, setToken] = useState<string | null>(null);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
@@ -467,7 +447,7 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
                   pressed && styles.itemCardPressed,
                 ]}
                 disabled={!entry.item.is_available}
-                onPress={() => addItem(entry.item)}>
+                onPress={() => setSheetTarget(entry.item)}>
                 <Text style={styles.itemName} numberOfLines={2}>
                   {entry.item.name}
                 </Text>
@@ -542,8 +522,20 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
                 flagged={flaggedLineIds.includes(item.lineId)}
                 onAdjust={delta => adjustQuantity(item.lineId, delta)}
                 onRemove={() => removeItem(item.lineId)}
-                onNote={note => setNote(item.lineId, note)}
-                onSplit={() => splitOne(item.lineId)}
+                // Reopening the row uses the SAME sheet it was added through, so fixing a note is
+                // the interaction the waiter already knows rather than a second, different editor.
+                onEdit={() =>
+                  setSheetTarget({
+                    id: item.menuItemId,
+                    name: item.name,
+                    base_price: item.unitPrice,
+                    editing: {
+                      lineId: item.lineId,
+                      quantity: item.quantity,
+                      note: item.note,
+                    },
+                  })
+                }
               />
             )}
             ListEmptyComponent={
@@ -552,6 +544,31 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
           />
         </View>
       ) : null}
+
+      {/**
+        * THE ITEM SHEET. Mounted only while a target is set, so its state seeds fresh each time
+        * from the line being edited (or from nothing, when adding) — the same lazy-seed approach
+        * the customer's sheet uses, and the reason it needs no syncing effect.
+        */}
+      <RoundItemSheet
+        item={sheetTarget}
+        onCancel={() => setSheetTarget(null)}
+        onConfirm={({quantity, note, lineId}) => {
+          if (lineId) {
+            updateLine(lineId, {quantity, note});
+          } else if (sheetTarget) {
+            addItem(
+              {
+                id: sheetTarget.id,
+                name: sheetTarget.name,
+                base_price: sheetTarget.base_price,
+              },
+              {quantity, note},
+            );
+          }
+          setSheetTarget(null);
+        }}
+      />
 
       <View style={[styles.bottomBar, {paddingBottom: insets.bottom + Spacing.sm}]}>
         <Pressable
@@ -711,6 +728,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: Spacing.sm,
+  },
+  basketNote: {
+    ...Typography.small,
+    color: Colors.orange,
+    fontWeight: '600',
+    marginTop: 2,
   },
   basketName: {
     flex: 1,

@@ -1,7 +1,7 @@
 /**
  * THE SIGNED CASH-UP COPY. SIGNED BY THE OWNER 2026-09-06.
  *
- * Twenty strings, every one shown to a manager closing up with the drawer open. Pinned as
+ * Twenty-one strings, every one shown to a manager closing up with the drawer open. Pinned as
  * written so a tidy-up, a refactor, or someone "improving" a sentence fails here rather than
  * silently changing what is read at the end of a shift.
  *
@@ -67,16 +67,7 @@ describe(`the signed cash-up copy (signed ${SIGNED_ON})`, () => {
     expect(Copy.CASH_UP_NOTHING_TAKEN).toBe(
       'Nothing was taken in that period. The printout will say so.',
     );
-  });
-
-  it('the drafted twenty-first is listed for signature, not slipped in', () => {
-    /**
-     * CASH_UP_NEEDS_PRINTER was added 2026-09-06, AFTER the owner signed the first twenty, to give
-     * the Settings button a disabled state instead of hiding it. It is drafted, not signed.
-     *
-     * Asserted separately so it cannot be quietly absorbed into the signed set: when it is signed,
-     * move it into "reads exactly as signed" above and delete this test.
-     */
+    // The twenty-first, signed 2026-09-06 with the rest.
     expect(Copy.CASH_UP_NEEDS_PRINTER).toBe('Set up a printer first.');
   });
 
