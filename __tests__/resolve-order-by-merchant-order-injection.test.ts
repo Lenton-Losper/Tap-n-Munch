@@ -20,6 +20,29 @@
  * expression through the SAME fake, so each injection case asserts both that the shipped function
  * returns nothing AND that this harness would have caught it had the `.or()` still been there. A
  * probe that cannot fire looks exactly like a probe that passed.
+ *
+ * ================================================================================================
+ * THE FAKE REFUSES RATHER THAN DYING QUIETLY — AND THAT IS THE THIRD LESSON, NOT THE FIRST
+ * ================================================================================================
+ *
+ * This harness has now gone dark TWICE by the same mechanism. #323 rerouted the orders leg through
+ * fetchAllRows, which calls `.range()`; the fake had none, every one of the twelve tests died with
+ * "query.range is not a function" BEFORE reaching an assertion, and #242's cross-tenant cover was
+ * unprotected for three weeks. On 2026-09-06 the payment-intents leg added `.maybeSingle()` and it
+ * happened again.
+ *
+ * A SECURITY SUITE THAT FAILS BY NOT RUNNING IS THE WORST SHAPE THERE IS. Twelve identical
+ * TypeErrors read as "the harness is broken, fix it later"; a red assertion reads as "the property
+ * you were protecting is gone". They deserve opposite reactions and they looked the same.
+ *
+ * So the builder is wrapped: calling a method this fake does not model throws ONE explicit,
+ * attributable error naming the method and what to do about it. The suite still fails — it must,
+ * because an unmodelled call means the code under test now does something this fake cannot judge —
+ * but it fails saying which method and why, instead of leaving somebody to infer it from a
+ * TypeError repeated twelve times.
+ *
+ * `assertFakeModelsEveryCall` is the meta-test that proves the guard works, because a guard nobody
+ * has seen fire is a guard nobody knows is wired up.
  */
 import { resolveOrderIdsByMerchantOrderNo } from '@/lib/payments/resolve-order-by-merchant-order'
 
@@ -103,24 +126,33 @@ function makeFakeSupabase(options?: {
         Record<string, unknown>
       >
 
+    /**
+     * EVERY CHAINED CALL MUST STAY WRAPPED, or the guard only covers the first one.
+     *
+     * The first version returned the bare object from each method, so `.select().eq()` handed back
+     * the unwrapped builder and `.maybeSingle()` on it died with the same TypeError the guard
+     * exists to replace. Verified by removing maybeSingle from this fake and watching the guard NOT
+     * fire — which is how a guard nobody has seen fire turns out to be decorative.
+     */
+    let proxied: typeof self
     const self = {
-      select: () => self,
+      select: () => proxied,
       limit: (n: number) => {
         limit = n
-        return self
+        return proxied
       },
       eq(column: string, value: unknown) {
         if (table === 'orders') eqCallsOnOrders.push([column, value])
         if (table === 'terminal_payment_intents') eqCallsOnIntents.push([column, value])
         predicates.push((row) => row[column] === value)
-        return self
+        return proxied
       },
       or(expression: string) {
         if (table === 'orders') orCallsOnOrders.push(expression)
         if (table === 'terminal_payment_intents') orCallsOnIntents.push(expression)
         const terms = expression.split(',').map(termPredicate)
         predicates.push((row) => terms.some((p) => p(row)))
-        return self
+        return proxied
       },
       /**
        * #331. Added 2026-08-24, and this fake was broken WITHOUT it since #323 (343763a) rerouted
@@ -167,7 +199,37 @@ function makeFakeSupabase(options?: {
         return resolve({ data: matched, error: null })
       },
     }
-    return self
+
+    /**
+     * Anything not modelled above is a REFUSAL, not an undefined.
+     *
+     * The allowlist is JS/promise machinery that gets probed on any object — jest inspects, and
+     * `await` looks for `then`. Those must pass through untouched or the guard would fire on the
+     * harness's own plumbing rather than on a real gap.
+     */
+    const PASS_THROUGH = new Set([
+      'then', 'catch', 'finally', 'constructor', 'toJSON', 'toString', 'valueOf',
+      'inspect', 'asymmetricMatch', '$$typeof', 'nodeType', 'hasAttribute', '_isMockFunction',
+    ])
+    proxied = new Proxy(self as Record<string | symbol, unknown>, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'symbol' || prop in target || PASS_THROUGH.has(String(prop))) {
+          return Reflect.get(target, prop, receiver)
+        }
+        throw new Error(
+          `fake PostgREST: resolveOrderIdsByMerchantOrderNo calls .${String(prop)}() on ` +
+            `"${table}", and this harness does not model it.
+` +
+            `  This suite protects #242's cross-tenant injection cover. It has gone dark twice ` +
+            `before by exactly this route (.range in #323, .maybeSingle in the payment-intents ` +
+            `leg), each time as a TypeError that read like a broken harness rather than a lost ` +
+            `guarantee.
+` +
+            `  MODEL .${String(prop)}() in makeFakeSupabase, then re-run. Do not skip this suite.`,
+        )
+      },
+    }) as typeof self
+    return proxied
   }
 
   return {
@@ -325,6 +387,69 @@ describe('the intents leg is held to the same parser-free rule', () => {
     const fake = makeFakeSupabase({ intentsError: 'connection reset' })
     await expect(resolveOrderIdsByMerchantOrderNo(fake.client, 'FT17847971551076190')).rejects.toThrow(
       /findIntentByMerchantOrderNo/,
+    )
+  })
+})
+
+describe('the harness refuses rather than dying quietly', () => {
+  /**
+   * THE POSITIVE CONTROL FOR THE GUARD ITSELF.
+   *
+   * Everything above proves the resolver is safe. This proves the thing that would TELL us if it
+   * stopped being provable. Twice now the answer to "is #242 still covered?" has been "no idea, the
+   * suite never ran" — and both times that looked like a broken harness rather than a lost
+   * guarantee.
+   */
+  it('names the missing method, the table, and what to do', () => {
+    const fake = makeFakeSupabase()
+    const builder = (fake.client as unknown as {
+      from: (t: string) => Record<string, unknown>
+    }).from('orders')
+
+    let thrown: Error | null = null
+    try {
+      // A method the real PostgREST builder has and this fake does not model.
+      ;(builder as unknown as { textSearch: () => void }).textSearch()
+    } catch (e) {
+      thrown = e as Error
+    }
+
+    expect(thrown).not.toBeNull()
+    expect(thrown!.message).toMatch(/does not model it/)
+    // It must say WHICH method, or the reader is no better off than with a TypeError.
+    expect(thrown!.message).toMatch(/\.textSearch\(\)/)
+    expect(thrown!.message).toMatch(/orders/)
+    // And it must say what to do, because the tempting move is to skip the suite.
+    expect(thrown!.message).toMatch(/MODEL \.textSearch\(\) in makeFakeSupabase/)
+    expect(thrown!.message).toMatch(/Do not skip this suite/)
+  })
+
+  it('lets the modelled methods and the promise machinery through untouched', () => {
+    /**
+     * The guard must not fire on its own plumbing. `then` is looked up by every await, and jest
+     * probes objects it is asked to compare — a guard that threw on those would be worse than none,
+     * because it would fail the suite for reasons unrelated to the code under test.
+     */
+    const fake = makeFakeSupabase()
+    const builder = (fake.client as unknown as {
+      from: (t: string) => Record<string, unknown>
+    }).from('orders')
+
+    for (const modelled of ['select', 'eq', 'or', 'range', 'then', 'maybeSingle', 'limit']) {
+      expect(typeof builder[modelled]).toBe('function')
+    }
+    // Symbols and inspection hooks must not throw either.
+    expect(() => String((builder as unknown as { toString: () => string }).toString)).not.toThrow()
+  })
+
+  it('still resolves normally through the wrapped builder', () => {
+    // The guard is a Proxy around the real fake; if it changed behaviour, every assertion above
+    // would be measuring the wrapper instead of the resolver.
+    return resolveOrderIdsByMerchantOrderNo(makeFakeSupabase().client, 'FT17847971551076190').then(
+      (resolved) => {
+        expect(resolved.orderIds.length).toBeGreaterThan(0)
+        expect(resolved.source).toBe('orders')
+      },
     )
   })
 })
