@@ -159,6 +159,21 @@ export default function TableDetailScreen({route, navigation}: Props) {
    */
   const [pendingCash, setPendingCash] = useState<SettlementPlan | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  /**
+   * THE HEIGHT OF THE BOTTOM BAR, MEASURED, because the list has to end above it.
+   *
+   * Both bars are position:'absolute' and overlay the list, so the list carried a hardcoded
+   * `paddingBottom: 120` to compensate. That number was right when the bar held two buttons. The
+   * selection bar now holds FIVE stacked elements — the running total, the gratuity section,
+   * Settle Selected, Settle Entire Tab and Take Cash — which on a P5 is well over 120dp, so the
+   * end of the item list sat underneath it with no way to scroll to it. A waiter could not see
+   * what they were ticking.
+   *
+   * A bigger constant would be the same bug waiting for the next control. onLayout reports what
+   * the bar ACTUALLY occupies, including the gratuity section when it is expanded, so the list
+   * cannot be covered again by adding to the bar.
+   */
+  const [bottomBarHeight, setBottomBarHeight] = useState(0);
   const [closingTable, setClosingTable] = useState(false);
   /** #120 residual: the rows the close route reported as blocking, and its own message. */
   const [strandedRequests, setStrandedRequests] = useState<PendingOrderRequest[]>([]);
@@ -1368,7 +1383,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
               renderItemRow(row.line)
             )
           }
-          contentContainerStyle={styles.list}
+          contentContainerStyle={[styles.list, {paddingBottom: bottomBarHeight + Spacing.md}]}
           refreshing={refreshing}
           onRefresh={refreshTable}
           ListFooterComponent={
@@ -1383,7 +1398,9 @@ export default function TableDetailScreen({route, navigation}: Props) {
           keyExtractor={item => item.id}
           renderItem={renderOrderRow}
           contentContainerStyle={
-            orders.length === 0 ? styles.emptyList : styles.list
+            orders.length === 0
+              ? styles.emptyList
+              : [styles.list, {paddingBottom: bottomBarHeight + Spacing.md}]
           }
           refreshing={refreshing}
           onRefresh={refreshTable}
@@ -1406,6 +1423,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
 
       {(byItem ? selectedLineIds.size : selectedIds.size) > 0 ? (
         <View
+          onLayout={e => setBottomBarHeight(e.nativeEvent.layout.height)}
           style={[
             styles.selectionBar,
             {paddingBottom: insets.bottom + Spacing.sm},
@@ -1461,6 +1479,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
         </View>
       ) : (
         <View
+          onLayout={e => setBottomBarHeight(e.nativeEvent.layout.height)}
           style={[
             styles.bottomBar,
             {paddingBottom: insets.bottom + Spacing.md},
@@ -1901,7 +1920,8 @@ const styles = StyleSheet.create({
   },
   list: {
     padding: Spacing.md,
-    paddingBottom: 120,
+    // paddingBottom is supplied at the call site from the MEASURED bar height. It was a hardcoded
+    // 120 here, which is how the list came to be covered when the bar grew to five elements.
   },
   emptyList: {
     flexGrow: 1,
