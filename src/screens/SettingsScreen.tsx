@@ -11,6 +11,10 @@ import {
   View,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import {NavigationContext} from '@react-navigation/native';
+import type {NativeStackNavigationProp} from '@react-navigation/native-stack';
+import type {MainStackParamList} from '../navigation/AppNavigator';
+import {CASH_UP_PRINT} from '../constants/cashUpCopy';
 import {useAuth} from '../context/AuthContext';
 import {useStreamConnection} from '../context/StreamContext';
 import {APP_VERSION} from '../constants';
@@ -44,6 +48,20 @@ import DiagnosticsScreen from './DiagnosticsScreen';
 import PrinterPickerScreen from './PrinterPickerScreen';
 
 export default function SettingsScreen() {
+  /**
+   * NavigationContext, NOT useNavigation.
+   *
+   * `useNavigation` THROWS when this screen is rendered outside a navigator, and the #101 Test
+   * Print suite renders it exactly that way — bare, with no container. Adding the hook turned a
+   * passing suite red for a reason that had nothing to do with what it tests.
+   *
+   * Reading the context directly returns undefined instead of throwing, so the screen still
+   * renders and the cash-up button is simply inert without a navigator — which is the truth:
+   * there is nowhere for it to go.
+   */
+  const navigation = React.useContext(NavigationContext) as
+    | NativeStackNavigationProp<MainStackParamList>
+    | undefined;
   const {signOut} = useAuth();
   const {connectionStatus} = useStreamConnection();
   const [restaurantName, setRestaurantName] = useState('—');
@@ -535,6 +553,22 @@ export default function SettingsScreen() {
                   <Text style={styles.printerActionText}>Change Printer</Text>
                 </Pressable>
               </View>
+
+              {/**
+                * THE ONLY WAY INTO THE CASH-UP, and it lives with the printer controls because
+                * that is where somebody already comes to make paper come out of this device.
+                *
+                * The screen behind it asks for a manager PIN, so this button is deliberately NOT
+                * permission-gated: hiding it would tell a waiter nothing, and showing it costs
+                * nothing because the takings are behind the PIN, not behind the navigation.
+                */}
+              <Pressable
+                testID="settings-cash-up"
+                disabled={!navigation}
+                onPress={() => navigation?.navigate('CashUp')}
+                style={styles.printerActionButton}>
+                <Text style={styles.printerActionText}>{CASH_UP_PRINT}</Text>
+              </Pressable>
 
               <Pressable
                 disabled={forgettingPrinter}

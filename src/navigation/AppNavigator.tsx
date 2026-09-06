@@ -31,6 +31,7 @@ import ServiceRoundScreen from '../screens/ServiceRoundScreen';
 import ServiceTableScreen from '../screens/ServiceTableScreen';
 import POSSaleScreen from '../screens/POSSaleScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import CashUpScreen from '../screens/CashUpScreen';
 import TableDetailScreen from '../screens/TableDetailScreen';
 import TablesScreen from '../screens/TablesScreen';
 import {TableWithTab} from '../types';
@@ -107,6 +108,8 @@ export type MainStackParamList = {
     total: number;
   };
   Settings: undefined;
+  /** End-of-day cash-up, printed on the terminal. Reached from Settings. */
+  CashUp: undefined;
   POSSale: undefined;
   POSCart: {restaurantId: string};
   /**
@@ -345,6 +348,11 @@ function MainNavigator() {
           name="MenuItemDetail"
           component={MenuItemDetailScreen}
           options={{headerShown: false}}
+        />
+        <MainStack.Screen
+          name="CashUp"
+          component={CashUpScreen}
+          options={{title: 'Cash-up'}}
         />
         <MainStack.Screen
           name="Settings"
