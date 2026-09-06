@@ -26,6 +26,22 @@ export type ReconcileOrphanPaymentsResult = {
    */
   amountMismatchCount: number
   amountMismatchIds: string[]
+  /**
+   * WORK THIS RUN COULD NOT DO, and why the two are named separately.
+   *
+   * `ordersLookupsFailed` — events skipped because the orders they name could not be read. Each is
+   * an orphaned payment still orphaned; this function exists to find those, so failing to look is
+   * unfinished work rather than a clean run.
+   *
+   * `receiptLookupsFailed` — paid orders whose receipt state could not be read, and which were
+   * therefore NOT issued a receipt. Not knowing must mean do not issue: the alternative is a second
+   * RCT-numbered tax document for one order, which no later sweep can undo.
+   *
+   * Both are zero on a healthy run. Non-zero means the next run has work to redo, not that the
+   * estate is quiet — a distinction `markedPaid: 0` cannot make on its own.
+   */
+  ordersLookupsFailed: number
+  receiptLookupsFailed: number
 }
 
 /**
@@ -65,6 +81,13 @@ export async function reconcileOrphanPayments(
     throw new Error(`reconcileOrphanPayments: payment_events: ${eventsError.message}`)
   }
 
+  /**
+   * Counted, not just logged. A run that could not read half its events must be able to SAY so —
+   * "0 reconciled" from a healthy quiet night and "0 reconciled" from a failing database look
+   * identical otherwise, and only one of them needs somebody.
+   */
+  let ordersLookupsFailed = 0
+
   for (const event of events ?? []) {
     const orderIds = Array.isArray(event.order_ids)
       ? event.order_ids.map((id) => String(id || '').trim()).filter(Boolean)
@@ -75,12 +98,36 @@ export async function reconcileOrphanPayments(
     // event's amount was for the WHOLE original transaction (a tab settle can cover several
     // orders in one event), so comparing against just the unpaid subset would understate the
     // expected total the moment any sibling order is already paid, and manufacture a mismatch.
-    const { data: eventOrders } = await supabase
+    const { data: eventOrders, error: eventOrdersError } = await supabase
       .from('orders')
       .select(
         'id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at, paycloud_merchant_order_no',
       )
       .in('id', orderIds)
+
+    /**
+     * A RECOVERY PATH MAY NOT ABANDON A PAYMENT IN SILENCE.
+     *
+     * `if (!eventOrders?.length) continue` treated a FAILED READ exactly like "this event names no
+     * orders" — so a transient failure made this loop step over a real orphaned payment with no
+     * record that it had done so. Nothing is wrongly marked paid, which is why it never showed up;
+     * but this function's entire job is finding money that got lost, and a silent skip on that path
+     * is money that stays lost.
+     *
+     * Absence and failure lead to different actions. An event naming no orders is nothing to do. An
+     * event whose orders cannot be READ is unfinished work, and it is now said out loud and counted
+     * so a run reports how much of its own job it could not do. Still `continue` — retrying inside
+     * the loop would hammer a database that is already failing — and the next run picks it up.
+     */
+    if (eventOrdersError) {
+      ordersLookupsFailed += 1
+      console.error('[reconcileOrphanPayments] order lookup failed; event NOT reconciled', {
+        businessOrderNo: String(event.business_order_no || ''),
+        orderIds,
+        error: eventOrdersError.message,
+      })
+      continue
+    }
 
     if (!eventOrders?.length) continue
 
@@ -307,9 +354,10 @@ export async function reconcileOrphanPayments(
   }
 
   let receiptsIssued = 0
+  let receiptLookupsFailed = 0
   for (const row of paidOrders ?? []) {
     const orderId = String(row.id)
-    const { data: receipt } = await supabase
+    const { data: receipt, error: receiptError } = await supabase
       .from('receipt_documents')
       .select('id')
       .eq('order_id', orderId)
@@ -317,10 +365,39 @@ export async function reconcileOrphanPayments(
       .limit(1)
       .maybeSingle()
 
+    /**
+     * NOT KNOWING MEANS DO NOT ISSUE.
+     *
+     * The error used to be discarded, so a failed read produced `receipt === null` — identical to
+     * "this order has no receipt" — and this loop issued another one. That is a DUPLICATE
+     * RCT-NUMBERED TAX DOCUMENT for a single order, minted by a cron with nobody watching, from a
+     * transient database failure.
+     *
+     * Absence and failure lead to opposite actions here, so they need different code paths. An
+     * order whose receipt state cannot be read is left for the next run, which is harmless: the
+     * receipt either exists already or is still missing, and one more sweep costs nothing. Issuing
+     * a second tax document cannot be undone by a later sweep.
+     */
+    if (receiptError) {
+      receiptLookupsFailed += 1
+      console.error('[reconcileOrphanPayments] receipt lookup failed; NOT issuing', {
+        orderId,
+        error: receiptError.message,
+      })
+      continue
+    }
+
     if (receipt) continue
 
     await safeIssueReceiptForOrder(orderId, 'cron/reconcile-orphan-payments')
     receiptsIssued += 1
+  }
+
+  if (receiptLookupsFailed > 0) {
+    console.error('[reconcileOrphanPayments] receipt lookups failed this run', {
+      receiptLookupsFailed,
+      note: 'those orders were skipped rather than re-issued; the next run retries them',
+    })
   }
 
   return {
@@ -331,5 +408,11 @@ export async function reconcileOrphanPayments(
     recoveredAfterAutoCancelIds: [...new Set(recoveredAfterAutoCancelIds)],
     amountMismatchCount: amountMismatchIds.length,
     amountMismatchIds: [...new Set(amountMismatchIds)],
+    /**
+     * WORK THIS RUN COULD NOT DO. Reported rather than buried, so a caller can tell a quiet night
+     * from a failing database — both otherwise report markedPaid: 0.
+     */
+    ordersLookupsFailed,
+    receiptLookupsFailed,
   }
 }

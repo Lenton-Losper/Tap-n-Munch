@@ -858,6 +858,21 @@ export async function autoCancelStalePosOrders(
   const priorSkipCounts = new Map<string, number>()
   try {
     const since = new Date(Date.now() - SKIP_REPROBE_INTERVAL_MS).toISOString()
+    /**
+     * THE DISCARDED ERROR HERE FAILS SAFE, AND THAT IS DELIBERATE — not an oversight.
+     *
+     * This read only throttles RE-PROBING: a row means "we skipped verifying this order recently,
+     * do not hammer the gateway again". If the read fails, `priorSkips` is null, `recentlyProbed`
+     * stays empty, and every candidate is treated as NOT recently probed — so the run VERIFIES
+     * MORE, not less. Extra verification against the gateway is the safe direction; skipping
+     * verification because we could not read a throttle would not be.
+     *
+     * Recorded because it is the exception. Three sibling reads on this path were fixed on
+     * 2026-09-06 for exactly the shape this one has — a discarded error whose fallback is
+     * indistinguishable from a legitimate empty result — and the next person tidying up will find
+     * this one and assume it was missed. It was not: absence and failure lead to the SAME action
+     * here, which is the only condition under which sharing a code path is correct.
+     */
     const { data: priorSkips } = await supabase
       .from('audit_logs')
       .select('entity_id, created_at')
