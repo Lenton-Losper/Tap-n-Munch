@@ -58,6 +58,21 @@ export const TAKE_PAYMENT_SELECTION_ONE = '1 item — {amount}';
  *     part of one. "Tick the whole order" names the unit; "take cash for these items" names what
  *     is already selected, so both branches point at something the waiter can see.
  */
+/**
+ * ================================================================================================
+ * RETIRED 2026-09-08 — SIGNED 2026-09-04, SHIPPED, AND NO LONGER TRUE.
+ * ================================================================================================
+ *
+ * "Card payments cover a whole order" was a fact about OUR schema, not about the reader:
+ * orders.paycloud_merchant_order_no is one value per order, minted once and never rotated, so a
+ * second card charge on one order reused the first charge's reference and the webhook could not
+ * tell the two settlements apart. terminal_payment_intents gives each charge its own reference, and
+ * card now works on a part-order selection exactly as cash does.
+ *
+ * KEPT RATHER THAN DELETED because it was signed, and a signed string vanishing from the file makes
+ * the signature unauditable. It is exported, referenced by the lock test, and rendered NOWHERE —
+ * which is asserted, so nobody wires it back in without a fresh decision.
+ */
 export const TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER =
   'Card payments cover a whole order. Tick the whole order, or take cash for these items.';
 

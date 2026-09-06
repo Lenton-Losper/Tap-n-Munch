@@ -10,9 +10,13 @@
  *      the item ledger is not touched -- the card reader's fallbacks stay on the common case.
  *   3. A PART-ORDER SELECTION ALLOCATES AND SETTLES THROUGH THE LEDGER, and `settleTab` is NOT
  *      called with a hand-made amount.
- *   4. CARD REFUSES A PART-ORDER SELECTION RATHER THAN RECORDING A PAYMENT NOBODY TOOK. The item
- *      route does not drive the reader; a 'card' settlement written there is money that never
- *      arrived.
+ *   4. CARD ON A PART-ORDER SELECTION CHARGES BEFORE IT SETTLES. Until 2026-09-08 this asserted
+ *      the opposite -- the card button refused, because one order carried one gateway reference
+ *      and a second charge would have reused the first one's. Payment intents give each charge its
+ *      own reference, so the refusal is retired and what is pinned here is the ordering that
+ *      replaced it: prepare an intent, drive the reader with THAT reference and THAT amount, then
+ *      record the outcome. A settlement that runs without the charge is money that never arrived,
+ *      and that is what the ordering assertions exist to catch.
  *
  * A tab the server cannot itemise must keep the order list it has always had. That is asserted
  * too, because a silent switch to an empty item list is a table nobody can charge.
@@ -30,6 +34,8 @@ const mockGetTablesWithMeta = jest.fn();
 const mockGetTabLines = jest.fn();
 const mockAllocateLine = jest.fn();
 const mockSettleAllocations = jest.fn();
+const mockPrepareSplitPayment = jest.fn();
+const mockRecordSplitPayment = jest.fn();
 
 jest.mock('../../lib/api', () => {
   const actual = jest.requireActual('../../lib/api');
@@ -40,6 +46,8 @@ jest.mock('../../lib/api', () => {
     getTabLines: (...args: unknown[]) => mockGetTabLines(...(args as [])),
     allocateLine: (...args: unknown[]) => mockAllocateLine(...(args as [])),
     settleAllocations: (...args: unknown[]) => mockSettleAllocations(...(args as [])),
+    prepareSplitPayment: (...args: unknown[]) => mockPrepareSplitPayment(...(args as [])),
+    recordSplitPayment: (...args: unknown[]) => mockRecordSplitPayment(...(args as [])),
     closeTable: jest.fn(async () => ({})),
     completePaymentReliably: jest.fn(async () => true),
     getAuthorizedUsers: jest.fn(async () => []),
@@ -75,10 +83,8 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 
 import TableDetailScreen from '../TableDetailScreen';
-import {
-  TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER,
-  TAKE_PAYMENT_NOT_ITEMISED,
-} from '../../constants/takePaymentCopy';
+import {TAKE_PAYMENT_NOT_ITEMISED} from '../../constants/takePaymentCopy';
+import {SPLIT_CARD_PAID} from '../../constants/splitCardCopy';
 
 const mockAlert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
 
@@ -280,24 +286,133 @@ describe('which money path a payment takes', () => {
     expect(mockProcessPaymentIntent).toHaveBeenCalled();
   });
 
-  it('refuses card on part of an order instead of recording a payment nobody took', async () => {
-    const tree = await mount(oneOrderTab());
-    await tap(tree, 'take-payment-line-line-steak');
-
+  const pressSettleSelected = async (tree: renderer.ReactTestRenderer) => {
     const pressables = tree.root.findAll(
       n => typeof n.props?.onPress === 'function' && renderedText(n).includes('Settle Selected'),
     );
     await act(async () => {
       await pressables[pressables.length - 1].props.onPress();
     });
+  };
 
-    expect(mockProcessPaymentIntent).not.toHaveBeenCalled();
+  it('card on a part-order selection charges under the intent own reference', async () => {
+    /**
+     * THE ORDERING IS THE ASSERTION. A part-order card payment is three server-visible steps and
+     * only one of them moves money, so what matters is that the charge happens BETWEEN the two
+     * bookkeeping calls: prepare mints a reference nothing else will ever reuse, the reader is
+     * driven with that reference and that amount, and only then is an outcome recorded.
+     *
+     * It must NOT go down settleTab -- that route settles a whole order at the order's own total,
+     * which is not what was selected -- and it must NOT go down settleAllocations, which writes
+     * method 'card' having charged nothing at all.
+     */
+    mockPrepareSplitPayment.mockResolvedValue({
+      intentId: 'intent-1',
+      merchantOrderNo: 'FT-SPLIT-ABC',
+      amountCents: 15000,
+      allocationIds: ['alloc-steak'],
+    });
+    mockProcessPaymentIntent.mockResolvedValue({
+      success: true,
+      outcomeKind: 'success',
+      transactionId: 'txn-9',
+    });
+    mockRecordSplitPayment.mockResolvedValue({
+      intentId: 'intent-1',
+      status: 'confirmed',
+      settledAllocationIds: ['alloc-steak'],
+    });
+
+    const tree = await mount(oneOrderTab());
+    await tap(tree, 'take-payment-line-line-steak');
+    await pressSettleSelected(tree);
+
+    /**
+     * THE LINE IS ALLOCATED BEFORE ANYTHING IS PREPARED. A waiter ticking one item on an order
+     * nobody has split yet is the ordinary case for this whole feature, and it produces a plan
+     * whose `settle` list is EMPTY -- the line lives in `allocate`. Charging against `settle`
+     * alone launched the reader against no items at all, which is why the ids handed to prepare
+     * are asserted here rather than only the fact that it was called.
+     */
+    expect(mockAllocateLine).toHaveBeenCalledTimes(1);
+    expect(mockPrepareSplitPayment).toHaveBeenCalledTimes(1);
+    expect(mockPrepareSplitPayment.mock.calls[0][1]).toEqual(['alloc-1']);
+    expect(mockPrepareSplitPayment.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockAllocateLine.mock.invocationCallOrder[0],
+    );
+    expect(mockProcessPaymentIntent).toHaveBeenCalledTimes(1);
+
+    // The reader is driven with the INTENT's amount and reference, not the order's.
+    const [amount, reference] = mockProcessPaymentIntent.mock.calls[0];
+    expect(amount).toBe(150);
+    expect(reference).toBe('FT-SPLIT-ABC');
+
+    // Charge first, bookkeeping second -- never the other way round.
+    expect(mockProcessPaymentIntent.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockPrepareSplitPayment.mock.invocationCallOrder[0],
+    );
+    expect(mockRecordSplitPayment.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockProcessPaymentIntent.mock.invocationCallOrder[0],
+    );
+
+    const [tabId, params] = mockRecordSplitPayment.mock.calls[0];
+    expect(tabId).toBe('tab-1');
+    expect(params.merchantOrderNo).toBe('FT-SPLIT-ABC');
+    expect(params.outcome).toBe('success');
+
+    // Neither of the two routes that would record money nobody charged.
     expect(mockSettleTab).not.toHaveBeenCalled();
     expect(mockSettleAllocations).not.toHaveBeenCalled();
-    expect(mockAlert).toHaveBeenCalledWith(
-      'Take Payment',
-      TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER,
+
+    expect(mockAlert).toHaveBeenCalledWith('Take Payment', SPLIT_CARD_PAID);
+  });
+
+  it('an ambiguous reader result records uncertain, and settles nothing itself', async () => {
+    /**
+     * E04111 from this gateway means NO RECORD, never NOT PAID. The device must not decide the
+     * charge failed -- it reports what it saw and the server holds the items. Recording 'failed'
+     * here would release items the customer may have paid for.
+     */
+    mockPrepareSplitPayment.mockResolvedValue({
+      intentId: 'intent-2',
+      merchantOrderNo: 'FT-SPLIT-DEF',
+      amountCents: 15000,
+      allocationIds: ['alloc-steak'],
+    });
+    mockProcessPaymentIntent.mockResolvedValue({
+      success: false,
+      outcomeKind: 'ambiguous',
+      error: 'no record',
+    });
+    mockRecordSplitPayment.mockResolvedValue({
+      intentId: 'intent-2',
+      status: 'uncertain',
+      itemsHeld: ['alloc-steak'],
+    });
+
+    const tree = await mount(oneOrderTab());
+    await tap(tree, 'take-payment-line-line-steak');
+    await pressSettleSelected(tree);
+
+    expect(mockRecordSplitPayment.mock.calls[0][1].outcome).toBe('uncertain');
+    expect(mockSettleAllocations).not.toHaveBeenCalled();
+    expect(mockSettleTab).not.toHaveBeenCalled();
+  });
+
+  it('a prepare that refuses never reaches the reader', async () => {
+    // The refusals exist because the items are already spoken for. Driving the reader anyway would
+    // charge a customer for items somebody else is in the middle of paying for.
+    mockPrepareSplitPayment.mockRejectedValue(
+      Object.assign(new Error('held'), {code: 'ITEMS_HELD_BY_CARD'}),
     );
+
+    const tree = await mount(oneOrderTab());
+    await tap(tree, 'take-payment-line-line-steak');
+    await pressSettleSelected(tree);
+
+    expect(mockProcessPaymentIntent).not.toHaveBeenCalled();
+    expect(mockRecordSplitPayment).not.toHaveBeenCalled();
+    expect(mockSettleAllocations).not.toHaveBeenCalled();
   });
 
   it('takes cash for part of an order through the item ledger', async () => {

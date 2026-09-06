@@ -65,3 +65,46 @@ describe('Take Payment by item — copy', () => {
     expect(ALLOCATION_PAYER_AT_TABLE.trim().length).toBeGreaterThan(0);
   });
 });
+
+describe('TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER is retired, not merely unused', () => {
+  /**
+   * Signed 2026-09-04, shipped, and no longer TRUE as of 2026-09-08. "Card payments cover a whole
+   * order" was a fact about our schema — orders.paycloud_merchant_order_no is one value per order,
+   * so a second charge reused the first charge's reference — not about the reader. Intents give
+   * each charge its own reference and card now works on a part-order selection.
+   *
+   * It stays in the file because deleting a signed string makes the signature unauditable. This
+   * asserts it renders NOWHERE, so wiring it back in is a decision somebody has to make on purpose.
+   */
+  it('nothing in the app renders it', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const {readFileSync, readdirSync, statSync} = require('fs') as {
+      readFileSync: (p: string, e: string) => string;
+      readdirSync: (p: string) => string[];
+      statSync: (p: string) => {isDirectory: () => boolean};
+    };
+    const resolve = (require as unknown as {resolve: (m: string) => string}).resolve;
+    const resolved = resolve('../../constants/takePaymentCopy').split(String.fromCharCode(92)).join('/');
+    const SRC = resolved.slice(0, resolved.lastIndexOf('/constants/'));
+
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        if (name === '__tests__') continue;
+        const full = dir + '/' + name;
+        if (statSync(full).isDirectory()) {
+          walk(full);
+        } else if (
+          /\.(ts|tsx)$/.test(name) &&
+          !full.endsWith('/constants/takePaymentCopy.ts')
+        ) {
+          if (/TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER/.test(readFileSync(full, 'utf8'))) {
+            offenders.push(full.slice(SRC.length + 1));
+          }
+        }
+      }
+    };
+    walk(SRC);
+    expect(offenders).toEqual([]);
+  });
+});

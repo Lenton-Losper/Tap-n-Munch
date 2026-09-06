@@ -2713,6 +2713,135 @@ export async function getCashUpReport(
   return data as CashUpReport;
 }
 
+/**
+ * PART-ORDER CARD PAYMENT — two routes, one charge.
+ *
+ * WHY THIS IS NOT settleAllocations WITH method:'card'. That route RECORDS a method and charges
+ * nothing; passing 'card' to it would mark items paid with no money taken. The refusal this
+ * replaces existed for exactly that reason and was correct at the time.
+ *
+ * THE SHAPE:
+ *   prepare  mints a reference for this selection and HOLDS the items from that instant
+ *   reader   PaymentModule.launchPayment with that reference as businessOrderNo
+ *   record   turns the device's outcome into a resolution
+ *
+ * THE AMOUNT IS THE SERVER'S. prepare returns amount_cents summed from the allocations, and that
+ * figure is what the reader is asked for. The device never proposes an amount — an invented one
+ * would become a charge.
+ *
+ * 401 ONLY evicts. Every refusal on both routes is 400/403/404/409/503, so a held-items refusal
+ * cannot sign the terminal out mid-service.
+ */
+export interface SplitPaymentIntent {
+  intentId: string;
+  merchantOrderNo: string;
+  amountCents: number;
+  allocationIds: string[];
+}
+
+export async function prepareSplitPayment(
+  tabId: string,
+  allocationIds: string[],
+  token: string,
+): Promise<SplitPaymentIntent> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/prepare-split-payment`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({allocation_ids: allocationIds}),
+    },
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as {
+    intent_id?: string;
+    merchant_order_no?: string;
+    amount_cents?: number;
+    allocation_ids?: string[];
+  };
+
+  if (!data.merchant_order_no || !data.intent_id || !data.amount_cents) {
+    // Without all three there is nothing to charge against, and launching the reader on a partial
+    // response is how a charge happens under a reference nothing can correlate.
+    throw new Error('prepare-split-payment did not return a usable reference');
+  }
+
+  return {
+    intentId: String(data.intent_id),
+    merchantOrderNo: String(data.merchant_order_no),
+    amountCents: Number(data.amount_cents),
+    allocationIds: Array.isArray(data.allocation_ids) ? data.allocation_ids.map(String) : allocationIds,
+  };
+}
+
+/**
+ * What the reader said.
+ *
+ * ANYTHING THE DEVICE IS NOT SURE OF IS 'uncertain', NEVER 'failed'. The server treats an
+ * unrecognised outcome as uncertain too, so the two agree by construction — but the mapping happens
+ * HERE, where the device's own vocabulary lives, and it is one-way on purpose: only a confirmed
+ * gateway refusal becomes 'failed'.
+ */
+export type SplitPaymentOutcome = 'success' | 'failed' | 'uncertain';
+
+export interface SplitPaymentRecordResult {
+  intentId: string;
+  status: 'confirmed' | 'failed' | 'uncertain';
+  alreadyResolved?: boolean;
+  settledAllocationIds?: string[];
+  itemsHeld?: string[];
+  itemsReleased?: string[];
+}
+
+export async function recordSplitPayment(
+  tabId: string,
+  params: {
+    merchantOrderNo: string;
+    outcome: SplitPaymentOutcome;
+    transactionId?: string | null;
+    gatewayResultCode?: string | null;
+  },
+  token: string,
+): Promise<SplitPaymentRecordResult> {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/record-split-payment`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        merchant_order_no: params.merchantOrderNo,
+        outcome: params.outcome,
+        ...(params.transactionId ? {transaction_id: params.transactionId} : {}),
+        ...(params.gatewayResultCode ? {gateway_result_code: params.gatewayResultCode} : {}),
+      }),
+    },
+    token,
+  );
+
+  throwIfTerminalSessionExpired(response);
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as Record<string, unknown>;
+  return {
+    intentId: String(data.intent_id ?? ''),
+    status: (data.status as SplitPaymentRecordResult['status']) ?? 'uncertain',
+    alreadyResolved: data.already_resolved === true,
+    settledAllocationIds: Array.isArray(data.settled_allocation_ids)
+      ? data.settled_allocation_ids.map(String)
+      : undefined,
+    itemsHeld: Array.isArray(data.items_held) ? data.items_held.map(String) : undefined,
+    itemsReleased: Array.isArray(data.items_released) ? data.items_released.map(String) : undefined,
+  };
+}
+
 export async function getTabLines(
   tabId: string,
   token: string,

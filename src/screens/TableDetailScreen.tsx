@@ -42,6 +42,21 @@ import {
 } from '../lib/api';
 import QRCode from 'react-native-qrcode-svg';
 import {
+  prepareSplitPayment,
+  recordSplitPayment,
+} from '../lib/api';
+import {
+  mustNotOfferPaymentAgain,
+  outcomeForDeviceResult,
+  splitCardFailureMessage,
+  splitCardResultMessage,
+} from '../lib/splitCardPayment';
+import {
+  SPLIT_CARD_ITEMS_GONE,
+  SPLIT_CARD_PENDING_ROW,
+  SPLIT_CARD_PENDING_TITLE,
+} from '../constants/splitCardCopy';
+import {
   declinedFailureReference,
   processPaymentIntent,
   resolveAmbiguousPaymentWithFinatic,
@@ -70,7 +85,6 @@ import {
 } from '../lib/takePaymentLines';
 import {
   TAKE_PAYMENT_ALL_PAID,
-  TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER,
   TAKE_PAYMENT_LINE_NO_PRICE,
   TAKE_PAYMENT_LINE_NOT_CLAIMABLE,
   TAKE_PAYMENT_LINE_PAID,
@@ -196,6 +210,15 @@ export default function TableDetailScreen({route, navigation}: Props) {
    * double-collection the server refuses with CARD_PAYMENT_IN_FLIGHT, and the device should not
    * be sending it in the first place. See the block comment in runSettle.
    */
+  /**
+   * Allocations this device knows a card is still settling.
+   *
+   * The SERVER is the authority — settle-allocations refuses them and a refresh reports them — but
+   * this is what stops a waiter reaching that refusal with a customer watching. Belt and braces on
+   * the one state where the wrong move charges somebody twice.
+   */
+  const [heldAllocationIds, setHeldAllocationIds] = useState<string[]>([]);
+
   const settleInFlight = useRef(false);
   /**
    * Server's in-flight window, from /api/terminal/tables. Never hardcoded — the countdown
@@ -681,10 +704,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
    * settlement -- an interrupted run leaves allocations that are visibly still owed on this very
    * screen, which is recoverable; a settle without them would not be.
    *
-   * CASH ONLY, DELIBERATELY. The card reader is driven by the whole-order flow, which owns the
-   * push/poll and the four gateway fallbacks. Recording method 'card' here without charging
-   * anything would write a card payment nobody took -- so the card button refuses a part-order
-   * selection and says how to get the card back. See TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER.
+   * CASH ONLY -- this function, not this screen. Card on a part-order selection goes through
+   * runSplitCardPayment, which mints a payment intent so the charge carries its own gateway
+   * reference and then settles the same allocations through the same ledger. What must never
+   * happen is what this comment used to describe as impossible: recording method 'card' here
+   * without charging anything.
    */
   const runCashSettleAllocations = async (
     target: Extract<SettlementPlan, {kind: 'allocations'}>,
@@ -1144,17 +1168,130 @@ export default function TableDetailScreen({route, navigation}: Props) {
     );
   };
 
+  /**
+   * A PART-ORDER CARD CHARGE, end to end.
+   *
+   * This used to refuse: "Card payments cover a whole order." That was true of OUR SCHEMA, not of
+   * the reader — orders.paycloud_merchant_order_no is one value per order, so a second charge on
+   * one order reused the first charge's reference and the webhook could not tell them apart. An
+   * intent gives each charge its own reference, and three people paying for their own items is now
+   * the ordinary case it always should have been.
+   *
+   * PREPARE, CHARGE, RECORD — and the items are HELD from the moment prepare returns, before the
+   * reader is touched. The window between deciding to charge and the reader answering is exactly
+   * when a second payment for the same food would be taken.
+   *
+   * THE AMOUNT COMES FROM THE SERVER. `plan.totalCents` is what this screen shows; the figure the
+   * reader is asked for is the one prepare returns, summed from the allocations themselves.
+   */
+  const runSplitCardPayment = useCallback(
+    async (target: Extract<SettlementPlan, {kind: 'allocations'}>) => {
+      if (settleInFlight.current) return;
+      settleInFlight.current = true;
+      setSettling(true);
+      try {
+        const token = await getTerminalToken();
+        if (!token) {
+          Alert.alert('Take Payment', 'This terminal is not signed in any more. Re-activate it, then try again.');
+          return;
+        }
+
+        const tabId = table.tab?.id ?? null;
+        if (!tabId) {
+          Alert.alert('Take Payment', SPLIT_CARD_ITEMS_GONE);
+          return;
+        }
+
+        /**
+         * ALLOCATE FIRST, EXACTLY AS THE CASH PATH DOES.
+         *
+         * The ordinary case for this whole feature -- a waiter ticks one item on an order nobody
+         * has split yet -- produces a plan whose `settle` list is EMPTY and whose `allocate` list
+         * holds the line. Charging against `settle` alone would launch the reader for nothing.
+         *
+         * The allocate step writes no settlement, so an interrupted run leaves allocations that are
+         * visibly still owed on this very screen. Doing it before the charge is what makes the
+         * intent name real allocation ids, which is what the server holds and what the webhook
+         * settles if the device never hears back.
+         */
+        const allocationIds = [...target.settle];
+        for (const {lineId} of target.allocate) {
+          const line = payable.find(row => row.id === lineId);
+          if (!line) continue;
+          const allocated = await allocateLine(
+            tabId,
+            lineId,
+            [{allocated_to: ALLOCATION_PAYER_AT_TABLE, quantity_allocated: line.quantity}],
+            token,
+          );
+          allocationIds.push(...allocated.allocations.map(a => a.id));
+        }
+
+        if (allocationIds.length === 0) {
+          Alert.alert('Take Payment', SPLIT_CARD_ITEMS_GONE);
+          return;
+        }
+
+        const intent = await prepareSplitPayment(tabId, allocationIds, token);
+
+        const result = await processPaymentIntent(
+          intent.amountCents / 100,
+          // The reference the server minted. NOT an order id: this charge belongs to items.
+          intent.merchantOrderNo,
+        );
+
+        const outcome = outcomeForDeviceResult(result);
+        const recorded = await recordSplitPayment(
+          tabId,
+          {
+            merchantOrderNo: intent.merchantOrderNo,
+            outcome,
+            // voucherNo is the device's own reference for the transaction; gatewayResult is the
+            // raw code (e.g. N003). Both are recorded for reconciliation, neither is required.
+            transactionId: result.voucherNo ?? null,
+            gatewayResultCode: result.gatewayResult ?? null,
+          },
+          token,
+        );
+
+        /**
+         * HELD IS NOT A FAILURE, AND MUST NOT LOOK LIKE ONE. The signed body names both wrong moves
+         * — cash and re-running the card — because a waiter looking at items they cannot take
+         * payment for reaches for cash.
+         */
+        if (mustNotOfferPaymentAgain(recorded.status)) {
+          setHeldAllocationIds((prev: string[]) => [...new Set([...prev, ...allocationIds])]);
+          Alert.alert(SPLIT_CARD_PENDING_TITLE, splitCardResultMessage(recorded.status));
+        } else {
+          Alert.alert('Take Payment', splitCardResultMessage(recorded.status));
+        }
+
+        setSelectedLineIds(new Set());
+        await refreshTable();
+      } catch (err) {
+        const code = err instanceof ApiRequestError ? err.code ?? null : null;
+        Alert.alert(
+          'Take Payment',
+          splitCardFailureMessage(code) ??
+            (err instanceof Error ? err.message : 'The payment could not be taken.'),
+        );
+      } finally {
+        setSettling(false);
+        settleInFlight.current = false;
+      }
+    },
+    [table, refreshTable, payable],
+  );
+
   const handleSettleSelected = () => {
     if (!byItem) {
       runSettle(Array.from(selectedIds));
       return;
     }
-    /**
-     * CARD ON A PART-ORDER SELECTION IS REFUSED, not quietly recorded. The reader is driven by the
-     * whole-order flow; the item ledger does not drive it. See runCashSettleAllocations.
-     */
     if (plan.kind === 'allocations') {
-      Alert.alert('Take Payment', TAKE_PAYMENT_CARD_NEEDS_WHOLE_ORDER);
+      // The whole plan, not just `settle`: the lines it would still create are the ordinary case,
+      // and a charge that named none of them would launch the reader against nothing.
+      void runSplitCardPayment(plan);
       return;
     }
     if (plan.kind === 'orders') {
@@ -1190,8 +1327,20 @@ export default function TableDetailScreen({route, navigation}: Props) {
    */
   const renderItemRow = (line: PayableLine) => {
     const partPaid = line.settledCents > 0 && !line.isPaid;
-    const label =
-      line.refusal === 'paid'
+    /**
+     * HELD BY A CARD THAT HAS NOT CONFIRMED.
+     *
+     * Checked FIRST, ahead of every other refusal, because it is the only one where the wrong move
+     * charges somebody twice. The row is unselectable and says "Card pending" — not "paid", which
+     * would be a claim we cannot make, and not an error, because nothing is broken.
+     *
+     * The server refuses these too. This exists so a waiter never reaches that refusal with a
+     * customer watching and a card machine in hand.
+     */
+    const heldByCard = line.openAllocationIds.some(id => heldAllocationIds.includes(id));
+    const label = heldByCard
+      ? SPLIT_CARD_PENDING_ROW
+      : line.refusal === 'paid'
         ? TAKE_PAYMENT_LINE_PAID
         : line.refusal === 'no_price'
           ? TAKE_PAYMENT_LINE_NO_PRICE
@@ -1203,21 +1352,22 @@ export default function TableDetailScreen({route, navigation}: Props) {
                   formatCents(line.outstandingCents),
                 )
               : null;
-    const selected = selectedLineIds.has(line.id);
+    const selected = selectedLineIds.has(line.id) && !heldByCard;
+    const selectable = line.selectable && !heldByCard;
 
     return (
       <Pressable
         key={line.id}
         testID={`take-payment-line-${line.id}`}
-        style={[styles.orderRow, !line.selectable && styles.orderRowPaid]}
-        disabled={!line.selectable || settling || cashSettling}
+        style={[styles.orderRow, !selectable && styles.orderRowPaid]}
+        disabled={!selectable || settling || cashSettling}
         onPress={() => toggleLineSelection(line)}>
         <MaterialCommunityIcons
           name={
-            line.selectable && selected ? 'checkbox-marked' : 'checkbox-blank-outline'
+            selectable && selected ? 'checkbox-marked' : 'checkbox-blank-outline'
           }
           size={24}
-          color={line.selectable ? Colors.primary : Colors.textMuted}
+          color={selectable ? Colors.primary : Colors.textMuted}
         />
         <View style={styles.orderInfo}>
           <Text style={styles.memberName} numberOfLines={1}>
