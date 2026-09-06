@@ -2679,6 +2679,53 @@ export async function getTabLines(
         is_ready: line.is_ready === true,
         is_voided: line.is_voided === true,
         unrouted: line.unrouted === true,
+        /**
+         * ========================================================================================
+         * THE ADDITIVE FIELDS. THEY WERE DECLARED, SENT, AND DROPPED HERE FOR TWO RELEASES.
+         * ========================================================================================
+         *
+         * This mapper is a WHITELIST: anything it does not name is discarded, and because every
+         * field below is optional on TabLine the result still typechecked with all of them
+         * missing. The cost was two defects at Digi Cofee on 2026-09-06, from ONE omission:
+         *
+         *   - `total_cents` absent -> describeLine sets totalCents null -> every line reads
+         *     "No price — settle this order whole", nothing is selectable, and the cash button
+         *     reads "Cash unavailable" because eligibleCount is 0. Take Payment unusable.
+         *   - `is_cooked` absent   -> lineDisplayState falls through to 'making' -> the kitchen
+         *     board shows Cooked and the terminal still says "Being made", forever.
+         *
+         * NEITHER WAS A SERVER FAULT. Order #44's items were well formed and every
+         * source_item_index was valid; the server sent the fields and this function threw them
+         * away. tabLinesMapperCarriesEveryField.test.ts now fails if that happens again.
+         *
+         * ABSENT IS PRESERVED, NOT DEFAULTED. Each of these is optional because a server that
+         * predates the feature sends nothing, and TabLine's own comments require `undefined` to
+         * behave exactly as this app behaved before. Writing `false` or `0` over a missing field
+         * would turn "this server does not report it" into a confident claim that the food is not
+         * cooked and the line is worth nothing.
+         */
+        ...(line.is_collected === undefined ? {} : {is_collected: line.is_collected === true}),
+        ...(line.is_cooked === undefined ? {} : {is_cooked: line.is_cooked === true}),
+        /**
+         * null is a REAL value here — the server could not price this line and says so — and it is
+         * NOT the same as the field being absent. Neither may become 0: a line silently worth
+         * nothing is how a table walks out having paid for three of its four dishes.
+         */
+        ...(line.total_cents === undefined ? {} : {total_cents: finiteOrNull(line.total_cents)}),
+        ...(line.allocated_cents === undefined
+          ? {}
+          : {allocated_cents: Number(line.allocated_cents ?? 0)}),
+        ...(Array.isArray(line.allocations)
+          ? {
+              allocations: line.allocations.map(a => ({
+                id: String(a.id ?? ''),
+                allocated_to: String(a.allocated_to ?? ''),
+                quantity_allocated: Number(a.quantity_allocated ?? 0),
+                amount_cents: Number(a.amount_cents ?? 0),
+                settled_at: a.settled_at ?? null,
+              })),
+            }
+          : {}),
       })),
     })),
     summary: {
@@ -2686,6 +2733,31 @@ export async function getTabLines(
       outstanding: Number(data.summary?.outstanding ?? 0),
       ready: Number(data.summary?.ready ?? 0),
       voided: Number(data.summary?.voided ?? 0),
+      /**
+       * Dropped by the same whitelist. Defaulting is worse here than anywhere else on this
+       * payload: the type's own comment says absent must mean "this server does not distinguish",
+       * NEVER zero-with-confidence. cookedProgress() suppresses an absent station; handing it
+       * {cooked: 0, total: 0} would make it render "Kitchen 0 of 0 plated" instead of nothing.
+       */
+      ...(data.summary?.collected === undefined
+        ? {}
+        : {collected: Number(data.summary.collected)}),
+      ...(data.summary?.kitchen === undefined
+        ? {}
+        : {
+            kitchen: {
+              cooked: Number(data.summary.kitchen.cooked ?? 0),
+              total: Number(data.summary.kitchen.total ?? 0),
+            },
+          }),
+      ...(data.summary?.bar === undefined
+        ? {}
+        : {
+            bar: {
+              cooked: Number(data.summary.bar.cooked ?? 0),
+              total: Number(data.summary.bar.total ?? 0),
+            },
+          }),
     },
     // Same reasoning as is_ready: absent is never "everything is ready".
     all_ready: data.all_ready === true,
