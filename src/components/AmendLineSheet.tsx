@@ -24,10 +24,19 @@ import {Modal, Pressable, StyleSheet, Text, View} from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {Colors, Spacing} from '../constants/theme';
 import * as Copy from '../constants/amendCopy';
-import {amendTabLines, ApiRequestError} from '../lib/api';
+import {amendTabLines, ApiRequestError, authorizeTerminalAction} from '../lib/api';
 import {canAmendLine, type AmendResult, type RefusedAmendment} from '../lib/amendTabLines';
 import {getTerminalToken} from '../lib/storage';
 import type {TabLine} from '../lib/tabLines';
+import VoidApproval from './VoidApproval';
+import {
+  isReduction,
+  reductionEffect,
+  voidApprovalComplete,
+  voidFailureMessage,
+  type VoidApprovalDraft,
+} from '../lib/voidApproval';
+import {VOID_CONFIRM} from '../constants/voidCopy';
 
 type Props = {
   tabId: string;
@@ -42,16 +51,26 @@ export default function AmendLineSheet({tabId, line, onClose, onAmended}: Props)
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [refusals, setRefusals] = useState<RefusedAmendment[]>([]);
+  const [approval, setApproval] = useState<VoidApprovalDraft | null>(null);
 
   const open = line != null;
   const current = quantity ?? line?.quantity ?? 0;
   const editable = line != null && canAmendLine(line);
+
+  /**
+   * TAKING FOOD OFF THE BILL, WHICH IS NOT THE SAME AS CHANGING A QUANTITY.
+   *
+   * Tested against the line's CURRENT quantity, exactly as the server tests it, so the sheet asks
+   * for a PIN in precisely the cases the server demands one. 3→1 is as much a void as 3→0.
+   */
+  const isVoid = line != null && isReduction(line.quantity, current);
 
   const reset = useCallback(() => {
     setQuantity(null);
     setBusy(false);
     setFailure(null);
     setRefusals([]);
+    setApproval(null);
   }, []);
 
   const dismiss = useCallback(() => {
@@ -74,10 +93,43 @@ export default function AmendLineSheet({tabId, line, onClose, onAmended}: Props)
           throw new Error(Copy.AMEND_NO_SESSION);
         }
 
+        /**
+         * MINTED AND SPENT IN ONE PRESS.
+         *
+         * The PIN buys a single-use, short-lived token for purpose 'line_void', and the amend
+         * consumes it. Doing both here rather than on a separate Approve tap means the token
+         * cannot expire while the table argues about the bill, and means there is no state in
+         * which a manager has approved and nothing has happened.
+         *
+         * The permission is checked at BOTH ends -- mint and consume -- since 2026-09-04, because
+         * one enforcement point is one bug away from none.
+         */
+        let extras: Parameters<typeof amendTabLines>[3];
+        if (isReduction(line.quantity, nextQuantity)) {
+          if (!voidApprovalComplete(approval) || !approval) {
+            // Unreachable through the button, which is disabled until this is true. Kept because
+            // "the button was disabled" is not an authorisation check.
+            setBusy(false);
+            return;
+          }
+          const auth = await authorizeTerminalAction(
+            approval.staffUserId,
+            approval.pin.trim(),
+            'line_void',
+            token,
+          );
+          extras = {
+            staffUserId: approval.staffUserId,
+            authorizationTokenId: auth.token_id,
+            voidReason: approval.reason.trim(),
+          };
+        }
+
         const result: AmendResult = await amendTabLines(
           tabId,
           [{line_id: line.id, new_quantity: nextQuantity}],
           token,
+          extras,
         );
 
         /**
@@ -96,17 +148,24 @@ export default function AmendLineSheet({tabId, line, onClose, onAmended}: Props)
         onClose();
       } catch (err) {
         const coded = err instanceof ApiRequestError ? err.code : null;
+        // A refused PIN, a missing reason and an out-of-date build are all "nothing came off the
+        // bill", and each says so in its own words. Anything unrecognised keeps the old fallback.
+        const voidMessage = voidFailureMessage(coded ?? null);
         setFailure(
-          coded === 'AMEND_FAILED'
-            ? Copy.AMEND_FAILED_NOTHING_CHANGED
-            : err instanceof Error
-            ? err.message
-            : Copy.AMEND_FAILED_NOTHING_CHANGED,
+          voidMessage ??
+            (coded === 'AMEND_FAILED'
+              ? Copy.AMEND_FAILED_NOTHING_CHANGED
+              : err instanceof Error
+              ? err.message
+              : Copy.AMEND_FAILED_NOTHING_CHANGED),
         );
+        // The PIN is cleared on any failure. Leaving it on screen after a refusal invites a second
+        // press of the same wrong code, and it is somebody's PIN sitting in a field at a table.
+        setApproval(prev => (prev ? {...prev, pin: ''} : prev));
         setBusy(false);
       }
     },
-    [busy, line, onAmended, onClose, reset, tabId],
+    [approval, busy, line, onAmended, onClose, reset, tabId],
   );
 
   if (!open || !line) {
@@ -156,6 +215,7 @@ export default function AmendLineSheet({tabId, line, onClose, onAmended}: Props)
 
               <View style={styles.stepper}>
                 <Pressable
+                  testID="amend-minus"
                   style={styles.stepButton}
                   disabled={busy || current <= 0}
                   onPress={() => setQuantity(Math.max(0, current - 1))}>
@@ -163,6 +223,7 @@ export default function AmendLineSheet({tabId, line, onClose, onAmended}: Props)
                 </Pressable>
                 <Text style={styles.quantity}>{current}</Text>
                 <Pressable
+                  testID="amend-plus"
                   style={styles.stepButton}
                   disabled={busy}
                   onPress={() => setQuantity(current + 1)}>
@@ -170,19 +231,36 @@ export default function AmendLineSheet({tabId, line, onClose, onAmended}: Props)
                 </Pressable>
               </View>
 
-              {/* Zero is a removal, and it says so rather than looking like a quantity of none. */}
-              <Text style={styles.effect}>
-                {current === 0 ? Copy.AMEND_EFFECT_REMOVE : Copy.AMEND_EFFECT_CHANGE}
+              {/* Zero is a removal and says so; so does 3→1, which takes two off the bill and
+                  used to read as an ordinary quantity change. */}
+              <Text style={styles.effect} testID="amend-effect">
+                {reductionEffect(line.quantity, current)}
               </Text>
+
+              {/* Only when food is coming off. An increase needs nobody's approval. */}
+              {isVoid ? (
+                <VoidApproval draft={approval} onChange={setApproval} disabled={busy} />
+              ) : null}
 
               {failure ? <Text style={styles.failure}>{failure}</Text> : null}
 
               <Pressable
+                testID="amend-confirm"
                 style={[styles.primaryButton, busy && styles.primaryButtonDisabled]}
-                disabled={busy || current === line.quantity}
+                disabled={
+                  busy ||
+                  current === line.quantity ||
+                  // A void with nobody named, no PIN or no reason is refused by the server. The
+                  // button is dead rather than letting a waiter announce it and be told after.
+                  (isVoid && !voidApprovalComplete(approval))
+                }
                 onPress={() => submit(current)}>
                 <Text style={styles.primaryText}>
-                  {busy ? Copy.AMEND_IN_PROGRESS : Copy.AMEND_CONFIRM}
+                  {busy
+                    ? Copy.AMEND_IN_PROGRESS
+                    : isVoid
+                    ? VOID_CONFIRM
+                    : Copy.AMEND_CONFIRM}
                 </Text>
               </Pressable>
               <Pressable style={styles.secondaryButton} disabled={busy} onPress={dismiss}>

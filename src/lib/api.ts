@@ -843,7 +843,7 @@ export async function settleTab(
 export async function authorizeTerminalAction(
   userId: string,
   pin: string,
-  purpose: 'cash_settlement' | 'refund' | 'walkout_close' | 'menu_availability',
+  purpose: 'cash_settlement' | 'refund' | 'walkout_close' | 'menu_availability' | 'line_void',
   token: string,
 ): Promise<{token_id: string; expires_at: string}> {
   const response = await terminalFetch(
@@ -2544,15 +2544,35 @@ export async function sendRound(
  * model and for why the refusal strings are the SQL function's own literals.
  *
  * Auth is the terminal token plus orders:update, and the venue must have station_screens_enabled.
- * THERE IS NO PIN on this route -- do not add a PIN prompt for a route that consumes none, or the
- * waiter types a code that authorises nothing.
+ *
+ * ================================================================================================
+ * A REDUCTION NOW CONSUMES A PIN. THIS COMMENT USED TO SAY THE OPPOSITE.
+ * ================================================================================================
+ *
+ * It read "THERE IS NO PIN on this route -- do not add a PIN prompt for a route that consumes
+ * none". That was correct when it was written and is not any more: as of 2026-09-06 the route
+ * gates ANY reduction in quantity behind a `line_void` authorization token, because taking food
+ * off a bill is the same authority shape as a walkout close and it previously needed nothing at
+ * all. The instruction that replaces it points the other way:
+ *
+ *   A REDUCTION MUST CARRY A CONSUMED TOKEN. Do not send one without, and do not let a screen
+ *   offer a reduction it has not collected a PIN and a reason for -- the server refuses it, which
+ *   is correct, but the waiter finds out after they have told the customer it is off.
+ *
+ * AN INCREASE STILL NEEDS NOTHING. It adds to what the customer owes; only writing food off is
+ * gated. `extras` is therefore optional and must STAY optional.
  *
  * REFUSALS ARE NOT ERRORS. A 200 carrying refused: [...] is the NORMAL outcome when the kitchen
  * started a line while the waiter was still typing. The screen renders it as a fact about those
  * lines, not as a failed request. Everything that IS an error throws a coded ApiRequestError and
  * none of them are fixed by re-sending the same body: STATION_SCREENS_DISABLED (403),
- * INVALID_LINE_ID / INVALID_QUANTITY (400), AMEND_FAILED (502 -- the transaction rolled back and
- * NOTHING was voided).
+ * INVALID_LINE_ID / INVALID_QUANTITY (400), VOID_NEEDS_AUTHORIZATION (403),
+ * VOID_NEEDS_REASON / VOID_REASON_TOO_LONG (400), AUTHORIZATION_INVALID (403),
+ * AMEND_FAILED (502 -- the transaction rolled back and NOTHING was voided).
+ *
+ * NONE OF THOSE IS A 401, WHICH MATTERS. terminalFetch reads a 401 as an expired session and
+ * evicts the terminal; a void refusal arriving as one would sign the device out mid-service.
+ * Verified against the route: every refusal listed above is a 400 or a 403.
  *
  * Do not retry the refused lines. They were refused because the kitchen already has them.
  */
@@ -2560,6 +2580,14 @@ export async function amendTabLines(
   tabId: string,
   amendments: LineAmendment[],
   token: string,
+  extras?: {
+    /** The manager or owner whose PIN was accepted. Authorisation, and attribution with it. */
+    staffUserId: string;
+    /** The single-use token minted for purpose 'line_void' and spent by this call. */
+    authorizationTokenId: string;
+    /** Stored on order_line_events, read later by whoever reconciles the bill. */
+    voidReason: string;
+  },
 ): Promise<AmendResult> {
   if (amendments.length === 0) {
     throw new Error('amendTabLines called with no amendments');
@@ -2570,7 +2598,16 @@ export async function amendTabLines(
     {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({amendments}),
+      body: JSON.stringify({
+        amendments,
+        ...(extras
+          ? {
+              staff_user_id: extras.staffUserId,
+              authorization_token_id: extras.authorizationTokenId,
+              void_reason: extras.voidReason,
+            }
+          : {}),
+      }),
     },
     token,
   );
