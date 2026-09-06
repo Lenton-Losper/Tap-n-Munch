@@ -89,7 +89,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
 
     const { tabId } = await params
     if (!tabId || !isUuid(tabId)) {
-      return NextResponse.json({ error: 'tabId must be a valid UUID' }, { status: 400 })
+      /**
+       * ITS OWN CODE, not prepare's BAD_TAB_ID, and the difference is the whole point.
+       *
+       * On prepare, a bad tab id means nothing has happened yet -- the reader never ran, and
+       * the waiter can safely go back and start again. On RECORD, the reader has ALREADY run:
+       * the customer may be holding a receipt. The same fault therefore needs the opposite
+       * instruction, so it gets a code that maps to the may-have-been-charged wording rather
+       * than to 'pick the items fresh'.
+       */
+      return NextResponse.json(
+        { error: 'tabId must be a valid UUID', code: 'RECORD_BAD_TAB_ID' },
+        { status: 400 },
+      )
     }
 
     const body = (await req.json().catch(() => ({}))) as {
@@ -218,6 +230,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
   } catch (error) {
     if (error instanceof Response) return error
     console.error('[record-split-payment] failed', error)
-    return NextResponse.json({ error: 'Failed to record this payment' }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Failed to record this payment', code: 'RECORD_FAILED' },
+      { status: 500 },
+    )
   }
 }

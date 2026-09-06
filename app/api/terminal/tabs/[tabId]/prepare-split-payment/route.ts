@@ -89,7 +89,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
 
     const { tabId } = await params
     if (!tabId || !isUuid(tabId)) {
-      return NextResponse.json({ error: 'tabId must be a valid UUID' }, { status: 400 })
+      return NextResponse.json(
+        { error: 'tabId must be a valid UUID', code: 'BAD_TAB_ID' },
+        { status: 400 },
+      )
     }
 
     const body = (await req.json().catch(() => ({}))) as { allocation_ids?: unknown }
@@ -145,7 +148,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
 
     if (allocationsError) {
       console.error('[prepare-split-payment] allocation read failed', allocationsError)
-      return NextResponse.json({ error: 'Could not read these items' }, { status: 500 })
+      return NextResponse.json(
+        { error: 'Could not read these items', code: 'ITEMS_READ_FAILED' },
+        { status: 500 },
+      )
     }
 
     const rows = allocations ?? []
@@ -230,6 +236,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
   } catch (error) {
     if (error instanceof Response) return error
     console.error('[prepare-split-payment] failed', error)
-    return NextResponse.json({ error: 'Failed to prepare the payment' }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Failed to prepare the payment', code: 'PREPARE_FAILED' },
+      { status: 500 },
+    )
   }
 }
