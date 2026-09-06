@@ -1,4 +1,9 @@
 import { NextResponse } from 'next/server'
+import { findIntentByMerchantOrderNo } from '@/lib/payments/payment-intents'
+import {
+  checkSaleAmount,
+  saleAmountMismatchAudit,
+} from '@/lib/payments/reconcile-sale-amount'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { issueReceiptForOrder } from '@/lib/receipts/issueReceipt'
@@ -145,7 +150,8 @@ export async function POST(req: Request) {
 
     const { data: orders, error: ordersError } = await supabase
       .from('orders')
-      .select('id')
+      // `total` is new here: the amount was previously compared against nothing at all.
+      .select('id, total')
       .in('id', orderIds)
       .eq('restaurant_id', terminal.restaurantId)
 
@@ -160,6 +166,68 @@ export async function POST(req: Request) {
         { error: 'Invalid order_ids', invalid_order_ids: invalidOrderIds },
         { status: 400 },
       )
+    }
+
+    /**
+     * ============================================================================================
+     * DID THE GATEWAY CHARGE WHAT WE ASKED FOR?
+     * ============================================================================================
+     *
+     * This route used to accept one `amount` against N orders and compare it to nothing. It is
+     * compared now — against the INTENT where the charge has one (what the reader was asked for,
+     * the only honest figure), and against the sum of the named orders' totals otherwise.
+     *
+     * NOTHING IS REFUSED. This runs AFTER the money has moved: refusing to record a real charge
+     * would leave a customer charged and the system unaware, which is strictly worse than a
+     * flagged row. A mismatch is written to audit_logs against every named order and the event is
+     * recorded exactly as before.
+     *
+     * A FAILED INTENT LOOKUP DOES NOT BLOCK THE RECORD EITHER, for the same reason — but it is not
+     * silently treated as "no intent", because that would downgrade an exact check to an advisory
+     * one without saying so. It is logged and the basis falls back honestly.
+     */
+    let intent: Awaited<ReturnType<typeof findIntentByMerchantOrderNo>> = null
+    try {
+      intent = await findIntentByMerchantOrderNo(supabase, businessOrderNo)
+    } catch (intentError) {
+      console.error('[payment-events/sale] intent lookup failed; amount check falls back', {
+        businessOrderNo,
+        error: intentError instanceof Error ? intentError.message : String(intentError),
+      })
+    }
+
+    const amountCheck = checkSaleAmount({
+      amount,
+      intent,
+      orderTotals: (orders ?? []).map((o) => Number((o as { total?: unknown }).total ?? 0)),
+    })
+
+    if (!amountCheck.matched) {
+      console.error('[payment-events/sale] amount does not match what was expected', {
+        businessOrderNo,
+        basis: amountCheck.basis,
+        gatewayAmount: amountCheck.gatewayAmount,
+        expectedAmount: amountCheck.expectedAmount,
+        advisory: amountCheck.advisory,
+      })
+      const { error: mismatchAuditError } = await supabase.from('audit_logs').insert(
+        orderIds.map((orderId) =>
+          saleAmountMismatchAudit({
+            restaurantId: terminal.restaurantId,
+            orderId,
+            businessOrderNo,
+            check: amountCheck,
+          }),
+        ),
+      )
+      // The audit is the record a human works from, so a failure to write it must not vanish —
+      // but it still does not block the payment being recorded.
+      if (mismatchAuditError) {
+        console.error('[payment-events/sale] mismatch audit insert failed', {
+          businessOrderNo,
+          error: mismatchAuditError.message,
+        })
+      }
     }
 
     const insertPayload = {
