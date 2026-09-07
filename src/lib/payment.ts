@@ -667,10 +667,20 @@ export async function processPaymentIntent(
     let merchantOrderNo = suppliedRef;
     let chargeAmount = amount;
     if (!suppliedRef) {
+      /**
+       * THE WHOLE SET, not just the first id. `orderId` is a comma-separated list on a tab settle
+       * and resolvePrepareOrderId returns the FIRST -- which is the right URL to prepare, and the
+       * wrong basis for the amount. The server sums the list.
+       */
+      const settlementOrderIds = orderId
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean);
       const prepared = await prepareTerminalPayment(
         resolvePrepareOrderId(orderId),
         token,
         options?.gratuity,
+        settlementOrderIds,
       );
       merchantOrderNo = prepared.merchantOrderNo;
       if (typeof prepared.chargeCents === 'number' && prepared.chargeCents > 0) {

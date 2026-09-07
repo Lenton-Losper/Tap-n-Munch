@@ -74,7 +74,7 @@ async function run(
   orderId: string,
   options: import('../payment').PaymentReferenceOptions | undefined,
   native: {resolve?: Record<string, unknown>; reject?: {code?: string; message: string}},
-  opts: {preparedRef?: string; chargeCents?: number} = {},
+  opts: {preparedRef?: string; chargeCents?: number; chargeFn?: (a: Call) => number | undefined} = {},
 ): Promise<Harness> {
   let out!: Harness;
   await jest.isolateModulesAsync(async () => {
@@ -127,7 +127,12 @@ async function run(
          * gateway gate verifies against. `undefined` models an OLDER WORKER that has never heard of
          * this, which must leave the caller's own amount standing.
          */
-        ...(opts.chargeCents === undefined ? {} : {chargeCents: opts.chargeCents}),
+        ...(() => {
+          // A function form so a test can model the SERVER's arithmetic -- summing the order ids it
+          // was actually sent -- rather than a figure the test simply asserts back to itself.
+          const c = opts.chargeFn ? opts.chargeFn(a) : opts.chargeCents;
+          return c === undefined ? {} : {chargeCents: c};
+        })(),
       };
     });
     jest
@@ -500,5 +505,127 @@ describe('THE SCREEN ACTUALLY PASSES THE GRATUITY', () => {
      */
     const call = CODE.slice(CODE.indexOf('let paymentResult = await processPaymentIntent('));
     expect(call.slice(0, 120).includes('amount,')).toBe(true);
+  });
+});
+
+describe('THE EXACT AMOUNT HANDED TO THE NATIVE PAYMENT BOUNDARY', () => {
+  /**
+   * ================================================================================================
+   * THE BOUNDARY THAT ACTUALLY MATTERS
+   * ================================================================================================
+   *
+   * A P5 at Digi Cofee showed NAD 20.00 on the Finatic cashier for a N$20 bill with a N$10 tip. The
+   * server knew about tip_cents throughout; the reader was still told 2000.
+   *
+   * So these assert the FIRST argument of PaymentModule.launchPayment -- the string of minor units
+   * that becomes WiseCashier's `amt` after native's %012d pad. Everything upstream can be right and
+   * this can still be wrong, which is exactly what happened.
+   */
+
+  const ORDER_A = '11111111-1111-4111-8111-111111111111';
+  const ORDER_B = '33333333-3333-4333-8333-333333333333';
+
+  /** What native was told to charge, in cents. */
+  const chargedCents = (h: Harness) => (h.launches[0] as string[])[0];
+
+  it('A) WHOLE ORDER, N$20 + N$10 tip -> native receives 3000', async () => {
+    const h = await run(
+      20,
+      ORDER_A,
+      {gratuity: {tipCents: 1000, tipStaffUserId: 'staff-1'}},
+      {resolve: OK('FT-FROM-PREPARE')},
+      // The server sums the orders it was sent and adds the tip. Modelled, not asserted back.
+      {chargeFn: (a) => 2000 + Number((a[2] as {tipCents?: number} | undefined)?.tipCents ?? 0)},
+    );
+    expect(chargedCents(h)).toBe('3000');
+  });
+
+  it('B) WHOLE ORDER, N$20 + no tip -> native receives 2000', async () => {
+    const h = await run(20, ORDER_A, undefined, {resolve: OK('FT-FROM-PREPARE')}, {
+      chargeFn: (a) => 2000 + Number((a[2] as {tipCents?: number} | undefined)?.tipCents ?? 0),
+    });
+    expect(chargedCents(h)).toBe('2000');
+  });
+
+  it('C) SELECTED ITEM, N$20 + N$10 tip -> native receives 3000', async () => {
+    /**
+     * The split path. Its gratuity rides on the INTENT's amount_cents, which the caller passes as
+     * `amount` -- prepare-payment is never called. Different mechanism, same required answer.
+     */
+    const h = await run(
+      30,
+      ORDER_A,
+      {merchantOrderNo: SPLIT_REF, tipAmount: 10},
+      {resolve: OK(SPLIT_REF)},
+    );
+    expect(chargedCents(h)).toBe('3000');
+    expect(h.prepares).toHaveLength(0);
+  });
+
+  it('E) TIP REMOVED -> native returns to the bill amount', async () => {
+    // The recovery a waiter performs. A stale tip surviving a removal would overcharge.
+    const h = await run(20, ORDER_A, undefined, {resolve: OK('FT-FROM-PREPARE')}, {
+      chargeFn: (a) => 2000 + Number((a[2] as {tipCents?: number} | undefined)?.tipCents ?? 0),
+    });
+    expect(chargedCents(h)).toBe('2000');
+  });
+
+  it('F) the SERVER figure wins over the caller amount', async () => {
+    /**
+     * THE INVARIANT. Every gateway gate compares against the server's expectation at zero tolerance,
+     * so a device that reconstructs the amount from the bill would be refused after the customer
+     * had paid. If the two disagree, the server's number is the one charged.
+     */
+    const h = await run(20, ORDER_A, undefined, {resolve: OK('FT-FROM-PREPARE')}, {
+      chargeCents: 2750,
+    });
+    expect(chargedCents(h)).toBe('2750');
+    expect(chargedCents(h)).not.toBe('2000');
+  });
+
+  it('THE MULTI-ORDER BUG: a tab settle prepares against EVERY order, not just the first', async () => {
+    /**
+     * THE ACTUAL PRODUCTION DEFECT.
+     *
+     * runSettle passes `orderIds.join(',')`, and resolvePrepareOrderId returns the FIRST id -- the
+     * right URL to prepare, the WRONG basis for the amount. prepare-payment then computed the
+     * expected charge from that one order, so a two-order tab charged the first order's total plus
+     * the tip instead of the tab's.
+     *
+     * With one order those agree, which is why it "sometimes worked". This asserts the id LIST
+     * reaches the server, so its sum can be right.
+     */
+    const h = await run(
+      20,
+      `${ORDER_A},${ORDER_B}`,
+      {gratuity: {tipCents: 1000, tipStaffUserId: 'staff-1'}},
+      {resolve: OK('FT-FROM-PREPARE')},
+      {
+        // The server's real arithmetic: sum the orders it was told about, then add the tip.
+        chargeFn: (a) => {
+          const ids = (a[3] as string[] | undefined) ?? [];
+          const perOrder = 1000; // N$10 each; two of them make the N$20 bill.
+          const tip = Number((a[2] as {tipCents?: number} | undefined)?.tipCents ?? 0);
+          return ids.length * perOrder + tip;
+        },
+      },
+    );
+
+    const sentIds = (h.prepares[0] as Call)[3] as string[] | undefined;
+    expect(sentIds).toEqual([ORDER_A, ORDER_B]);
+    // Two orders of N$10 plus a N$10 tip. Before the fix this charged 2000 -- the first order's
+    // total plus the tip -- which is N$10 short of the bill.
+    expect(chargedCents(h)).toBe('3000');
+  });
+
+  it('a SINGLE-order settle still sends its own id, and is unchanged', async () => {
+    // The positive control for the change above: one order must behave exactly as before.
+    const h = await run(20, ORDER_A, undefined, {resolve: OK('FT-FROM-PREPARE')}, {
+      chargeFn: (a) => {
+        const ids = (a[3] as string[] | undefined) ?? [];
+        return ids.length <= 1 ? 2000 : 9999;
+      },
+    });
+    expect(chargedCents(h)).toBe('2000');
   });
 });

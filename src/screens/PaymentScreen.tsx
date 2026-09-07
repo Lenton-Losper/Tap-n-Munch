@@ -266,12 +266,23 @@ export default function PaymentScreen({route, navigation}: Props) {
       if (!token) {
         setPaymentConfigError('Terminal session not found. Please re-activate.');
         // No session: block payment rather than inventing methods.
-        applyPaymentMethodAvailability(false, false);
+        applyPaymentMethodAvailability(false, false, false);
         return;
       }
       const info = await getTerminalInfo(token);
-      const {cardEnabled, cashEnabled} = resolvePaymentMethodsAvailability(info);
-      applyPaymentMethodAvailability(cardEnabled, cashEnabled);
+      /**
+       * ALL THREE, and the third is the whole defect.
+       *
+       * resolvePaymentMethodsAvailability has always returned `paytodayEnabled` and /api/terminal/me
+       * has always sent it. This destructure took two fields and dropped the third, so
+       * applyPaymentMethodAvailability fell through to its `= false` default and PayToday could
+       * never render -- at Digi Cofee, whose settings row reads ["cash","card","paytoday"].
+       *
+       * Computed and never read: the same shape as GratuitySection's `valid`.
+       */
+      const {cardEnabled, cashEnabled, paytodayEnabled} =
+        resolvePaymentMethodsAvailability(info);
+      applyPaymentMethodAvailability(cardEnabled, cashEnabled, paytodayEnabled);
     } catch (err) {
       // Network/auth blip: keep taking payments with both methods (today's default)
       // rather than locking the floor. Explicit both-off from API still blocks below.
@@ -280,7 +291,11 @@ export default function PaymentScreen({route, navigation}: Props) {
           ? err.message
           : 'Could not refresh payment settings',
       );
-      applyPaymentMethodAvailability(true, true);
+      /**
+       * Card and cash default ON so a blip cannot strip payment off a working terminal. PayToday
+       * stays OFF: it is opt-in, and guessing it on would show a venue a method it does not use.
+       */
+      applyPaymentMethodAvailability(true, true, false);
     } finally {
       setPaymentConfigLoading(false);
     }
@@ -1708,8 +1723,11 @@ export default function PaymentScreen({route, navigation}: Props) {
                     applyPaymentMethodAvailability(
                       cardPaymentEnabled,
                       cashPaymentEnabled,
+                      // Without this a retry re-applies availability WITHOUT PayToday and quietly
+                      // removes it from the picker mid-service.
+                      paytodayPaymentEnabled,
                     );
-                    if (cardPaymentEnabled && cashPaymentEnabled) {
+                    if (enabledMethods.length > 1) {
                       setPaymentMethod(null);
                     }
                   }}>
@@ -1738,8 +1756,11 @@ export default function PaymentScreen({route, navigation}: Props) {
                     applyPaymentMethodAvailability(
                       cardPaymentEnabled,
                       cashPaymentEnabled,
+                      // Without this a retry re-applies availability WITHOUT PayToday and quietly
+                      // removes it from the picker mid-service.
+                      paytodayPaymentEnabled,
                     );
-                    if (cardPaymentEnabled && cashPaymentEnabled) {
+                    if (enabledMethods.length > 1) {
                       setPaymentMethod(null);
                     }
                   }}>

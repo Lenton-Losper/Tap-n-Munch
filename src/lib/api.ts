@@ -1184,6 +1184,12 @@ export async function prepareTerminalPayment(
    * number. A tip added after the charge would be a tip nobody collected.
    */
   gratuity?: {tipCents?: number; tipStaffUserId?: string},
+  /**
+   * EVERY order in this settlement. A tab settle charges the SUM of the selected orders, and this
+   * route is order-shaped -- without the list it computes the expected charge from the URL order
+   * alone and the device charges the first order's total plus the tip.
+   */
+  settlementOrderIds?: string[],
 ): Promise<{
   orderId: string;
   merchantOrderNo: string;
@@ -1200,11 +1206,14 @@ export async function prepareTerminalPayment(
     {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(
-        gratuity?.tipCents
+      body: JSON.stringify({
+        ...(gratuity?.tipCents
           ? {tip_cents: gratuity.tipCents, tip_staff_user_id: gratuity.tipStaffUserId}
-          : {},
-      ),
+          : {}),
+        ...(settlementOrderIds && settlementOrderIds.length > 1
+          ? {order_ids: settlementOrderIds}
+          : {}),
+      }),
     },
     token,
   );
