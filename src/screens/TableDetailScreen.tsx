@@ -35,6 +35,7 @@ import {
   getTablesWithMeta,
   getTabLines,
   getTerminalInfo,
+  resolvePaymentMethodsAvailability,
   recordSaleEvent,
   resetTabPin,
   settleAllocations,
@@ -416,10 +417,59 @@ export default function TableDetailScreen({route, navigation}: Props) {
   // Refetch on every focus — not just mount — so returning here (e.g. from a
   // refund or after backing out to Tables and back) never shows stale
   // payment/refund state. See #29.
+  /**
+   * ================================================================================================
+   * WHICH PAYMENT METHODS THIS VENUE ACTUALLY TAKES
+   * ================================================================================================
+   *
+   * This screen did not ask. PaymentScreen -- the whole-order Charge screen -- has read
+   * cardPaymentEnabled / cashPaymentEnabled from GET /api/terminal/me since it was written, and
+   * hides the method it is told not to offer. The table screen read NEITHER, so at a card-only
+   * venue a waiter was still shown Take Cash, tapped it, and got a server refusal at the moment of
+   * settling. Riviera and FNB ChowNow both sit at payment_methods=["card"] in the table that
+   * governs this.
+   *
+   * The gate lives in restaurant_settings.payment_methods and is per venue. It is the POLICY -- what
+   * this venue chooses to accept -- and is a different question from restaurants.card_payments_
+   * available, which is derived from the Finatic credentials and answers whether a card CAN be
+   * charged at all. This screen wants the policy.
+   *
+   * BOTH DEFAULT TO ENABLED, via resolvePaymentMethodsAvailability's `!== false` rule, and that is
+   * deliberate rather than lazy. Until /me answers, today's behaviour is preserved exactly: a slow
+   * or failed config read must never be the reason a waiter cannot take money from a customer who
+   * is standing there. A button that appears and then disappears is a much smaller problem than a
+   * table that cannot be settled.
+   *
+   * A METHOD THAT IS OFF IS HIDDEN, NOT DISABLED. A greyed-out Take Cash at a card-only venue is an
+   * invitation to keep tapping it and then to go looking for a way round; a venue that does not
+   * take cash has no cash button at all.
+   */
+  const [methodsAvailable, setMethodsAvailable] = useState({
+    cardEnabled: true,
+    cashEnabled: true,
+  });
+
+  const refreshPaymentMethods = useCallback(async () => {
+    try {
+      const token = await getTerminalToken();
+      if (!token) return;
+      const info = await getTerminalInfo(token);
+      setMethodsAvailable(resolvePaymentMethodsAvailability(info));
+    } catch {
+      /**
+       * LEAVE THE LAST GOOD ANSWER STANDING. Failing to re-read the config is not evidence that a
+       * venue stopped taking cash, and turning a method off on a network blip would strand a table
+       * mid-service. The server refuses a disallowed settlement regardless -- this is which buttons
+       * to draw, not what is permitted.
+       */
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       refreshTable();
-    }, [refreshTable]),
+      void refreshPaymentMethods();
+    }, [refreshTable, refreshPaymentMethods]),
   );
 
   /**
@@ -1137,6 +1187,10 @@ export default function TableDetailScreen({route, navigation}: Props) {
    * wait instead of a bare "no".
    */
   const renderCashButton = (eligibleCount: number) => {
+    // Hidden, not disabled, at a venue that does not take cash. See methodsAvailable above.
+    if (!methodsAvailable.cashEnabled) {
+      return null;
+    }
     const blocked = cashBlockedFor != null && cashBlockedFor > 0;
     const disabled =
       cashSettling || settling || eligibleCount === 0 || blocked;
@@ -1638,27 +1692,35 @@ export default function TableDetailScreen({route, navigation}: Props) {
             onChange={setGratuity}
             disabled={settling || cashSettling}
           />
-          <Pressable
-            style={[styles.settleButton, settling && styles.buttonDisabled]}
-            disabled={settling}
-            onPress={handleSettleSelected}>
-            {settling ? (
-              <ActivityIndicator color={Colors.white} />
-            ) : (
-              <Text style={styles.settleButtonText}>Settle Selected</Text>
-            )}
-          </Pressable>
-          <LoadingButton
-            style={[
-              styles.settleEntireOutlineButton,
-              (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
-            ]}
-            disabled={settling || unpaidOrders.length === 0}
-            loading={settling}
-            onPress={handleSettleEntireTab}
-            spinnerColor={Colors.textPrimary}>
-            <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
-          </LoadingButton>
+          {/*
+            BOTH OF THESE DRIVE THE CARD READER, so both are hidden at a venue that does not take
+            cards -- hidden rather than disabled, for the same reason as Take Cash.
+          */}
+          {methodsAvailable.cardEnabled ? (
+            <>
+              <Pressable
+                style={[styles.settleButton, settling && styles.buttonDisabled]}
+                disabled={settling}
+                onPress={handleSettleSelected}>
+                {settling ? (
+                  <ActivityIndicator color={Colors.white} />
+                ) : (
+                  <Text style={styles.settleButtonText}>Settle Selected</Text>
+                )}
+              </Pressable>
+              <LoadingButton
+                style={[
+                  styles.settleEntireOutlineButton,
+                  (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
+                ]}
+                disabled={settling || unpaidOrders.length === 0}
+                loading={settling}
+                onPress={handleSettleEntireTab}
+                spinnerColor={Colors.textPrimary}>
+                <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
+              </LoadingButton>
+            </>
+          ) : null}
           {renderCashButton(
             byItem
               ? payable.filter(line => line.selectable && selectedLineIds.has(line.id)).length
@@ -1672,17 +1734,19 @@ export default function TableDetailScreen({route, navigation}: Props) {
             styles.bottomBar,
             {paddingBottom: insets.bottom + Spacing.md},
           ]}>
-          <LoadingButton
-            style={[
-              styles.settleEntireButton,
-              (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
-            ]}
-            disabled={settling || unpaidOrders.length === 0}
-            loading={settling}
-            onPress={handleSettleEntireTab}
-            spinnerColor={Colors.white}>
-            <Text style={styles.settleEntireButtonText}>Settle Entire Tab</Text>
-          </LoadingButton>
+          {methodsAvailable.cardEnabled ? (
+            <LoadingButton
+              style={[
+                styles.settleEntireButton,
+                (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
+              ]}
+              disabled={settling || unpaidOrders.length === 0}
+              loading={settling}
+              onPress={handleSettleEntireTab}
+              spinnerColor={Colors.white}>
+              <Text style={styles.settleEntireButtonText}>Settle Entire Tab</Text>
+            </LoadingButton>
+          ) : null}
           {renderCashButton(
             byItem
               ? payable.filter(line => line.selectable).length
