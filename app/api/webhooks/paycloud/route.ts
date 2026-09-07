@@ -15,6 +15,7 @@ import {
   recordRecoveredAfterAutoCancel,
 } from '@/lib/payments/e04111-recovery'
 import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
+import { expectedChargeForOrders } from '@/lib/payments/expected-charge'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 
 function webhookAck() {
@@ -155,7 +156,11 @@ async function markOrdersPaidConfirmedByIds(
 
   const { data: rows, error: loadError } = await supabase
     .from('orders')
-    .select('id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at')
+    // pending_charge_cents / pending_tip_cents must be SELECTED or expectedChargeForOrders falls
+    // back to order totals for every row and this reads as though no gratuity was ever charged.
+    .select(
+      'id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at, pending_charge_cents, pending_tip_cents',
+    )
     .in('id', orderIds)
 
   if (loadError) {
@@ -164,7 +169,12 @@ async function markOrdersPaidConfirmedByIds(
   }
 
   const orderRows = rows ?? []
-  const expectedAmount = orderRows.reduce((sum, row) => sum + (Number(row.total) || 0), 0)
+  /**
+   * SUMMED FROM WHAT EACH ORDER'S CHARGE WAS ASKED TO BE, not from the order totals. Identical for
+   * untipped charges; correct rather than refusing once a gratuity is included.
+   * See lib/payments/expected-charge.ts.
+   */
+  const expectedAmount = expectedChargeForOrders(orderRows).expectedAmount
   const verified =
     params.gatewayAmount !== null &&
     amountsMatch(params.gatewayAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)

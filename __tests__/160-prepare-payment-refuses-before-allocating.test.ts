@@ -86,7 +86,20 @@ jest.mock('@/lib/supabase/server', () => ({
           }
           return { error: null }
         },
-        maybeSingle: async () => ({ data: null, error: null }),
+        /**
+         * The route now RE-READS the order total before recording what the reader will be asked to
+         * charge -- the whole-order equivalent of an intent's amount_cents, written before the
+         * reader launches so every downstream gate compares against the same figure.
+         *
+         * A null here is a fail-CLOSED 503 (ORDER_TOTAL_UNREADABLE), which is correct behaviour and
+         * was turning every case in this suite into a 503. Modelled rather than worked around:
+         * launching a reader without recording what it was asked for is the state that change
+         * exists to remove.
+         */
+        maybeSingle: async () => ({
+          data: table === 'orders' ? { total: 100 } : null,
+          error: null,
+        }),
         then: (r: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(r),
       })
       return b

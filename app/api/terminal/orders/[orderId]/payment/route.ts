@@ -4,7 +4,9 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 // canClose asks "does anything on this tab still owe money", which is what owesMoney answers.
 // Asked in SQL as `.neq('payment_status', 'paid')` it also matched CANCELLED orders, so one
 // cancelled order kept a table permanently un-closeable (#104, same class as c362efc).
-import { amountsMatch, owesMoney } from '@/lib/payments/payment-integrity'
+import {
+  SETTLEMENT_PAYMENT_METHODS,
+  normalizeSettlementPaymentMethod, amountsMatch, owesMoney } from '@/lib/payments/payment-integrity'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
@@ -56,9 +58,36 @@ export async function POST(
     const noGatewayAttempt = body?.noGatewayAttempt === true
 
     const amount = Number(body?.amount)
-    const paymentMethod = body?.paymentMethod
+    /**
+     * VALIDATED AGAINST THE SETTLEMENT ALLOWLIST, which it never was.
+     *
+     * This took `paymentMethod` as a FREE STRING and defaulted to 'card'. It flows straight to
+     * orders.payment_method, which has no CHECK -- deliberately, because the QR path legitimately
+     * writes hosted_checkout and friends there. So a typo from a terminal ('PayToday', 'paytodya')
+     * persisted silently and surfaced in every report as its own unrecognised method, with the
+     * money filed under a name nothing else knows.
+     *
+     * This is the TERMINAL leg, so the settlement allowlist is the right vocabulary: cash, card or
+     * paytoday. Normalising also fixes case and whitespace, which matters because a stored
+     * 'Cash' prints correctly on a receipt and reads as unknown everywhere else.
+     *
+     * Absent still means 'card' -- unchanged, because that is what every existing caller relies on.
+     */
+    const rawPaymentMethod = body?.paymentMethod
       ? String(body.paymentMethod).trim()
       : 'card'
+    const paymentMethod = normalizeSettlementPaymentMethod(rawPaymentMethod)
+    if (!paymentMethod) {
+      return NextResponse.json(
+        {
+          error: 'Unsupported payment method',
+          code: 'UNSUPPORTED_PAYMENT_METHOD',
+          received: rawPaymentMethod,
+          allowed: [...SETTLEMENT_PAYMENT_METHODS],
+        },
+        { status: 400 },
+      )
+    }
 
     if (status !== 'success' && status !== 'failed') {
       return NextResponse.json({ error: 'Invalid payment status' }, { status: 400 })
@@ -128,7 +157,7 @@ export async function POST(
         restaurantId: terminal.restaurantId,
         reference,
         voucherNo,
-        paymentMethod: paymentMethod || 'card',
+        paymentMethod,
         amount: expectedAmount,
         terminalId: terminal.terminalId,
         source: 'terminal_callback',
@@ -211,7 +240,7 @@ export async function POST(
             terminalId: terminal.terminalId,
             reference,
             amount: Number.isFinite(amount) ? amount : undefined,
-            paymentMethod: paymentMethod || 'card',
+            paymentMethod,
             // Pass the terminal's classification through UNCHANGED. handleTerminalPaymentFailed
             // does the exact-match check; this layer must not normalise, default or reword the
             // reason, or the match it performs is against a string we invented.

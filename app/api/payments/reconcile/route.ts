@@ -9,6 +9,7 @@ import {
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
 import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
+import { expectedChargeForOrders } from '@/lib/payments/expected-charge'
 
 function toMoney(value: unknown) {
   const n = Number(value)
@@ -85,7 +86,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, paid: true, source: 'supabase' }, { status: 200 })
     }
 
-    const expectedAmount = Math.round(rows.reduce((s, r) => s + (Number(r.data.total) || 0), 0) * 100) / 100
+    /**
+     * The charge each order was asked for, summed -- not the order totals. Same figure for an
+     * untipped charge; correct rather than refusing once a gratuity is included.
+     */
+    const expectedAmount =
+      Math.round(expectedChargeForOrders(rows.map((r) => r.data)).expectedAmount * 100) / 100
     const merchantOrderNoFromOrders = rows
       .map((r) => String(r.data.paycloud_merchant_order_no || '').trim())
       .find(Boolean)

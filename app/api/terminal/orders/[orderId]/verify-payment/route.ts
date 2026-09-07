@@ -13,6 +13,7 @@ import {
   finaticErrorCode,
 } from '@/lib/payments/query-finatic-order-paid'
 import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
+import { expectedChargeFor } from '@/lib/payments/expected-charge'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 
@@ -59,7 +60,11 @@ export async function POST(
 
     const { data: order, error: orderError } = await supabase
       .from('orders')
-      .select('id, restaurant_id, payment_status, total, paycloud_merchant_order_no')
+      // pending_charge_cents / pending_tip_cents are SELECTED, not merely written: without them
+      // expectedChargeFor falls back to the order total on every row and the fix ships INERT.
+      .select(
+        'id, restaurant_id, payment_status, total, paycloud_merchant_order_no, pending_charge_cents, pending_tip_cents',
+      )
       .eq('id', orderId)
       .eq('restaurant_id', terminal.restaurantId)
       .maybeSingle()
@@ -249,7 +254,18 @@ export async function POST(
       transactionId: result.transactionId,
     })
 
-    const expectedAmount = Number(order.total)
+    /**
+     * WHAT THE READER WAS ASKED FOR, not what the order totals.
+     *
+     * These are the same number for an untipped charge, and different the moment a gratuity is
+     * included -- at which point comparing against order.total refuses a payment that SUCCEEDED,
+     * after the customer's card has been debited. See lib/payments/expected-charge.ts.
+     *
+     * Zero tolerance is unchanged. The figure being compared is corrected; the comparison is not
+     * loosened.
+     */
+    const charge = expectedChargeFor(order)
+    const expectedAmount = charge.expectedAmount
     let applied = false
     let outcome: string | null = null
 

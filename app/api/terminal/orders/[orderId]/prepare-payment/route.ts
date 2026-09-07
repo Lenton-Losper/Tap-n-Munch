@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { parseTipCents } from '@/lib/payments/tips'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { ensureTerminalMerchantOrderNo } from '@/lib/payments/terminal-merchant-order'
@@ -158,11 +159,130 @@ export async function POST(
       )
     }
 
+    /**
+     * ================================================================================================
+     * RECORD WHAT THE READER IS ABOUT TO BE ASKED FOR
+     * ================================================================================================
+     *
+     * THE INVARIANT: the amount sent to the gateway must be the amount verification compares
+     * against. The split path already holds to it through an intent's amount_cents; this is the
+     * whole-order equivalent, and it must be written BEFORE the reader launches, because after the
+     * charge there is no way to know a gratuity was included.
+     *
+     * WITHOUT IT, verify-payment, the webhook and the reconcile cron each recomputed order.total --
+     * so a tipped charge was refused by all three AFTER the customer's card had been debited. Which
+     * is why the tip was never added to the charge, and was instead recorded as collected while the
+     * customer paid the bill alone.
+     *
+     * THE TIP IS OPTIONAL AND ABSENT MEANS NONE. An older terminal sends no body at all, records an
+     * expectation equal to the order total, and behaves exactly as before.
+     */
+    const body = (await req.json().catch(() => ({}))) as {
+      tip_cents?: unknown
+      tipCents?: unknown
+      tip_staff_user_id?: unknown
+      tipStaffUserId?: unknown
+    }
+    const tipParse = parseTipCents(body.tip_cents ?? body.tipCents)
+    if (!tipParse.ok) {
+      return NextResponse.json({ error: tipParse.message, code: tipParse.code }, { status: 400 })
+    }
+    const tipCents = tipParse.tipCents
+    const tipStaffUserId = String(body.tip_staff_user_id ?? body.tipStaffUserId ?? '').trim()
+
+    /**
+     * A GRATUITY NEEDS A NAMED RECIPIENT, REFUSED BEFORE THE CHARGE.
+     *
+     * payment_tips.staff_user_id is NOT NULL and orders_pending_tip_needs_staff enforces the same
+     * thing. Refusing at settle time -- which is where the whole-order route checks it today --
+     * would refuse AFTER the card had been charged, leaving money taken and no gratuity recorded.
+     */
+    if (tipCents > 0 && !tipStaffUserId) {
+      return NextResponse.json(
+        {
+          error:
+            'Choose who is taking this gratuity before charging. A tip has to be recorded ' +
+            'against a member of staff.',
+          code: 'TIP_NEEDS_STAFF',
+          tip_cents: tipCents,
+        },
+        { status: 400 },
+      )
+    }
+    if (tipCents > 0) {
+      const { data: tipMember, error: tipMemberError } = await supabase
+        .from('restaurant_users')
+        .select('user_id')
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('user_id', tipStaffUserId)
+        .maybeSingle()
+      // FAILS CLOSED, and it costs only a retry: nothing has been charged yet.
+      if (tipMemberError || !tipMember) {
+        return NextResponse.json(
+          { error: 'That person does not work at this venue.', code: 'TIP_STAFF_NOT_A_MEMBER' },
+          { status: 400 },
+        )
+      }
+    }
+
     try {
       const { merchantOrderNo, created } = await ensureTerminalMerchantOrderNo(supabase, {
         orderId,
         restaurantId: terminal.restaurantId,
       })
+
+      /**
+       * The order total is the SERVER's, re-read here rather than taken from the device -- the
+       * device's figure is what we are about to check, so it cannot also be the thing we check it
+       * against.
+       */
+      const { data: orderRow, error: orderReadError } = await supabase
+        .from('orders')
+        .select('total')
+        .eq('id', orderId)
+        .eq('restaurant_id', terminal.restaurantId)
+        .maybeSingle()
+
+      if (orderReadError || !orderRow) {
+        // FAILS CLOSED. Launching a reader without recording what it was asked for is exactly the
+        // state this whole change exists to remove.
+        return NextResponse.json(
+          { error: 'Could not read the order total', code: 'ORDER_TOTAL_UNREADABLE' },
+          { status: 503 },
+        )
+      }
+
+      const orderCents = Math.round((Number(orderRow.total) || 0) * 100)
+      const chargeCents = orderCents + tipCents
+
+      const { error: expectationError } = await supabase
+        .from('orders')
+        .update({
+          pending_charge_cents: chargeCents,
+          pending_tip_cents: tipCents,
+          pending_tip_staff_user_id: tipCents > 0 ? tipStaffUserId : null,
+        })
+        .eq('id', orderId)
+        .eq('restaurant_id', terminal.restaurantId)
+
+      if (expectationError) {
+        /**
+         * REFUSE RATHER THAN CHARGE. If the expectation cannot be stored, every downstream gate
+         * will compare the gateway's echo against the ORDER TOTAL -- so a tipped charge would be
+         * refused after the customer had paid it. Better to refuse now, having charged nothing.
+         */
+        console.error('[terminal/prepare-payment] could not record the charge expectation', {
+          orderId,
+          error: expectationError.message,
+        })
+        return NextResponse.json(
+          {
+            error: 'Could not prepare this payment. Try again.',
+            code: 'EXPECTATION_NOT_RECORDED',
+          },
+          { status: 503 },
+        )
+      }
 
       console.log('[terminal/prepare-payment]', {
         orderId,
@@ -176,6 +296,13 @@ export async function POST(
         orderId,
         merchantOrderNo,
         created,
+        /**
+         * THE DEVICE CHARGES THIS, not its own arithmetic. Returning the figure the server just
+         * recorded is what closes the loop: if the two were computed independently they could
+         * disagree, and the gate would refuse a payment the customer had made.
+         */
+        chargeCents,
+        tipCents,
         outcome: null,
         staffMessage: null,
       })

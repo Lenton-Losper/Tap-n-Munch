@@ -186,3 +186,59 @@ describe('v1 SCOPE IS ENFORCED, NOT DOCUMENTED', () => {
     expect(statements).not.toMatch(/kiosk_payment_methods/)
   })
 })
+
+describe('THE POS PAYMENT LEG VALIDATES ITS METHOD', () => {
+  /**
+   * The route the terminal's WHOLE-ORDER flow actually settles through --
+   * finishSuccessfulPayment -> completePayment -> /api/terminal/orders/{id}/payment -- and it took
+   * `paymentMethod` as a FREE STRING with no allowlist, defaulting to 'card'.
+   *
+   * It flows to orders.payment_method, which has no CHECK (deliberately: the QR path legitimately
+   * writes hosted_checkout there). So a typo from a terminal -- 'PayToday', 'paytodya' -- persisted
+   * silently and surfaced in every report as its own unrecognised method, with real money filed
+   * under a name nothing else knows.
+   *
+   * Asserted against the SOURCE because the handler cannot be imported under ts-jest (jose is
+   * ESM-only), and because the question is static: does this route consult the allowlist at all?
+   */
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { readFileSync } = require('fs')
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { join } = require('path')
+  const ROUTE = join(process.cwd(), 'app/api/terminal/orders/[orderId]/payment/route.ts')
+  const CODE = readFileSync(ROUTE, 'utf8')
+
+  it('the route exists and was read — not an empty match', () => {
+    expect(CODE.length).toBeGreaterThan(500)
+  })
+
+  it('it normalises through the settlement allowlist', () => {
+    expect(CODE).toMatch(/normalizeSettlementPaymentMethod\(rawPaymentMethod\)/)
+  })
+
+  it('and refuses anything outside it, rather than persisting a free string', () => {
+    expect(CODE).toMatch(/code: 'UNSUPPORTED_PAYMENT_METHOD'/)
+  })
+
+  it('the refusal happens BEFORE the order is looked up or written', () => {
+    /**
+     * Ordering, not mere presence. A validation that ran after the paid-write would be decoration:
+     * the settle route's own payments insert is swallowed on failure by design, so anything that
+     * validates late on this surface validates nothing.
+     */
+    // Imports stripped first: `markOrderPaidConfirmed` appears at the top of the file as an
+    // import, which sits before everything and would make any ordering assertion trivially false.
+    const body = CODE.slice(CODE.lastIndexOf(String.fromCharCode(10) + "export "))
+    const refusal = body.indexOf("UNSUPPORTED_PAYMENT_METHOD")
+    const firstWrite = body.indexOf("markOrderPaidConfirmed")
+    expect(refusal).toBeGreaterThan(-1)
+    expect(firstWrite).toBeGreaterThan(-1)
+    expect(refusal).toBeLessThan(firstWrite)
+  })
+
+  it('a missing method still defaults to card', () => {
+    // Unchanged on purpose: every existing caller relies on it, and tightening that would refuse
+    // ordinary card settlements from terminals running an older build.
+    expect(CODE).toMatch(/: 'card'/)
+  })
+})
