@@ -200,11 +200,84 @@ export async function findIntentByMerchantOrderNo(
 }
 
 /**
+ * HOW LONG ONE CARD INTENT MAY BLOCK ITS ITEMS.
+ *
+ * ==================================================================================================
+ * THIS DOES NOT RESOLVE ANYTHING, AND THAT IS THE POINT
+ * ==================================================================================================
+ *
+ * The ruling at the top of this file stands and is NOT weakened here: `uncertain` is terminal,
+ * nothing sweeps it, and no code turns it into `confirmed` or `failed` on its own. E04111 means NO
+ * RECORD, never NOT PAID -- auto-settling is a free meal and auto-failing takes a real charge
+ * twice. A webhook resolves an intent, or a human does. Still true after this change.
+ *
+ * What is bounded is a DIFFERENT question: not "was this paid?" but "may this row keep the till
+ * shut?". Those were the same question only because the hold had no clock at all.
+ *
+ * ==================================================================================================
+ * WHY ONE HOUR
+ * ==================================================================================================
+ *
+ * Production, 2026-09-07: intent 538981e8 at Digi Cofee sat `uncertain` with `resolved_at` SET,
+ * holding all four of order #47's allocations. Five and a half hours later it was still answering
+ * "Someone is already paying for these by card" to a waiter at a table where nobody was paying.
+ * Nothing releases it, ever -- terminal_payment_intents has no sweep and no expiry.
+ *
+ * One hour is chosen against three fixed points, not picked for feel:
+ *
+ *   - CARD_IN_FLIGHT_TIMEOUT_SECONDS is 90. An hour is forty times that, so this can never release
+ *     during, or just after, a real interaction at a reader.
+ *   - The stale-order cron re-asks the gateway about unresolved payments every hour
+ *     (SKIP_REPROBE_INTERVAL_MS). By the time a hold expires, the gateway has been re-asked about
+ *     it at least once, so releasing is never the FIRST thing that happens to an unknown payment.
+ *   - Every intent on production that resolved did so within forty seconds. An hour is not a
+ *     borderline call against observed behaviour; it is three orders of magnitude clear of it.
+ *
+ * It is deliberately far shorter than E04111_PERSISTENCE_CANCEL_MS (72h). That figure governs
+ * CANCELLING an order -- destroying a claim on money -- and deserves to be slow. This one governs
+ * whether a waiter may take payment for a plate of food, and a service does not last 72 hours.
+ */
+export const INTENT_HOLD_MAX_AGE_MS = 60 * 60 * 1000
+
+type IntentHoldRow = {
+  status?: unknown
+  created_at?: unknown
+  resolved_at?: unknown
+}
+
+/**
+ * Is this intent still entitled to block its allocations?
+ *
+ * A pure function of one row so the rule can be tested directly, rather than inferred from what a
+ * query returned. FAILS CLOSED at every unknown: a status it cannot read, or a timestamp it cannot
+ * parse, keeps holding. Not being able to age a hold is not permission to take the money again.
+ *
+ * The clock runs from `resolved_at` when the device came back and said it did not know, and from
+ * `created_at` when it never came back at all. Using the LATER of the two is the safe direction:
+ * an intent the device reported on gets its full window from the moment of that report.
+ */
+export function intentHoldIsStillLive(row: IntentHoldRow, now: number = Date.now()): boolean {
+  const status = String(row?.status ?? '')
+  if (status !== 'launched' && status !== 'uncertain') return false
+
+  const stamp = row?.resolved_at ?? row?.created_at
+  if (stamp == null || stamp === '') return true
+
+  const at = Date.parse(String(stamp))
+  if (!Number.isFinite(at)) return true
+
+  return now - at < INTENT_HOLD_MAX_AGE_MS
+}
+
+/**
  * Allocation ids currently held by a card that has not resolved.
  *
- * `launched` AND `uncertain` both hold. An uncertain intent holds hardest of all: the gateway may
- * still answer yes, so releasing those items would let a second customer pay for the first
- * customer's food while the first customer's card was settling.
+ * `launched` AND `uncertain` both hold, unchanged. An uncertain intent still holds hardest of all:
+ * the gateway may yet answer yes, and releasing those items would let a second customer pay for the
+ * first customer's food while the first customer's card was settling.
+ *
+ * What is new is that the hold is BOUNDED -- see intentHoldIsStillLive. `confirmed` and `failed`
+ * never held and still never do.
  */
 export async function allocationIdsHeldByLiveCard(
   supabase: Supabase,
@@ -214,7 +287,15 @@ export async function allocationIdsHeldByLiveCard(
 
   const { data, error } = await supabase
     .from('terminal_payment_intents')
-    .select('allocation_ids')
+    /**
+     * The timestamps come back and the age rule is applied HERE rather than in the filter.
+     *
+     * Expressing "the later of resolved_at and created_at is within the window" in PostgREST needs
+     * .or(), whose value is parsed rather than bound -- the shape behind #242/#254. The candidate
+     * set is already narrowed to this venue's unresolved intents overlapping these few allocation
+     * ids, so it is tiny, and a pure function over it is both safer and directly testable.
+     */
+    .select('allocation_ids, status, created_at, resolved_at')
     .eq('restaurant_id', params.restaurantId)
     .eq('scope', 'allocations')
     .in('status', ['launched', 'uncertain'])
@@ -226,6 +307,9 @@ export async function allocationIdsHeldByLiveCard(
   const asked = new Set(params.allocationIds)
   const held = new Set<string>()
   for (const row of data ?? []) {
+    // A hold that has outlived its window stops blocking. The row itself is untouched: still
+    // `uncertain`, still unresolved, still there for the webhook or a human to settle.
+    if (!intentHoldIsStillLive(row as IntentHoldRow)) continue
     for (const id of (row as { allocation_ids: string[] | null }).allocation_ids ?? []) {
       if (asked.has(String(id))) held.add(String(id))
     }
