@@ -20,7 +20,7 @@
  * what went wrong.
  *
  * SIGNED BY THE OWNER 2026-09-08, the first ten as written, no changes.
- * SIGNED BY THE OWNER 2026-09-09, the seven refusal strings below, as written, no changes.
+ * SIGNED BY THE OWNER 2026-09-09, the seven refusal strings and the four below, as written.
  * Pinned in src/lib/__tests__/splitCardCopySignedOff.test.ts.
  *
  * ================================================================================================
@@ -231,11 +231,15 @@ export const SPLIT_CARD_NOT_STARTED =
 
 /**
  * ================================================================================================
- * DRAFT, AWAITING SIGNATURE. Written 2026-09-09. NOT YET SIGNED.
+ * SIGNED BY THE OWNER 2026-09-09, all four as written, no changes.
  * ================================================================================================
  *
- * Two states that were previously told they had been DECLINED, which was false in both and
- * dangerous in one.
+ * Two states that were previously told they had been DECLINED -- false in both, dangerous in one --
+ * and two gratuity refusals.
+ *
+ * At signing, on the reader-not-started string: "The reader-not-started message especially is
+ * important because it prevents staff from wasting time trying another card when the reader itself
+ * never launched."
  */
 
 /**

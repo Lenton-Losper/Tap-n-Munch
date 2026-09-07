@@ -51,14 +51,10 @@ describe(`the signed split-card copy (signed ${SIGNED_ON})`, () => {
     expect(Copy.SPLIT_CARD_IN_PROGRESS).toBe('Follow the card machine…');
   });
 
-  it('twenty-one strings: seventeen signed, four DRAFT awaiting signature', () => {
+  it('twenty-one strings, and no twenty-second added without a signature', () => {
     const exported = Object.keys(Copy).filter(
       k => typeof (Copy as Record<string, unknown>)[k] === 'string',
     );
-    /**
-     * FOUR OF THESE ARE NOT YET SIGNED, and are pinned separately below so the distinction is
-     * visible rather than buried in a count. Nothing is built into a binary until they are.
-     */
     expect(exported).toHaveLength(21);
   });
 });
@@ -330,13 +326,13 @@ describe('every refusal says what to do', () => {
   });
 });
 
-describe('DRAFT copy, written 2026-09-09, NOT YET SIGNED', () => {
+describe('the four reader-outcome and gratuity strings (signed 2026-09-09)', () => {
   /**
-   * Pinned so a draft cannot drift between being written and being signed -- but kept in its own
-   * block, and named, so nobody mistakes these for owner-approved wording. When they are signed
-   * they move into the signed describe above with a date.
+   * Signed 2026-09-09. At signing, on SPLIT_CARD_READER_DID_NOT_START: "especially important
+   * because it prevents staff from wasting time trying another card when the reader itself never
+   * launched."
    */
-  it('reads as drafted', () => {
+  it('reads exactly as signed', () => {
     expect(Copy.SPLIT_CARD_READER_DID_NOT_START).toBe(
       'The card machine did not start and nothing was charged. This is the terminal, not the card — another card will not help. Try again, and if it still will not open, take cash or get a manager.',
     );

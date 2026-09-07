@@ -373,3 +373,38 @@ export const PAYMENT_CHECK_STATUS_LABEL = 'Check payment status';
  */
 export const PAYMENT_TIMED_OUT_MESSAGE =
   'The card machine did not report back in time. The card may still have been charged. This payment has been kept and will be checked. Do not ring this sale up again.';
+
+/**
+ * ================================================================================================
+ * PAYTODAY. DRAFT, written 2026-09-09, AWAITING SIGNATURE.
+ * ================================================================================================
+ *
+ * A Nedbank product the waiter transacts THEMSELVES, in PayToday's own app, outside FlashTap. No
+ * reader, no gateway, no webhook, no credential -- FlashTap records an assertion.
+ *
+ * THAT IS WEAKER THAN CASH, not equal to it. Cash is countable in a drawer at close of day; this is
+ * a waiter's word about a third party's app, with no artefact anyone here can query. The venue
+ * reconciles against Nedbank's own statement, and nothing on our side can contradict it. The
+ * confirmation copy says so plainly rather than implying FlashTap has checked anything.
+ */
+export const PAYTODAY_METHOD_LABEL = 'PayToday';
+
+/** Shown before the settlement is recorded. It asks the waiter to confirm what THEY did. */
+export const PAYTODAY_CONFIRM_TITLE = 'Mark as paid by PayToday?';
+
+export const PAYTODAY_CONFIRM_BODY =
+  'Only do this once the payment has gone through in the PayToday app. FlashTap cannot check it — this records that you took it, and the venue reconciles against the Nedbank statement.';
+
+/** The button that commits it. */
+export const PAYTODAY_CONFIRM_ACTION = 'Yes, mark it paid';
+
+/** After it is recorded. A success must not read like a warning. */
+export const PAYTODAY_RECORDED = 'Recorded as paid by PayToday.';
+
+/** Server code PAYTODAY_WHOLE_ORDER_ONLY -- v1 does not settle single items this way. */
+export const PAYTODAY_WHOLE_ORDER_ONLY =
+  'PayToday covers a whole order. Settle the whole order, or take these items by cash or card.';
+
+/** Server code PAYTODAY_NO_TIPS. */
+export const PAYTODAY_NO_TIPS =
+  'Gratuities cannot be added to a PayToday payment. Take the tip separately, then mark this paid.';

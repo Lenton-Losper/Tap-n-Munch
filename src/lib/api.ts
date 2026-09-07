@@ -435,6 +435,9 @@ export interface TerminalInfo {
   cash_payment_enabled?: boolean;
   cardPaymentEnabled?: boolean;
   cashPaymentEnabled?: boolean;
+  /** Absent means OFF -- see PaymentMethodsAvailability.paytodayEnabled. */
+  paytoday_payment_enabled?: boolean;
+  paytodayPaymentEnabled?: boolean;
   /**
    * Waiter-led service v2. `true` = counter service (today's Sale flow), `false` = table service
    * (floor grid, tabs, rounds). Read server-side from `restaurants.is_counter_service` at REQUEST
@@ -452,6 +455,15 @@ export interface TerminalInfo {
 export type PaymentMethodsAvailability = {
   cardEnabled: boolean;
   cashEnabled: boolean;
+  /**
+   * OFF UNLESS THE VENUE ASKED FOR IT, and that asymmetry with card/cash is deliberate.
+   *
+   * Card and cash default to ENABLED when the flag is absent, so an older server cannot strip
+   * payment off a working terminal. PayToday defaults to DISABLED: only a venue that has turned it
+   * on gets it, and a waiter at a venue that does not use it must never see the button. Absent
+   * therefore means OFF here and ON there, on purpose.
+   */
+  paytodayEnabled: boolean;
 };
 
 /**
@@ -467,13 +479,19 @@ export function resolvePaymentMethodsAvailability(
     | 'cash_payment_enabled'
     | 'cardPaymentEnabled'
     | 'cashPaymentEnabled'
+    | 'paytoday_payment_enabled'
+    | 'paytodayPaymentEnabled'
   > | null | undefined,
 ): PaymentMethodsAvailability {
   const cardRaw = info?.card_payment_enabled ?? info?.cardPaymentEnabled;
   const cashRaw = info?.cash_payment_enabled ?? info?.cashPaymentEnabled;
+  const paytodayRaw = info?.paytoday_payment_enabled ?? info?.paytodayPaymentEnabled;
   return {
     cardEnabled: cardRaw !== false,
     cashEnabled: cashRaw !== false,
+    // `=== true`, not `!== false`. An older server that has never heard of PayToday must not switch
+    // it on for every venue in the estate by omitting the field.
+    paytodayEnabled: paytodayRaw === true,
   };
 }
 
@@ -733,7 +751,18 @@ export async function getTables(token: string): Promise<TableWithTab[]> {
   return (await getTablesWithMeta(token)).tables;
 }
 
-export type SettlementMethod = 'card' | 'cash';
+/**
+ * How a settlement was taken.
+ *
+ * 'paytoday' is a Nedbank product the waiter transacts THEMSELVES, outside FlashTap: no reader, no
+ * gateway call, no webhook, no credential. The terminal records an assertion, exactly as it does
+ * for cash -- and weaker than cash, because cash is countable in a drawer at close of day while
+ * this is a waiter's word about a third party's app with no artefact anyone can query.
+ *
+ * v1 IS WHOLE-ORDER ONLY. settle-allocations refuses it with PAYTODAY_WHOLE_ORDER_ONLY, and the
+ * settlement RPC and order_line_allocation_settlements.method both still constrain to cash|card.
+ */
+export type SettlementMethod = 'card' | 'cash' | 'paytoday';
 
 export type SettleTabExtras = {
   voucherNo?: string;
@@ -981,10 +1010,11 @@ export async function completePayment(
     reference: string;
     amount: number;
     /**
-     * Stored as orders.payment_method. Backend accepts any string and defaults to
-     * 'card' when omitted. Use 'cash' for terminal cash tender (no Finatic fields).
+     * Stored as orders.payment_method. Backend accepts any string and defaults to 'card' when
+     * omitted. Use 'cash' for a terminal cash tender and 'paytoday' for a PayToday assertion --
+     * neither carries Finatic fields, because neither touched the gateway.
      */
-    paymentMethod: 'card' | 'cash';
+    paymentMethod: SettlementMethod;
     /** Wiseasy/Finatic voucher — stored as orders.payment_voucher_no (not merchant order). */
     voucherNo?: string;
     /** Finatic businessOrderNo — backfills paycloud_merchant_order_no if prepare was skipped. */

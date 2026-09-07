@@ -27,6 +27,7 @@ import {
   completePaymentReliably,
   getOrder,
   getTerminalInfo,
+  type SettlementMethod,
   recordSaleEvent,
   resolvePaymentMethodsAvailability,
   verifyTerminalPayment,
@@ -42,6 +43,10 @@ import {
   unconfirmedMessageForVerdict,
 } from '../lib/paymentVerdict';
 import {
+  PAYTODAY_CONFIRM_ACTION,
+  PAYTODAY_CONFIRM_BODY,
+  PAYTODAY_CONFIRM_TITLE,
+  PAYTODAY_METHOD_LABEL,
   ALREADY_SETTLED_MESSAGE,
   UNCONFIRMED_CHECK_ACTION,
   UNCONFIRMED_CHECK_FAILED,
@@ -150,7 +155,7 @@ export default function PaymentScreen({route, navigation}: Props) {
   const [kioskAutoReturnPending, setKioskAutoReturnPending] = useState(false);
   const [kioskAutoReturnDelayMs, setKioskAutoReturnDelayMs] = useState(3000);
   /** Chosen before launching Finatic or cash tender UI. */
-  const [paymentMethod, setPaymentMethod] = useState<'card' | 'cash' | null>(
+  const [paymentMethod, setPaymentMethod] = useState<SettlementMethod | null>(
     null,
   );
   /** Raw tendered input (digits + optional decimal). */
@@ -158,15 +163,34 @@ export default function PaymentScreen({route, navigation}: Props) {
   /** From GET /api/terminal/me — refreshed each time Charge is focused. */
   const [cardPaymentEnabled, setCardPaymentEnabled] = useState(true);
   const [cashPaymentEnabled, setCashPaymentEnabled] = useState(true);
+  /**
+   * OFF UNTIL THE SERVER SAYS OTHERWISE, unlike card and cash which default ON.
+   *
+   * Card and cash default on so a slow config read cannot strip payment off a working terminal.
+   * PayToday is the opposite: only a venue that has switched it on may see it, so the safe default
+   * is hidden. A waiter at Riviera must never see a method that venue does not use.
+   */
+  const [paytodayPaymentEnabled, setPaytodayPaymentEnabled] = useState(false);
   const [paymentConfigLoading, setPaymentConfigLoading] = useState(true);
   const [paymentConfigError, setPaymentConfigError] = useState<string | null>(
     null,
   );
 
   const resolvedTableId = order?.table_id ?? tableId;
-  const bothMethodsEnabled = cardPaymentEnabled && cashPaymentEnabled;
-  const noMethodsEnabled = !cardPaymentEnabled && !cashPaymentEnabled;
-  const showMethodPicker = bothMethodsEnabled;
+  /**
+   * COUNTED, NOT PAIRED. `bothMethodsEnabled` was a two-method assumption: with PayToday, "show the
+   * picker when both are on" hides it at a venue running cash + PayToday and no card.
+   *
+   * The picker appears whenever there is a CHOICE to make -- two or more methods -- and is skipped
+   * when there is exactly one, which the loader then selects automatically.
+   */
+  const enabledMethods: SettlementMethod[] = [
+    ...(cardPaymentEnabled ? (['card'] as const) : []),
+    ...(cashPaymentEnabled ? (['cash'] as const) : []),
+    ...(paytodayPaymentEnabled ? (['paytoday'] as const) : []),
+  ];
+  const noMethodsEnabled = enabledMethods.length === 0;
+  const showMethodPicker = enabledMethods.length > 1;
 
   const tenderedAmount = (() => {
     const cleaned = tenderedText.replace(/[^0-9.]/g, '');
@@ -180,23 +204,38 @@ export default function PaymentScreen({route, navigation}: Props) {
   const canConfirmCash = tenderedAmount >= total && total >= 0;
 
   const applyPaymentMethodAvailability = useCallback(
-    (cardEnabled: boolean, cashEnabled: boolean) => {
+    (cardEnabled: boolean, cashEnabled: boolean, paytodayEnabled = false) => {
       setCardPaymentEnabled(cardEnabled);
       setCashPaymentEnabled(cashEnabled);
-      if (cardEnabled && cashEnabled) {
-        // Dual choice: keep selection null until staff picks (or leave prior pick).
+      setPaytodayPaymentEnabled(paytodayEnabled);
+
+      /**
+       * REWRITTEN FROM A LADDER OF PAIRS. The old form enumerated card/cash combinations, which a
+       * third method makes wrong rather than merely incomplete: cash+PayToday fell through every
+       * branch to "both off" and cleared the selection at a venue that can take money two ways.
+       *
+       * The rule is the same as it always was, stated once: more than one choice, let staff pick;
+       * exactly one, select it; none, clear.
+       */
+      const available: SettlementMethod[] = [
+        ...(cardEnabled ? (['card'] as const) : []),
+        ...(cashEnabled ? (['cash'] as const) : []),
+        ...(paytodayEnabled ? (['paytoday'] as const) : []),
+      ];
+
+      if (available.length > 1) {
+        // Keep the selection null until staff picks (or leave a prior pick standing).
         return;
       }
-      if (cardEnabled && !cashEnabled) {
-        setPaymentMethod('card');
-        setTenderedText('');
+      if (available.length === 1) {
+        setPaymentMethod(available[0]);
+        // The tendered field is a CASH input; anything else must not inherit a stale figure.
+        if (available[0] !== 'cash') {
+          setTenderedText('');
+        }
         return;
       }
-      if (cashEnabled && !cardEnabled) {
-        setPaymentMethod('cash');
-        return;
-      }
-      // Both off — clear selection so we don't offer a dead path.
+      // Nothing available — clear the selection so no dead path is offered.
       setPaymentMethod(null);
       setTenderedText('');
     },
@@ -425,7 +464,11 @@ export default function PaymentScreen({route, navigation}: Props) {
       token: string,
       opts: {
         reference: string;
-        paymentMethod: 'card' | 'cash';
+        /**
+         * The METHOD as recorded, not a card/cash binary. PayToday settles outside the gateway --
+         * like cash -- so it arrives here with recordFinaticSale false and a local reference.
+         */
+        paymentMethod: SettlementMethod;
         voucherNo?: string;
         businessOrderNo?: string;
         /** Card-only: record sale event for refunds when Finatic ids exist. */
@@ -904,6 +947,51 @@ export default function PaymentScreen({route, navigation}: Props) {
     } catch (err) {
       paymentFailed(err instanceof Error ? err.message : 'Cash payment failed');
     }
+  };
+
+  /**
+   * ================================================================================================
+   * PAYTODAY: RECORD AN ASSERTION, TOUCH NO GATEWAY
+   * ================================================================================================
+   *
+   * The waiter has already taken the money in PayToday's own app. Nothing here contacts a reader, a
+   * gateway or a webhook, and `recordFinaticSale: false` keeps it out of the Finatic sale ledger --
+   * a PayToday settlement must never be reported as a card transaction.
+   *
+   * THE REFERENCE IS LOCAL AND SAYS SO. `PAYTODAY-<timestamp>`, shaped exactly like the cash path's
+   * `CASH-<timestamp>`. It is NOT a gateway reference and nothing may treat it as one: it correlates
+   * to no transaction anybody can query, and inventing a card-shaped token here is what would make
+   * a later reconciliation look answerable when it is not.
+   *
+   * IT ASKS FIRST. The confirmation is not ceremony -- FlashTap cannot verify this, so the only
+   * check that exists is the waiter reading the question and answering it.
+   */
+  const handleConfirmPaytoday = () => {
+    Alert.alert(PAYTODAY_CONFIRM_TITLE, PAYTODAY_CONFIRM_BODY, [
+      {text: 'Cancel', style: 'cancel'},
+      {
+        text: PAYTODAY_CONFIRM_ACTION,
+        onPress: async () => {
+          startPayment(orderId, total);
+          try {
+            const token = await getTerminalToken();
+            if (!token) {
+              throw new Error('Session expired');
+            }
+            await finishSuccessfulPayment(token, {
+              reference: `PAYTODAY-${Date.now()}`,
+              paymentMethod: 'paytoday',
+              // No Finatic sale event: no Finatic transaction exists.
+              recordFinaticSale: false,
+            });
+          } catch (err) {
+            paymentFailed(
+              err instanceof Error ? err.message : 'PayToday payment could not be recorded',
+            );
+          }
+        },
+      },
+    ]);
   };
 
   const onTenderedChange = (text: string) => {
@@ -1426,6 +1514,40 @@ export default function PaymentScreen({route, navigation}: Props) {
                       Cash
                     </Text>
                   </Pressable>
+                  {/*
+                    ONLY WHEN THE VENUE HAS IT ON. Rendered conditionally rather than disabled: a
+                    greyed-out method a venue does not use is an invitation to keep tapping it.
+                  */}
+                  {paytodayPaymentEnabled ? (
+                    <Pressable
+                      style={[
+                        styles.methodChip,
+                        paymentMethod === 'paytoday' && styles.methodChipSelected,
+                      ]}
+                      onPress={() => {
+                        setPaymentMethod('paytoday');
+                        // Not a cash tender. Clearing avoids a stale figure being read as change due.
+                        setTenderedText('');
+                      }}>
+                      <MaterialCommunityIcons
+                        name="cellphone-check"
+                        size={22}
+                        color={
+                          paymentMethod === 'paytoday'
+                            ? Colors.white
+                            : Colors.textPrimary
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.methodChipText,
+                          paymentMethod === 'paytoday' &&
+                            styles.methodChipTextSelected,
+                        ]}>
+                        {PAYTODAY_METHOD_LABEL}
+                      </Text>
+                    </Pressable>
+                  ) : null}
                 </View>
               </>
             ) : null}
@@ -1648,10 +1770,36 @@ export default function PaymentScreen({route, navigation}: Props) {
               <Text style={styles.processButtonSubtitle}>
                 {paymentConfigLoading
                   ? 'Checking restaurant settings'
-                  : 'Enable Card or Cash in Settings'}
+                  : 'Enable a payment method in Settings'}
               </Text>
             </View>
           </Pressable>
+        ) : paymentMethod === 'paytoday' ? (
+          <LoadingButton
+            style={[
+              styles.processButton,
+              paymentActionsBlocked && styles.buttonDisabled,
+            ]}
+            disabled={paymentActionsBlocked}
+            loading={state === 'PAYMENT_IN_PROGRESS'}
+            onPress={handleConfirmPaytoday}
+            spinnerColor={Colors.white}
+            icon={
+              <MaterialCommunityIcons
+                name="cellphone-check"
+                size={22}
+                color={Colors.white}
+              />
+            }>
+            <View style={styles.processButtonTextWrap}>
+              <Text style={styles.processButtonTitle}>
+                Mark paid by {PAYTODAY_METHOD_LABEL}
+              </Text>
+              <Text style={styles.processButtonSubtitle}>
+                {formatCurrency(total)}
+              </Text>
+            </View>
+          </LoadingButton>
         ) : paymentMethod === 'cash' ? (
           <LoadingButton
             style={[
