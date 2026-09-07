@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { chargeableCentsFor, settledCentsByOrder } from '@/lib/payments/settled-cents'
 import { NextResponse } from 'next/server'
 import { parseTipCents } from '@/lib/payments/tips'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
@@ -279,9 +280,63 @@ export async function POST(
         )
       }
 
-      const centsFor = (row: { total?: unknown }) => Math.round((Number(row.total) || 0) * 100)
+      /**
+       * ================================================================================================
+       * WHAT IS STILL OWED, NOT WHAT THE ORDER ONCE COST
+       * ================================================================================================
+       *
+       * `orders.total` is what the order came to. It is NOT what is still chargeable the moment any
+       * of its items have been paid for individually.
+       *
+       * Order #45 at Digi Cofee: N$37.00 total, N$17.00 already settled through two allocations,
+       * N$20.00 genuinely owed. Summing `total` here asks the reader for N$37.00 and takes the same
+       * N$17.00 a second time.
+       *
+       * The tab header has told the waiter N$20.00 since outstandingCentsFor was written. This is
+       * that arithmetic on the charge path, so the figure a customer is quoted and the figure their
+       * card is asked for cannot disagree.
+       *
+       * An order with no allocations -- the ordinary case, and every order that predates splitting
+       * -- has nothing to subtract and is charged exactly as before.
+       */
+      let settledByOrder: Map<string, number>
+      try {
+        settledByOrder = await settledCentsByOrder(supabase, settlementOrderIds)
+      } catch (e) {
+        /**
+         * FAILS CLOSED. Not being able to see what has already been collected is not permission to
+         * collect it again. A waiter retrying is recoverable; charging a customer twice is not.
+         */
+        console.error('[terminal/prepare-payment] could not read settled cents', {
+          error: e instanceof Error ? e.message : String(e),
+        })
+        return NextResponse.json(
+          { error: 'Could not read what has already been paid', code: 'SETTLED_TOTAL_UNREADABLE' },
+          { status: 503 },
+        )
+      }
+
+      const centsFor = (row: { id?: unknown; total?: unknown }) =>
+        chargeableCentsFor(row.total, settledByOrder.get(String(row.id)))
       const orderCents = orderRow.reduce((sum, r) => sum + centsFor(r), 0)
       const chargeCents = orderCents + tipCents
+
+      /**
+       * NOTHING LEFT TO CHARGE IS A REFUSAL, NOT A ZERO-VALUE CHARGE.
+       *
+       * If every item has already been settled the reader must not be launched at all -- a zero or
+       * tip-only charge against a fully collected order is how the same money gets taken twice with
+       * a receipt that looks ordinary.
+       */
+      if (orderCents <= 0) {
+        return NextResponse.json(
+          {
+            error: 'Those items have already been paid for.',
+            code: 'NOTHING_LEFT_TO_CHARGE',
+          },
+          { status: 409 },
+        )
+      }
 
       /**
        * ================================================================================================

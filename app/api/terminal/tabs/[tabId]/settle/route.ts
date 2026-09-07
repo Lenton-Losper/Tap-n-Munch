@@ -4,6 +4,7 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { generatePaymentReference } from '@/lib/payment-reference'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import { parseTipCents, recordTip } from '@/lib/payments/tips'
+import { chargeableCentsFor, settledCentsByOrder } from '@/lib/payments/settled-cents'
 import {
   amountsMatch,
   methodUsesGateway,
@@ -254,12 +255,56 @@ export async function POST(
       )
     }
 
+    /**
+     * ================================================================================================
+     * WHAT IS STILL OWED, NOT WHAT THE ORDERS ONCE COST
+     * ================================================================================================
+     *
+     * Summing `orders.total` was correct only while settlement was order-grained. Once items can be
+     * paid for individually, an order can be part-collected and its total is no longer what is
+     * chargeable: order #45 was N$37.00 with N$17.00 already settled, and this would have taken the
+     * same N$17.00 again -- on the cash path as readily as the card one.
+     *
+     * FAILS CLOSED, deliberately. Not being able to read what has already been collected is not
+     * permission to collect it again.
+     */
+    let settledByOrder: Map<string, number>
+    try {
+      settledByOrder = await settledCentsByOrder(
+        supabase,
+        (tabOrders ?? []).map((o) => String(o.id)),
+      )
+    } catch (e) {
+      console.error('[terminal/tabs/settle] could not read settled cents', {
+        error: e instanceof Error ? e.message : String(e),
+      })
+      return NextResponse.json(
+        { error: 'Could not read what has already been paid', code: 'SETTLED_TOTAL_UNREADABLE' },
+        { status: 503 },
+      )
+    }
+
     // Rounded because this figure is STORED, not only compared: it becomes payments.amount and
     // audit_logs.metadata.amount below, both `numeric` with no scale. The comparison on the
     // next line is unaffected either way -- amountsMatch works in integer cents (#180).
     const expectedAmount = roundToCents(
-      (tabOrders ?? []).reduce((sum, o) => sum + Number(o.total), 0),
+      (tabOrders ?? []).reduce(
+        (sum, o) => sum + chargeableCentsFor(o.total, settledByOrder.get(String(o.id))) / 100,
+        0,
+      ),
     )
+
+    /**
+     * A settlement that would collect nothing is refused rather than recorded. Every item is
+     * already paid for, so there is no money to take and a `payments` row for zero would assert
+     * a collection that never happened.
+     */
+    if (expectedAmount <= 0) {
+      return NextResponse.json(
+        { error: 'Those orders have already been paid for.', code: 'NOTHING_LEFT_TO_CHARGE' },
+        { status: 409 },
+      )
+    }
     if (!amountsMatch(amount, expectedAmount)) {
       return NextResponse.json(
         {
