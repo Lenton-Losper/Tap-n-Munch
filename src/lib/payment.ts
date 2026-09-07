@@ -588,6 +588,18 @@ export type PaymentReferenceOptions = {
    * The reader is told ONE number; this says how much of it was the gratuity.
    */
   tipAmount?: number;
+  /**
+   * A WHOLE-ORDER GRATUITY, sent to prepare-payment so the SERVER records what the reader will be
+   * asked for and hands the figure back.
+   *
+   * The device does NOT add the tip itself. If both computed the charge independently they could
+   * disagree, and every gateway gate compares against the server's number -- so a payment the
+   * customer made would be refused. One figure, decided once, on the side that verifies it.
+   *
+   * Ignored when merchantOrderNo is supplied: that is the split path, whose gratuity rides on the
+   * intent instead.
+   */
+  gratuity?: {tipCents?: number; tipStaffUserId?: string};
 };
 
 export async function processPaymentIntent(
@@ -640,11 +652,35 @@ export async function processPaymentIntent(
      * ORDER's reference and undo that.
      */
     const suppliedRef = String(options?.merchantOrderNo ?? '').trim();
-    const merchantOrderNo = suppliedRef
-      ? suppliedRef
-      : (await prepareTerminalPayment(resolvePrepareOrderId(orderId), token)).merchantOrderNo;
 
-    const amountInCents = String(Math.round(amount * 100));
+    /**
+     * THE SERVER DECIDES WHAT THE READER IS ASKED FOR.
+     *
+     * prepare-payment records orders.pending_charge_cents -- order total plus any gratuity -- and
+     * returns it. Charging that figure rather than the caller's is what keeps the invariant: the
+     * amount sent to the gateway IS the amount verify-payment, the webhook and the reconcile cron
+     * compare against, at zero tolerance.
+     *
+     * An older worker returns no chargeCents, and then `amount` stands -- so a terminal on this
+     * build against a worker without the change behaves exactly as it did before.
+     */
+    let merchantOrderNo = suppliedRef;
+    let chargeAmount = amount;
+    if (!suppliedRef) {
+      const prepared = await prepareTerminalPayment(
+        resolvePrepareOrderId(orderId),
+        token,
+        options?.gratuity,
+      );
+      merchantOrderNo = prepared.merchantOrderNo;
+      if (typeof prepared.chargeCents === 'number' && prepared.chargeCents > 0) {
+        chargeAmount = prepared.chargeCents / 100;
+      }
+    // chargeAmount, not `amount`: for a tipped whole-order charge the server figure
+    // includes the gratuity, and it is the one every gate will check against.
+    }
+
+    const amountInCents = String(Math.round(chargeAmount * 100));
 
     // launchPayment's Promise only resolves when WiseCashier returns. Start it
     // first so native startActivityForResult runs, then mark attempt-started

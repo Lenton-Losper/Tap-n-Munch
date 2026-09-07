@@ -1176,12 +1176,35 @@ export async function completePaymentReliably(
 export async function prepareTerminalPayment(
   orderId: string,
   token: string,
-): Promise<{orderId: string; merchantOrderNo: string; created: boolean}> {
+  /**
+   * The gratuity, if any, sent BEFORE the reader launches.
+   *
+   * The server records orders.pending_charge_cents = order total + tip and hands the figure back,
+   * so that the amount charged and the amount every gateway gate verifies against are the same
+   * number. A tip added after the charge would be a tip nobody collected.
+   */
+  gratuity?: {tipCents?: number; tipStaffUserId?: string},
+): Promise<{
+  orderId: string;
+  merchantOrderNo: string;
+  created: boolean;
+  /**
+   * WHAT THE SERVER RECORDED, and therefore what the reader must be asked for. Absent from an
+   * older worker, in which case the caller keeps its own figure and behaves exactly as before.
+   */
+  chargeCents?: number;
+  tipCents?: number;
+}> {
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/orders/${orderId}/prepare-payment`,
     {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(
+        gratuity?.tipCents
+          ? {tip_cents: gratuity.tipCents, tip_staff_user_id: gratuity.tipStaffUserId}
+          : {},
+      ),
     },
     token,
   );

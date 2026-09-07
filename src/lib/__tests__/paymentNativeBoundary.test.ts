@@ -74,7 +74,7 @@ async function run(
   orderId: string,
   options: import('../payment').PaymentReferenceOptions | undefined,
   native: {resolve?: Record<string, unknown>; reject?: {code?: string; message: string}},
-  opts: {preparedRef?: string} = {},
+  opts: {preparedRef?: string; chargeCents?: number} = {},
 ): Promise<Harness> {
   let out!: Harness;
   await jest.isolateModulesAsync(async () => {
@@ -121,6 +121,13 @@ async function run(
         orderId: String(a[0]),
         merchantOrderNo: opts.preparedRef ?? 'FT-FROM-PREPARE',
         created: true,
+        /**
+         * THE SERVER'S FIGURE. prepare-payment records orders.pending_charge_cents -- order total
+         * plus any gratuity -- and returns it, because the amount charged must be the amount every
+         * gateway gate verifies against. `undefined` models an OLDER WORKER that has never heard of
+         * this, which must leave the caller's own amount standing.
+         */
+        ...(opts.chargeCents === undefined ? {} : {chargeCents: opts.chargeCents}),
       };
     });
     jest
@@ -333,5 +340,165 @@ describe('what this suite CANNOT prove', () => {
       'which native code a real launch failure raises',
     ];
     expect(REQUIRES_A_REAL_TERMINAL).toHaveLength(5);
+  });
+});
+
+describe('THE WHOLE-ORDER GRATUITY REACHES THE READER', () => {
+  /**
+   * ================================================================================================
+   * WHAT WENT WRONG, AND WHY THE SERVER OWNS THE FIGURE
+   * ================================================================================================
+   *
+   * The tip was sent only to settleTab, AFTER the charge. So the reader was asked for the bill and
+   * payment_tips recorded a gratuity nobody collected -- a silent under-charge with the ledger
+   * disagreeing with the money.
+   *
+   * It could not simply be added on the device either: three gateway gates compare the echoed
+   * amount against the SERVER's expectation at zero tolerance, so a device-computed total would be
+   * refused after the customer had paid. The server records the expectation and hands it back; the
+   * device charges that.
+   */
+
+  it('NO TIP: the reader receives the order total', async () => {
+    const h = await run(34, ORDER_UUID, undefined, {resolve: OK('FT-FROM-PREPARE')}, {
+      chargeCents: 3400,
+    });
+    expect((h.launches[0] as string[])[0]).toBe('3400');
+  });
+
+  it('WITH A TIP: the reader receives order total PLUS tip', async () => {
+    // The server was told 34.00 + 5.00 and recorded 3900; the device charges the server's figure.
+    const h = await run(
+      34,
+      ORDER_UUID,
+      {gratuity: {tipCents: 500, tipStaffUserId: 'staff-1'}},
+      {resolve: OK('FT-FROM-PREPARE')},
+      {chargeCents: 3900},
+    );
+    expect((h.launches[0] as string[])[0]).toBe('3900');
+  });
+
+  it('the selected tip SURVIVES prepare -> charge', async () => {
+    /**
+     * The gratuity must actually reach prepare-payment. If it were dropped there, the server would
+     * record the bill alone, hand back 3400, and the device would charge 3400 -- passing a naive
+     * "the reader got the server's number" check while losing the tip entirely.
+     */
+    const h = await run(
+      34,
+      ORDER_UUID,
+      {gratuity: {tipCents: 500, tipStaffUserId: 'staff-1'}},
+      {resolve: OK('FT-FROM-PREPARE')},
+      {chargeCents: 3900},
+    );
+    expect(h.prepares).toHaveLength(1);
+    const gratuityArg = (h.prepares[0] as Call)[2] as {tipCents?: number; tipStaffUserId?: string};
+    expect(gratuityArg).toEqual({tipCents: 500, tipStaffUserId: 'staff-1'});
+  });
+
+  it('NO DOUBLE COUNTING: the device does not add the tip on top of the server figure', async () => {
+    /**
+     * THE ASSERTION THAT MATTERS MOST HERE. The caller passes the BILL as `amount` and the tip in
+     * options; the server returns the combined figure. A device that added the tip as well would
+     * charge 34 + 5 + 5 -- and it would look plausible, because the number is still bigger than the
+     * bill.
+     */
+    const h = await run(
+      34,
+      ORDER_UUID,
+      {gratuity: {tipCents: 500, tipStaffUserId: 'staff-1'}},
+      {resolve: OK('FT-FROM-PREPARE')},
+      {chargeCents: 3900},
+    );
+    expect((h.launches[0] as string[])[0]).toBe('3900');
+    expect((h.launches[0] as string[])[0]).not.toBe('4400');
+  });
+
+  it('EXISTING NO-TIP PAYMENTS ARE UNCHANGED against an older worker', async () => {
+    /**
+     * A worker without this change returns no chargeCents, and the caller's own amount must stand.
+     * Without this, a terminal on the new build would charge NaN or zero at every venue whose
+     * worker had not been promoted yet.
+     */
+    const h = await run(34, ORDER_UUID, undefined, {resolve: OK('FT-FROM-PREPARE')});
+    expect((h.launches[0] as string[])[0]).toBe('3400');
+  });
+
+  it('a zero or absent server figure never wins over the caller amount', async () => {
+    // A malformed response must not be able to charge nothing, or to charge the bill when a tip was
+    // expected -- it falls back to what the caller asked for.
+    const h = await run(34, ORDER_UUID, undefined, {resolve: OK('FT-FROM-PREPARE')}, {
+      chargeCents: 0,
+    });
+    expect((h.launches[0] as string[])[0]).toBe('3400');
+  });
+
+  it('the SPLIT path ignores the gratuity option — its tip rides on the intent', async () => {
+    /**
+     * Two mechanisms for one job would be a way to charge the tip twice. A supplied merchantOrderNo
+     * means the split path, whose amount already includes the gratuity in the intent, so
+     * prepare-payment is not called at all and nothing here may add to it.
+     */
+    const h = await run(
+      8,
+      ORDER_UUID,
+      {merchantOrderNo: SPLIT_REF, gratuity: {tipCents: 200, tipStaffUserId: 'staff-1'}},
+      {resolve: OK(SPLIT_REF)},
+      {chargeCents: 9999},
+    );
+    expect(h.prepares).toHaveLength(0);
+    expect((h.launches[0] as string[])[0]).toBe('800');
+  });
+});
+
+describe('THE SCREEN ACTUALLY PASSES THE GRATUITY', () => {
+  /**
+   * ASSERTED AGAINST SOURCE, and here is why that is the right instrument rather than a shortcut.
+   *
+   * Everything above drives the real processPaymentIntent, which is where the amount arithmetic
+   * lives. But the defect that shipped was one level up: TableDetailScreen sent the tip ONLY to
+   * settleTab, after the charge. processPaymentIntent behaved perfectly -- it was never told there
+   * was a tip.
+   *
+   * Mounting the screen and driving a gratuity through the picker would test the picker, not this;
+   * and the call site is a static fact. So: does runSettle hand the gratuity to
+   * processPaymentIntent, and does it read it ONCE rather than twice?
+   */
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const {readFileSync} = require('fs') as {readFileSync: (p: string, e: string) => string};
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const {join} = require('path') as {join: (...p: string[]) => string};
+  const proc = (globalThis as unknown as {process?: {cwd(): string}}).process;
+  const SCREEN = join(proc ? proc.cwd() : '.', 'src', 'screens', 'TableDetailScreen.tsx');
+  const CODE = readFileSync(SCREEN, 'utf8');
+
+  it('the screen was read — not an empty match', () => {
+    expect(CODE.length).toBeGreaterThan(1000);
+  });
+
+  it('runSettle hands the gratuity to processPaymentIntent', () => {
+    expect(CODE.includes('{gratuity: wholeOrderGratuity}')).toBe(true);
+  });
+
+  it('and the SAME value goes to settleTab — read once, not re-derived', () => {
+    /**
+     * A second gratuityExtras(gratuity) call at settle time could disagree with the one sent to
+     * prepare if a waiter changed the picker mid-charge -- and then the tip recorded would not be
+     * the tip charged. One read, spread twice.
+     */
+    expect(CODE.includes('const wholeOrderGratuity = gratuityExtras(gratuity);')).toBe(true);
+    expect(CODE.includes('...wholeOrderGratuity,')).toBe(true);
+    // Exactly one derivation on the whole-order path.
+    const derivations = CODE.split('const wholeOrderGratuity = ').length - 1;
+    expect(derivations).toBe(1);
+  });
+
+  it('the bill, not the bill plus tip, is what settleTab verifies against', () => {
+    /**
+     * The settle route checks `amount` against the ORDER TOTALS, and the tip travels separately in
+     * tip_cents. Adding the tip to `amount` as well would double-count it and be refused.
+     */
+    const call = CODE.slice(CODE.indexOf('let paymentResult = await processPaymentIntent('));
+    expect(call.slice(0, 120).includes('amount,')).toBe(true);
   });
 });

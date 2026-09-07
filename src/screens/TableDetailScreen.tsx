@@ -604,9 +604,23 @@ export default function TableDetailScreen({route, navigation}: Props) {
         throw new Error('Session expired');
       }
 
+      /**
+       * THE GRATUITY GOES IN BEFORE THE CHARGE, NOT AT SETTLE TIME.
+       *
+       * processPaymentIntent hands this to prepare-payment, which records
+       * orders.pending_charge_cents = order total + tip and returns the figure; the reader is then
+       * asked for THAT. Until 2026-09-09 the tip was sent only to settleTab afterwards, so the
+       * customer was charged the bill while payment_tips recorded a gratuity nobody collected.
+       *
+       * `amount` below is still the BILL, and deliberately: the settle route verifies it against
+       * the order totals, and the tip travels separately in gratuityExtras. Adding the tip here as
+       * well would double-count it.
+       */
+      const wholeOrderGratuity = gratuityExtras(gratuity);
       let paymentResult = await processPaymentIntent(
         amount,
         orderIds.join(','),
+        wholeOrderGratuity.tipCents ? {gratuity: wholeOrderGratuity} : undefined,
       );
 
       // Ambiguous / orphaned device outcomes: ask Finatic before assuming failure
@@ -676,7 +690,12 @@ export default function TableDetailScreen({route, navigation}: Props) {
         {
           voucherNo: paymentResult.voucherNo,
           businessOrderNo: paymentResult.businessOrderNo,
-          ...gratuityExtras(gratuity),
+          /**
+           * The SAME gratuity that was sent to prepare-payment, so the tip recorded here is the tip
+           * the customer was actually charged. Read once, above, rather than re-derived -- a second
+           * read of the picker could disagree if a waiter changed it mid-charge.
+           */
+          ...wholeOrderGratuity,
         },
       );
 
