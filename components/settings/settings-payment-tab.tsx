@@ -266,7 +266,15 @@ export function SettingsPaymentTab() {
     void loadTerminals()
   }, [loadAccount, loadTerminals])
 
-  const handlePaymentMethodToggle = async (method: 'cash' | 'card', enabled: boolean) => {
+  /**
+   * The union is the reason PayToday shipped everywhere EXCEPT here. The database CHECK, the API
+   * allowlist and the terminal all learned about it; this screen's two hardcoded switches and this
+   * two-value type did not, so there was no way to turn it on for a venue.
+   */
+  const handlePaymentMethodToggle = async (
+    method: 'cash' | 'card' | 'paytoday',
+    enabled: boolean,
+  ) => {
     if (!restaurantId) return
 
     const nextMethods = enabled
@@ -577,6 +585,32 @@ export function SettingsPaymentTab() {
                 id="payment-method-card"
                 checked={paymentMethods.includes('card')}
                 onCheckedChange={(checked) => void handlePaymentMethodToggle('card', checked)}
+                disabled={savingPaymentMethods || !canConfigure}
+              />
+            </div>
+            {/*
+              PAYTODAY. OFF unless a venue turns it on -- `includes('paytoday')` is false for the
+              hardcoded ['cash','card'] default and for every venue with no restaurant_settings row,
+              so nothing is enabled by adding this switch.
+
+              A Nedbank product the waiter transacts OUTSIDE FlashTap: no reader, no gateway, no
+              webhook. FlashTap records an assertion and cannot verify it, which is why the
+              description says who reconciles rather than implying we check.
+
+              TERMINAL ONLY IN v1 -- deliberately not added to Kiosk Payment Methods below.
+            */}
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+              <div className="space-y-1">
+                <Label htmlFor="payment-method-paytoday">PayToday</Label>
+                <p className="text-sm text-muted-foreground">
+                  Staff take the payment in the PayToday app and mark the order paid on the
+                  terminal. FlashTap cannot verify it — reconcile against your Nedbank statement.
+                </p>
+              </div>
+              <Switch
+                id="payment-method-paytoday"
+                checked={paymentMethods.includes('paytoday')}
+                onCheckedChange={(checked) => void handlePaymentMethodToggle('paytoday', checked)}
                 disabled={savingPaymentMethods || !canConfigure}
               />
             </div>

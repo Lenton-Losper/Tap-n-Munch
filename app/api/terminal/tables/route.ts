@@ -22,6 +22,7 @@ import {
   summarisePendingForTab,
 } from '@/lib/tabs/pending-order-requests'
 import { loadTableOwners } from '@/lib/tables/table-owners'
+import { outstandingTotalFor } from '@/lib/tabs/outstanding-total'
 
 export const dynamic = 'force-dynamic'
 
@@ -130,6 +131,40 @@ export async function GET(req: Request) {
     )
 
     /**
+     * HOW MUCH OF EACH ORDER HAS ALREADY BEEN PAID FOR, ITEM BY ITEM.
+     *
+     * A part-paid order is not fully paid, so it stays in the unpaid set and its FULL total used to
+     * keep counting -- a N$34 tab with a N$6 item settled still read NAD 34.00.
+     *
+     * BATCHED, one query for every order on every table, rather than per order: this route renders
+     * the whole floor and a per-order query would be a request per order per poll.
+     *
+     * FAILS TOWARDS THE OLD BEHAVIOUR. An unreadable settlements table leaves the map empty, so
+     * nothing is subtracted and the headline is the pre-2026-09-09 figure -- stale, but never
+     * UNDERSTATED. Reporting a tab as owing less than it does is the direction that loses money.
+     */
+    const settledByOrder = new Map<string, number>()
+    if (allOrderIds.length > 0) {
+      const { data: settledRows, error: settledError } = await supabase
+        .from('order_line_allocation_settlements')
+        .select('amount_cents, order_line_allocations!inner(order_id)')
+        .in('order_line_allocations.order_id', allOrderIds)
+
+      if (settledError) {
+        console.error('[terminal/tables] settled-allocation read failed', settledError)
+      } else {
+        for (const row of settledRows ?? []) {
+          const alloc = (row as { order_line_allocations?: { order_id?: unknown } })
+            .order_line_allocations
+          const orderId = String(alloc?.order_id ?? '')
+          if (!orderId) continue
+          const cents = Math.max(0, Math.round(Number((row as { amount_cents?: unknown }).amount_cents) || 0))
+          settledByOrder.set(orderId, (settledByOrder.get(orderId) ?? 0) + cents)
+        }
+      }
+    }
+
+    /**
      * #120. The rounds that are NOT in `orders` yet.
      *
      * Asked by tab AND by table, because `order_requests.tab_id` is nullable — see the note on
@@ -205,8 +240,21 @@ export async function GET(req: Request) {
       // them understated the tab and let can_close report true over genuine debt. Cancelled
       // (and any other terminal status) still correctly falls out.
       const unpaidOrders = orders.filter((o: any) => owesMoney(o.payment_status))
-      const unpaidTotal = unpaidOrders.reduce(
-        (sum: number, o: any) => sum + Number(o.total), 0
+      /**
+       * ITEMS ALREADY PAID FOR DO NOT STILL COUNT.
+       *
+       * This summed whole unpaid orders, which was right while settlement was order-grained and
+       * wrong from the moment items could be paid individually: a part-paid order is not fully
+       * paid, so it stays unpaid, so its FULL total kept counting. A N$34 tab with the N$6 cheese
+       * toast already settled went on reading NAD 34.00 -- and a waiter reads that number out to a
+       * customer who has already paid part of it. Found on a P5 at Digi Cofee, 2026-09-09.
+       */
+      const unpaidTotal = outstandingTotalFor(
+        unpaidOrders.map((o: any) => ({
+          id: String(o.id),
+          total: o.total,
+          settledCents: settledByOrder.get(String(o.id)) ?? 0,
+        })),
       )
 
       /**
