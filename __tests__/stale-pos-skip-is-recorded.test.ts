@@ -67,6 +67,8 @@ function makeSupabase(opts: { priorSkips?: Row[]; auditReadThrows?: boolean; aud
       }
       chain.eq = () => self()
       chain.lt = () => self()
+      // The throttle read now bounds itself by created_at in the QUERY, not only in the loop.
+      chain.gte = () => self()
       chain.in = () => self()
       chain.is = () => self()
       chain.order = () => self()

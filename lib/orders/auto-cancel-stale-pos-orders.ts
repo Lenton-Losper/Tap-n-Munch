@@ -2,6 +2,7 @@ import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import { isMissingFinaticCredentialsError } from '@/lib/payments/finatic-credentials-error'
 import {
+  E04111_MIN_OBSERVATION_SEPARATION_MS,
   isFinaticMerchantOrderInvalidError,
   queryFinaticOrderPaid,
 } from '@/lib/payments/query-finatic-order-paid'
@@ -857,34 +858,88 @@ export async function autoCancelStalePosOrders(
   const recentlyProbed = new Set<string>()
   const priorSkipCounts = new Map<string, number>()
   try {
-    const since = new Date(Date.now() - SKIP_REPROBE_INTERVAL_MS).toISOString()
-    /**
-     * THE DISCARDED ERROR HERE FAILS SAFE, AND THAT IS DELIBERATE — not an oversight.
+/**
+     * ============================================================================================
+     * THE WINDOW IS IN THE QUERY. THAT IS THE FIX.
+     * ============================================================================================
      *
-     * This read only throttles RE-PROBING: a row means "we skipped verifying this order recently,
-     * do not hammer the gateway again". If the read fails, `priorSkips` is null, `recentlyProbed`
-     * stays empty, and every candidate is treated as NOT recently probed — so the run VERIFIES
-     * MORE, not less. Extra verification against the gateway is the safe direction; skipping
-     * verification because we could not read a throttle would not be.
+     * This read used to fetch EVERY historical skip row for every candidate -- no created_at
+     * filter, no order, no limit -- and then decide "recently probed?" in memory. PostgREST caps
+     * the rows it returns, so once an order had accumulated enough history the response was
+     * silently truncated, and the rows that got dropped were the ones the throttle depends on.
      *
-     * Recorded because it is the exception. Three sibling reads on this path were fixed on
-     * 2026-09-06 for exactly the shape this one has — a discarded error whose fallback is
-     * indistinguishable from a legitimate empty result — and the next person tidying up will find
-     * this one and assume it was missed. It was not: absence and failure lead to the SAME action
-     * here, which is the only condition under which sharing a code path is correct.
+     * An order whose recent rows fell outside the returned page read as NEVER probed, so it was
+     * probed again, which wrote another row, which made the truncation worse. A throttle that
+     * degrades as it is used is not a throttle.
+     *
+     * Production, 2026-09-07: order 76196885 was skipped at 12:20:37 and again at 12:22:38 -- two
+     * minutes apart against a one-hour interval -- while reporting `observationCount: 0`. A count
+     * of zero for an order skipped two minutes earlier is the truncation, stated in its own audit
+     * row. 273 rows in a 25-minute window across 51 orders, some with 57 observations.
+     *
+     * Filtering by created_at in the QUERY makes every returned row relevant by construction and
+     * bounds the response by TIME rather than by history, so it cannot decay.
+     *
+     * ============================================================================================
+     * E04111 IS PERMANENT, AND GETS THE CADENCE THAT ALREADY EXISTS FOR IT
+     * ============================================================================================
+     *
+     * Fixing the truncation alone would still leave a loop, just an hourly one. E04111 means the
+     * gateway has NO RECORD of the merchant order number; asking again in an hour cannot produce a
+     * different answer, and the rule that consumes these observations already knows it -- the
+     * persistence verdict requires observations at least E04111_MIN_OBSERVATION_SEPARATION_MS
+     * apart before it will conclude anything. Probing more often than that cannot advance any
+     * decision; it only costs a gateway call and writes a row.
+     *
+     * So a permanent answer rests for that separation and a transient one keeps the ordinary
+     * interval. No new constant, and no new threshold to justify: this is the cadence the E04111
+     * rule was already written against.
+     *
+     * NOTHING IS RESOLVED, CANCELLED OR MARKED PAID HERE. An order that is due is treated exactly
+     * as before; one that is not due is left untouched and reported separately, and the intent and
+     * its audit trail are preserved for manual resolution.
      */
+    const nowMs = Date.now()
+    // Long enough to cover the widest interval below, so one read serves both classifications.
+    const lookbackMs = Math.max(SKIP_REPROBE_INTERVAL_MS, E04111_MIN_OBSERVATION_SEPARATION_MS)
+    const lookback = new Date(nowMs - lookbackMs).toISOString()
+
     const { data: priorSkips } = await supabase
       .from('audit_logs')
-      .select('entity_id, created_at')
+      .select('entity_id, created_at, metadata')
       .eq('action', VERIFICATION_SKIPPED_ACTION)
       .in(
         'entity_id',
         withAttempt.map((o) => String(o.id)),
       )
+      .gte('created_at', lookback)
+      .order('created_at', { ascending: false })
+
+    /** The most recent observation per order, and whether it was the permanent answer. */
+    const newestSkip = new Map<string, { at: number; permanent: boolean }>()
     for (const row of priorSkips ?? []) {
       const id = String((row as { entity_id: string }).entity_id)
+      /**
+       * COUNTED OVER THE LOOKBACK, not over all time. It is written to audit metadata and read by
+       * no decision -- holdForVerificationUnavailable records it purely to say how often an order
+       * had been asked about to no effect. It was already unreliable, reading 0 for orders with
+       * dozens of rows, because the truncated response is what it counted.
+       */
       priorSkipCounts.set(id, (priorSkipCounts.get(id) ?? 0) + 1)
-      if (String((row as { created_at: string }).created_at) >= since) recentlyProbed.add(id)
+
+      const at = Date.parse(String((row as { created_at: string }).created_at))
+      if (!Number.isFinite(at)) continue
+      const permanent =
+        (row as { metadata?: { isE04111?: unknown } }).metadata?.isE04111 === true
+      const seen = newestSkip.get(id)
+      if (!seen || at > seen.at) newestSkip.set(id, { at, permanent })
+    }
+
+    for (const [id, seen] of newestSkip) {
+      const interval = seen.permanent
+        ? E04111_MIN_OBSERVATION_SEPARATION_MS
+        : SKIP_REPROBE_INTERVAL_MS
+      if (nowMs - seen.at < interval) recentlyProbed.add(id)
     }
   } catch (probeReadErr) {
     console.error(
