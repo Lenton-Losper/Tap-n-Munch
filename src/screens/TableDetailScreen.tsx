@@ -199,6 +199,31 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const [settling, setSettling] = useState(false);
   const [cashSettling, setCashSettling] = useState(false);
   /**
+   * WHICH BUTTON THE WAITER ACTUALLY PRESSED. Display only.
+   *
+   * ================================================================================================
+   * DISABLED IS SHARED. LOADING IS NOT.
+   * ================================================================================================
+   *
+   * `settling` is one flag for two card buttons, and that is right for `disabled`: while any card
+   * attempt is live, every other way to collect the same money must go dead. It is wrong for
+   * `loading`, because a spinner is a claim about the tap the waiter just made. Sharing it drew a
+   * spinner on "Settle Entire Tab" when "Settle Selected" was pressed -- seen on a P5 at Digi Cofee
+   * on APK 135, where a button nobody had touched appeared to be working.
+   *
+   * So this names the ONE button whose spinner is honest. It gates NO guard, NO request and NO
+   * amount: `settling` / `cashSettling` still decide what is disabled, and settleInFlight is still
+   * the mutex. If this state were wrong in every direction the worst outcome is a missing or extra
+   * spinner -- never a second charge.
+   *
+   * SET FROM THE HANDLERS, never from runSettle: runSettle serves both card buttons and cannot know
+   * which one was pressed. Cleared in the same finally blocks that clear the flag beside it, and a
+   * stale value is inert anyway -- every read is ANDed with the path's own in-flight flag.
+   */
+  const [busyButton, setBusyButton] = useState<
+    'selected' | 'entire' | 'cash' | null
+  >(null);
+  /**
    * The gratuity, owned by GratuitySection and read by all three settle paths.
    *
    * NO_GRATUITY is the resting state and is what a waiter who takes no tip sends: tipCents 0,
@@ -757,6 +782,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
     } finally {
       settleInFlight.current = false;
       setSettling(false);
+      setBusyButton(null);
     }
   };
 
@@ -861,6 +887,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
     } finally {
       settleInFlight.current = false;
       setCashSettling(false);
+      setBusyButton(null);
     }
   };
 
@@ -970,6 +997,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
     } finally {
       settleInFlight.current = false;
       setCashSettling(false);
+      setBusyButton(null);
     }
   };
 
@@ -1168,6 +1196,12 @@ export default function TableDetailScreen({route, navigation}: Props) {
     // NOT NULL, so it would be dropped here or refused there.
     if (!gratuityIsChargeable()) return;
     /**
+     * THE ONLY ORIGIN OF EVERY CASH RUN, which is why one assignment here is enough. `pendingCash`
+     * is set nowhere else, so the PIN path, the Skip path and the no-attribution path in the modal
+     * all pass through this line first.
+     */
+    setBusyButton('cash');
+    /**
      * WHAT THIS PROMPT IS ABOUT, decided once and held. In item mode an empty selection means the
      * whole tab, exactly as it always has at order level; the plan is built from every line that
      * is still owed so the same rule picks the money path either way.
@@ -1232,7 +1266,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
       <LoadingButton
         style={[styles.cashButton, disabled && styles.buttonDisabled]}
         disabled={disabled}
-        loading={cashSettling}
+        loading={cashSettling && busyButton === 'cash'}
         onPress={handleTakeCash}
         spinnerColor={Colors.white}
         icon={
@@ -1425,6 +1459,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
         }
       } finally {
         setSettling(false);
+        setBusyButton(null);
         settleInFlight.current = false;
       }
     },
@@ -1461,6 +1496,8 @@ export default function TableDetailScreen({route, navigation}: Props) {
     // Before anything is charged, on BOTH branches below -- the split path drops a tip exactly as
     // silently as the whole-order one.
     if (!gratuityIsChargeable()) return;
+    // AFTER the refusal above: a tap that charges nothing must not light a spinner.
+    setBusyButton('selected');
     if (!byItem) {
       runSettle(Array.from(selectedIds));
       return;
@@ -1478,6 +1515,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
 
   const handleSettleEntireTab = () => {
     if (!gratuityIsChargeable()) return;
+    setBusyButton('entire');
     const unpaidIds = unpaidOrders.map(o => o.id);
     setSelectedIds(new Set(unpaidIds));
     setSelectedLineIds(new Set());
@@ -1785,10 +1823,20 @@ export default function TableDetailScreen({route, navigation}: Props) {
           {methodsAvailable.cardEnabled ? (
             <>
               <Pressable
-                style={[styles.settleButton, settling && styles.buttonDisabled]}
-                disabled={settling}
+                testID="settle-selected"
+                style={[
+                  styles.settleButton,
+                  (settling || cashSettling) && styles.buttonDisabled,
+                ]}
+                /*
+                  cashSettling too. Without it this stayed lit while cash was being taken: the tap
+                  was swallowed by settleInFlight and returned in silence -- no charge, no alert,
+                  which reads as a frozen terminal. The mutex is unchanged; this only makes the
+                  block it already performs visible.
+                */
+                disabled={settling || cashSettling}
                 onPress={handleSettleSelected}>
-                {settling ? (
+                {settling && busyButton === 'selected' ? (
                   <ActivityIndicator color={Colors.white} />
                 ) : (
                   <Text style={styles.settleButtonText}>Settle Selected</Text>
@@ -1797,10 +1845,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
               <LoadingButton
                 style={[
                   styles.settleEntireOutlineButton,
-                  (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
+                  (settling || cashSettling || unpaidOrders.length === 0) &&
+                    styles.buttonDisabled,
                 ]}
-                disabled={settling || unpaidOrders.length === 0}
-                loading={settling}
+                disabled={settling || cashSettling || unpaidOrders.length === 0}
+                loading={settling && busyButton === 'entire'}
                 onPress={handleSettleEntireTab}
                 spinnerColor={Colors.textPrimary}>
                 <Text style={styles.settleEntireOutlineText}>Settle Entire Tab</Text>
@@ -1824,10 +1873,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
             <LoadingButton
               style={[
                 styles.settleEntireButton,
-                (settling || unpaidOrders.length === 0) && styles.buttonDisabled,
+                (settling || cashSettling || unpaidOrders.length === 0) &&
+                  styles.buttonDisabled,
               ]}
-              disabled={settling || unpaidOrders.length === 0}
-              loading={settling}
+              disabled={settling || cashSettling || unpaidOrders.length === 0}
+              loading={settling && busyButton === 'entire'}
               onPress={handleSettleEntireTab}
               spinnerColor={Colors.white}>
               <Text style={styles.settleEntireButtonText}>Settle Entire Tab</Text>
