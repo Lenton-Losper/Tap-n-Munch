@@ -43,6 +43,15 @@ import type { ReportData } from './get-report-data'
 export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   card: 'Card',
   cash: 'Cash',
+  /**
+   * A Nedbank product the waiter transacts outside FlashTap. It is REVENUE, like cash (owner's
+   * ruling 2026-09-09), so it appears as an ordinary takings row rather than anything set apart.
+   *
+   * Capitalised as Nedbank writes it. This map is the ONLY definition of these labels -- the daily
+   * email carried a byte-identical copy until 2026-09-09, and two copies with independent
+   * fallbacks is how the dashboard says "PayToday" while the same night's email says "paytoday".
+   */
+  paytoday: 'PayToday',
   unknown: 'Unrecorded',
 }
 

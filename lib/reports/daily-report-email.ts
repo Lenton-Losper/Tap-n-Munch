@@ -1,4 +1,5 @@
 import type { ReportData } from '@/lib/reports/get-report-data'
+import { paymentMethodLabel } from '@/lib/reports/payment-method-split'
 
 /**
  * The daily report email body.
@@ -11,11 +12,18 @@ import type { ReportData } from '@/lib/reports/get-report-data'
 
 const money = (n: number) => `N$${(Number.isFinite(n) ? n : 0).toFixed(2)}`
 
-const METHOD_LABELS: Record<string, string> = {
-  card: 'Card',
-  cash: 'Cash',
-  unknown: 'Unrecorded',
-}
+/**
+ * THE LABELS COME FROM payment-method-split, NOT FROM A COPY HERE.
+ *
+ * This file carried its own METHOD_LABELS -- card/cash/unknown -- byte-identical to the map in
+ * lib/reports/payment-method-split.ts, with its own independent `?? p.method` fallback. Two copies
+ * of a lookup that must agree is the split-source-of-truth pattern that has bitten this codebase
+ * repeatedly, and the failure mode here is specific and quiet: add a method to one and not the
+ * other and the dashboard says "PayToday" while the same night's email says "paytoday", for the
+ * same money, to the same manager.
+ *
+ * Collapsed before PayToday rather than after, so the third value is added in exactly one place.
+ */
 
 function esc(s: string): string {
   return String(s)
@@ -43,7 +51,7 @@ export function buildDailyReportHtml(report: ReportData, reportPeriod: string): 
     ? s.paymentMethodSplit
         .map((p) =>
           row(
-            `${METHOD_LABELS[p.method] ?? p.method} · ${p.orders} order${p.orders === 1 ? '' : 's'}`,
+            `${paymentMethodLabel(p.method)} · ${p.orders} order${p.orders === 1 ? '' : 's'}`,
             money(p.gross),
           ),
         )

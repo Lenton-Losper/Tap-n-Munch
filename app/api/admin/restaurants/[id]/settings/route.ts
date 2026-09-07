@@ -20,6 +20,32 @@ const ALLOWED_SETTINGS = [
 
 const VALID_KIOSK_METHODS = ['cash', 'card', 'other']
 
+/**
+ * WHAT A VENUE MAY BE SET TO ACCEPT -- and it must MATCH THE DATABASE CHECK on
+ * restaurant_settings.payment_methods, because that constraint is what actually decides.
+ *
+ * It did not. This route validated against ['cash','card','online'], and the two disagreed in BOTH
+ * directions:
+ *
+ *   'online' passed here and then violated the CHECK -- so an admin choosing it got a 500 from a
+ *   constraint violation instead of a clean 400, and no message naming the real problem.
+ *
+ *   'hosted_checkout', 'eft', 'voucher' and 'mobile_money' are all permitted by the CHECK and were
+ *   REFUSED here -- so settings the schema was built to allow could not be saved through the API
+ *   at all.
+ *
+ * 'online' was never a valid value anywhere in the schema. It is not added back.
+ */
+const VALID_PAYMENT_METHODS = [
+  'cash',
+  'card',
+  'hosted_checkout',
+  'eft',
+  'voucher',
+  'mobile_money',
+  'paytoday',
+]
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -95,9 +121,18 @@ export async function PATCH(
       if (!Array.isArray(methods) || methods.length === 0) {
         return NextResponse.json({ error: 'At least one payment method must be enabled' }, { status: 400 })
       }
-      const valid = ['cash', 'card', 'online']
-      if (!methods.every(m => valid.includes(String(m)))) {
-        return NextResponse.json({ error: 'Invalid payment method' }, { status: 400 })
+      const invalid = methods.map(String).filter((m) => !VALID_PAYMENT_METHODS.includes(m))
+      if (invalid.length > 0) {
+        // Names what was wrong and what is allowed. The previous message said only "Invalid
+        // payment method", which for a value the DB would have accepted was actively misleading.
+        return NextResponse.json(
+          {
+            error: `Invalid payment method: ${invalid.join(', ')}`,
+            code: 'INVALID_PAYMENT_METHOD',
+            allowed: VALID_PAYMENT_METHODS,
+          },
+          { status: 400 },
+        )
       }
     }
 

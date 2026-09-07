@@ -6,6 +6,7 @@ import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import { parseTipCents, recordTip } from '@/lib/payments/tips'
 import {
   amountsMatch,
+  methodUsesGateway,
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
   isCardPaymentStillInFlight,
   owesMoney,
@@ -90,6 +91,15 @@ export async function POST(
       )
     }
     const isCashSettlement = method === 'cash'
+    /**
+     * WHETHER A GATEWAY WAS INVOLVED AT ALL -- a different question from "is it cash".
+     *
+     * Until PayToday there were two methods, so `!isCashSettlement` meant "card" and the code said
+     * so in seven places. With a third method that reading is false: PayToday settles OUTSIDE the
+     * gateway, like cash, and taking the card branch would hand it a gateway reference for a
+     * transaction no gateway has ever heard of.
+     */
+    const usesGateway = methodUsesGateway(method)
 
     // Who is taking the cash. Optional by design -- there is no hard approval gate today, so a
     // terminal that cannot yet prompt for a PIN is not locked out of settling. When the terminal
@@ -334,6 +344,27 @@ export async function POST(
      * claim, so nothing is half-done. A settle with NO tip is unaffected.
      */
     const tipStaffUserId = String(body.tip_staff_user_id ?? body.tipStaffUserId ?? '').trim()
+    /**
+     * NO PAYTODAY GRATUITY IN v1. Owner's ruling, 2026-09-09.
+     *
+     * Enforced here AND in the schema: payment_tips.method is still CHECK (method IN ('cash','card')),
+     * so a PayToday tip would fail at the database. Refusing at the boundary makes it a clean 400
+     * rather than a constraint violation surfacing as a 500 -- and refusing BEFORE the orders are
+     * claimed means a rejected tip cannot leave a settled tab behind it.
+     *
+     * A waiter taking a gratuity through PayToday takes it in Nedbank's app, where FlashTap cannot
+     * see it and has nothing to attribute.
+     */
+    if (tipCents > 0 && method === 'paytoday') {
+      return NextResponse.json(
+        {
+          error: 'Gratuities are not supported on PayToday. Take the tip separately.',
+          code: 'PAYTODAY_NO_TIPS',
+          tip_cents: tipCents,
+        },
+        { status: 400 },
+      )
+    }
     if (tipCents > 0 && !tipStaffUserId) {
       return NextResponse.json(
         {
@@ -378,7 +409,9 @@ export async function POST(
     const paymentReference = generatePaymentReference()
     // Cash never carries a gateway artifact. Letting a stale voucher/gateway reference ride
     // along would print a card-style reference on a cash receipt.
-    const paymentVoucherNo = isCashSettlement ? null : voucherNo || gatewayReference || null
+    // A voucher number is a READER artefact. Cash and PayToday have none, and inventing one
+    // would put a card-shaped reference on a payment no card was used for.
+    const paymentVoucherNo = usesGateway ? voucherNo || gatewayReference || null : null
 
     // Atomic claim: only rows still settleable by THIS method flip to paid. Cash may claim
     // cash_pending/failed orders; card keeps its original narrower set.
@@ -552,7 +585,8 @@ export async function POST(
         amount: expectedAmount,
         method,
         status: 'completed',
-        gateway_reference: isCashSettlement ? null : gatewayReference,
+        // NULL for anything settled outside the gateway. See usesGateway.
+        gateway_reference: usesGateway ? gatewayReference : null,
         payment_reference: paymentReference,
         completed_at: paidAt,
       })
@@ -600,7 +634,12 @@ export async function POST(
           restaurantId: terminal.restaurantId,
           tipCents,
           // The gratuity is taken by the same instrument as the bill it rode on.
-          method: isCashSettlement ? 'cash' : 'card',
+          /**
+           * The gratuity is taken by the same instrument as the bill it rode on -- the METHOD, not
+           * a guess derived from whether it was cash. Narrowed because PayToday cannot reach here:
+           * a PayToday tip is refused above, before anything is claimed.
+           */
+          method: method as Exclude<typeof method, 'paytoday'>,
           // Non-null by the TIP_NEEDS_ATTRIBUTION gate above, which refuses before the claim.
           // The PICKER value, not attributedStaffUserId. See the trust note above.
           staffUserId: tipStaffUserId,
@@ -624,7 +663,18 @@ export async function POST(
     // absent attribution must be visible as absent rather than inferred from a missing key.
     const { error: auditError } = await supabase.from('audit_logs').insert({
       restaurant_id: terminal.restaurantId,
-      action: isCashSettlement ? 'payment.tab_settled_cash' : 'payment.tab_settled',
+      /**
+       * ONE ACTION PER METHOD, so a trail can be read by method without parsing metadata. PayToday
+       * gets its own rather than being folded into either existing one: it is neither a gateway
+       * settlement nor money in a drawer, and a reconciliation against Nedbank's statement needs to
+       * find it by name.
+       */
+      action:
+        method === 'cash'
+          ? 'payment.tab_settled_cash'
+          : method === 'paytoday'
+            ? 'payment.tab_settled_paytoday'
+            : 'payment.tab_settled',
       entity_type: 'tabs',
       entity_id: tabId,
       metadata: {
@@ -652,7 +702,7 @@ export async function POST(
           ? {
               tip_cents: tipCents,
               tip_recorded: tipOutcome,
-              tip_method: isCashSettlement ? 'cash' : 'card',
+              tip_method: method as Exclude<typeof method, 'paytoday'>,
               // Named apart from staff_user_id on purpose: that one is PIN-proved, this is a
               // picker claim with nothing behind it. Do not collapse them.
               tip_staff_user_id: tipStaffUserId,

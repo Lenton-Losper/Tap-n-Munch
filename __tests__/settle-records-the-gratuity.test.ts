@@ -107,7 +107,34 @@ describe('the tip is recorded after the money, against the payment that carried 
   })
 
   it('the tip method mirrors how the bill was settled', () => {
-    expect(CODE).toMatch(/method: isCashSettlement \? 'cash' : 'card'/)
+    /**
+     * REWRITTEN 2026-09-09, FROM A MARKER STRING TO THE CONDITION.
+     *
+     * This asserted the literal source text `method: isCashSettlement ? 'cash' : 'card'`. That
+     * ternary meant "not cash, therefore card" -- true while there were two methods, and FALSE the
+     * moment PayToday existed, at which point a PayToday tip would have been recorded as a card
+     * tip. The route now passes the METHOD through, and the old assertion blocked the fix while
+     * appearing to protect it: it pinned the defective expression itself.
+     *
+     * What actually matters is that the gratuity is attributed to the same instrument as the bill,
+     * and that nothing reintroduces a guess. So: the method is passed, and no cash/card ternary
+     * decides it.
+     */
+    expect(CODE).toMatch(/method: method as Exclude<typeof method, 'paytoday'>/)
+    expect(CODE).not.toMatch(/method: isCashSettlement \? /)
+
+    /**
+     * AND PAYTODAY CANNOT REACH THE TIP WRITER AT ALL. v1 has no PayToday gratuity -- owner's
+     * ruling 2026-09-09 -- and payment_tips.method is still CHECK (method IN ('cash','card')), so
+     * without this refusal a PayToday tip would fail at the database AFTER the orders were claimed.
+     * The refusal must therefore come BEFORE the claim.
+     */
+    expect(CODE).toMatch(/code: 'PAYTODAY_NO_TIPS'/)
+    const refusalAt = CODE.indexOf("PAYTODAY_NO_TIPS")
+    const claimAt = CODE.indexOf("payment_status: 'paid'")
+    expect(refusalAt).toBeGreaterThan(-1)
+    expect(claimAt).toBeGreaterThan(-1)
+    expect(refusalAt).toBeLessThan(claimAt)
   })
 
   /**

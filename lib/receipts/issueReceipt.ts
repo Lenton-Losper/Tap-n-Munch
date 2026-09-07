@@ -567,13 +567,20 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
 
   let payments: ReceiptPayment[] = (saleEvents ?? []).map((event) => {
     const method = String(order.payment_method || 'unknown')
-    const isCash = method.toLowerCase().startsWith('cash')
+    /**
+     * NO GATEWAY, NO MASKED REFERENCE. Renamed from isCash because it is not about cash: it is
+     * about whether a gateway produced an artefact worth printing. PayToday settles outside the
+     * gateway, so masking a reference for it would print a card-shaped token on a receipt for a
+     * payment no card was used for.
+     */
+    const hasNoGatewayArtefact =
+      method.toLowerCase().startsWith('cash') || method.toLowerCase() === 'paytoday'
     const rawRef = String(event.transaction_id || event.business_order_no || '')
     return {
       // payment_events has no method column in Phase 1 -- the order's payment_method
       // is the best available source (one order, one settlement method).
       method,
-      masked_reference: isCash ? '' : maskReference(rawRef),
+      masked_reference: hasNoGatewayArtefact ? '' : maskReference(rawRef),
       amount: Number(event.amount) || 0,
       paid_at: String(event.created_at),
     }
@@ -584,12 +591,19 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
   // one payment line from the paid order so the frozen snapshot is not empty forever.
   if (payments.length === 0) {
     const method = String(order.payment_method || 'unknown')
-    const isCash = method.toLowerCase().startsWith('cash')
+    /**
+     * NO GATEWAY, NO MASKED REFERENCE. Renamed from isCash because it is not about cash: it is
+     * about whether a gateway produced an artefact worth printing. PayToday settles outside the
+     * gateway, so masking a reference for it would print a card-shaped token on a receipt for a
+     * payment no card was used for.
+     */
+    const hasNoGatewayArtefact =
+      method.toLowerCase().startsWith('cash') || method.toLowerCase() === 'paytoday'
     const ref = String(order.payment_reference || order.paycloud_merchant_order_no || '').trim()
     payments = [
       {
         method,
-        masked_reference: isCash ? '' : maskReference(ref),
+        masked_reference: hasNoGatewayArtefact ? '' : maskReference(ref),
         amount: grandTotal,
         paid_at: String(order.paid_at || new Date().toISOString()),
       },

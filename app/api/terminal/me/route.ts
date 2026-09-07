@@ -44,6 +44,13 @@ export async function GET(req: Request) {
       cardPaymentEnabled: paymentMethods.includes('card'),
       cashPaymentEnabled: paymentMethods.includes('cash'),
       /**
+       * OFF UNLESS THE VENUE ASKED FOR IT. Unlike cash and card, this has no hardcoded fallback --
+       * the `?? ['cash','card']` default above means a venue with no settings row gets cash and
+       * card, and must NOT get PayToday. A waiter at Riviera should never see a method that venue
+       * does not use.
+       */
+      paytodayPaymentEnabled: paymentMethods.includes('paytoday'),
+      /**
        * ADR-005 -- THE VENUE SERVICE MODEL, so the device can decide which ordering surface to
        * show. `is_counter_service` is `boolean NOT NULL DEFAULT false` (20260824120000):
        * TRUE = counter service, FALSE = table service.

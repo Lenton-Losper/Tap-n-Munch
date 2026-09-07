@@ -114,6 +114,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
         { status: 400 },
       )
     }
+    /**
+     * PAYTODAY IS REFUSED ON THIS ROUTE IN v1, and refused HERE rather than at the database.
+     *
+     * v1 is whole-order only. order_line_allocation_settlements.method and the settlement RPC both
+     * still constrain to cash|card, so a PayToday split would fail at the RPC anyway -- but as a
+     * raw exception, after the route had already decided to proceed. Refusing at the boundary makes
+     * it a clean, explainable 400 instead.
+     */
+    if (method === 'paytoday') {
+      return NextResponse.json(
+        {
+          error: 'PayToday covers a whole order. Settle the order rather than single items.',
+          code: 'PAYTODAY_WHOLE_ORDER_ONLY',
+        },
+        { status: 400 },
+      )
+    }
     const isCashSettlement = method === 'cash'
 
     /**
@@ -492,7 +509,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
         const tip = await recordTip(supabase, {
           restaurantId: terminal.restaurantId,
           tipCents,
-          method: isCashSettlement ? 'cash' : 'card',
+          // Only cash or card can reach here -- PayToday is refused above.
+          method,
           // Non-null by the TIP_NEEDS_ATTRIBUTION gate above, which refuses before the RPC.
           // The PICKER value, not attributedStaffUserId. See the trust note above.
           staffUserId: tipStaffUserId,
@@ -607,7 +625,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
           ? {
               tip_cents: tipCents,
               tip_recorded: tipOutcome,
-              tip_method: isCashSettlement ? 'cash' : 'card',
+              tip_method: method,
               // Named apart from staff_user_id: that one is PIN-proved, this is a picker claim.
               tip_staff_user_id: tipStaffUserId,
               tip_attribution: 'picker_unverified',

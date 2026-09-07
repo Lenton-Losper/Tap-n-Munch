@@ -316,8 +316,19 @@ export function isCashSettleablePaymentStatus(status: unknown): boolean {
   return matchesStatusSet(status, CASH_SETTLEABLE_PAYMENT_STATUSES)
 }
 
-/** Payment methods a terminal settlement may record. */
-export const SETTLEMENT_PAYMENT_METHODS = ['card', 'cash'] as const
+/**
+ * Payment methods a terminal settlement may record.
+ *
+ * MIRRORED BY A DATABASE CONSTRAINT. payments.method carries
+ * CHECK (method IS NULL OR method IN ('cash','card','paytoday')), and the only writer normalises
+ * against THIS list -- so adding a method here without the migration means the route accepts a
+ * settlement the database then rejects, AFTER the money has moved.
+ *
+ * 'paytoday' is a Nedbank product the waiter transacts OUTSIDE FlashTap. No reader, no gateway, no
+ * webhook, no credential. It is an assertion, like cash, and weaker than cash: cash is countable in
+ * a drawer, this is a waiter's word about a third party's app with no artefact we can query.
+ */
+export const SETTLEMENT_PAYMENT_METHODS = ['card', 'cash', 'paytoday'] as const
 
 export type SettlementPaymentMethod = (typeof SETTLEMENT_PAYMENT_METHODS)[number]
 
@@ -348,9 +359,36 @@ export function normalizeSettlementPaymentMethod(
 export function settleableStatusesForMethod(
   method: SettlementPaymentMethod,
 ): readonly string[] {
-  return method === 'cash'
-    ? CASH_SETTLEABLE_PAYMENT_STATUSES
-    : CLAIMABLE_PAYMENT_STATUSES
+  /**
+   * PAYTODAY IS CASH-SHAPED HERE, and that is the whole reason this function takes a method rather
+   * than a boolean.
+   *
+   * The wider CASH set exists because a settlement taken OUTSIDE the gateway can legitimately land
+   * on an order the gateway has left mid-flight -- there is no card in that reader to collide with.
+   * PayToday is the same situation: the money moved in Nedbank's app, and our record of the
+   * gateway's opinion is irrelevant to it.
+   *
+   * Giving PayToday the CARD set would refuse settlements for orders a waiter has genuinely been
+   * paid for, which is how a table cannot be closed after the customer has left.
+   */
+  return methodUsesGateway(method)
+    ? CLAIMABLE_PAYMENT_STATUSES
+    : CASH_SETTLEABLE_PAYMENT_STATUSES
+}
+
+/**
+ * DOES THIS METHOD PRODUCE GATEWAY ARTEFACTS -- a voucher number, a gateway reference, a
+ * transaction we can query?
+ *
+ * The single predicate for that question, replacing seven separate `isCashSettlement ? x : y`
+ * ternaries whose real meaning was "not cash, therefore card". With a third method that reading
+ * became false: PayToday would have taken every card branch and been handed a gateway reference for
+ * a transaction no gateway has ever heard of.
+ *
+ * ONLY CARD TOUCHES A GATEWAY. Cash and PayToday both settle outside it.
+ */
+export function methodUsesGateway(method: SettlementPaymentMethod): boolean {
+  return method === 'card'
 }
 
 /** Trim + lowercase before comparing, so a stray 'Paid' or ' paid' cannot slip through. */
