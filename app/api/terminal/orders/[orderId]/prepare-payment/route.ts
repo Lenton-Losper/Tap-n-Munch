@@ -182,7 +182,29 @@ export async function POST(
       tipCents?: unknown
       tip_staff_user_id?: unknown
       tipStaffUserId?: unknown
+      order_ids?: unknown
+      orderIds?: unknown
     }
+
+    /**
+     * EVERY ORDER IN THIS SETTLEMENT, not just the one in the URL.
+     *
+     * A tab settle charges the SUM of the selected orders, but this route is order-shaped and
+     * computed the expected charge from the URL order ALONE. With one order those agree; with two
+     * they do not, and the device charged the FIRST order's total plus the tip instead of the
+     * tab's. Reported from a P5 as "the gratuity sometimes does not reach the cashier" -- the
+     * gratuity was fine, the BILL was short.
+     *
+     * Absent means just this order, so an older terminal is unchanged.
+     */
+    const rawOrderIds = Array.isArray(body.order_ids)
+      ? body.order_ids
+      : Array.isArray(body.orderIds)
+        ? body.orderIds
+        : []
+    const settlementOrderIds = [
+      ...new Set([orderId, ...rawOrderIds.map((id) => String(id).trim()).filter(Boolean)]),
+    ]
     const tipParse = parseTipCents(body.tip_cents ?? body.tipCents)
     if (!tipParse.ok) {
       return NextResponse.json({ error: tipParse.message, code: tipParse.code }, { status: 400 })
@@ -236,12 +258,16 @@ export async function POST(
        * device's figure is what we are about to check, so it cannot also be the thing we check it
        * against.
        */
-      const { data: orderRow, error: orderReadError } = await supabase
+      const { data: orderRows, error: orderReadError } = await supabase
         .from('orders')
-        .select('total')
-        .eq('id', orderId)
+        .select('id, total')
+        .in('id', settlementOrderIds)
         .eq('restaurant_id', terminal.restaurantId)
-        .maybeSingle()
+
+      // Every named order must be readable. A partial read would understate the charge, which is
+      // the failure this whole change exists to remove.
+      const orderRow =
+        orderRows && orderRows.length === settlementOrderIds.length ? orderRows : null
 
       if (orderReadError || !orderRow) {
         // FAILS CLOSED. Launching a reader without recording what it was asked for is exactly the
@@ -252,18 +278,37 @@ export async function POST(
         )
       }
 
-      const orderCents = Math.round((Number(orderRow.total) || 0) * 100)
+      const centsFor = (row: { total?: unknown }) => Math.round((Number(row.total) || 0) * 100)
+      const orderCents = orderRow.reduce((sum, r) => sum + centsFor(r), 0)
       const chargeCents = orderCents + tipCents
 
-      const { error: expectationError } = await supabase
-        .from('orders')
-        .update({
-          pending_charge_cents: chargeCents,
-          pending_tip_cents: tipCents,
-          pending_tip_staff_user_id: tipCents > 0 ? tipStaffUserId : null,
-        })
-        .eq('id', orderId)
-        .eq('restaurant_id', terminal.restaurantId)
+      /**
+       * THE EXPECTATION IS WRITTEN PER ORDER, and it has to be.
+       *
+       * expectedChargeForOrders SUMS each order's own pending_charge_cents. Writing the whole
+       * charge onto one order would make the webhook expect that figure PLUS the other orders'
+       * totals -- more than was charged -- and refuse a payment that succeeded.
+       *
+       * So each order carries its OWN total, and the gratuity rides on the one this request names.
+       * The sum is then exactly what the reader was asked for.
+       */
+      let expectationError: { message: string } | null = null
+      for (const row of orderRow) {
+        const isTipCarrier = String(row.id) === orderId
+        const { error } = await supabase
+          .from('orders')
+          .update({
+            pending_charge_cents: centsFor(row) + (isTipCarrier ? tipCents : 0),
+            pending_tip_cents: isTipCarrier ? tipCents : 0,
+            pending_tip_staff_user_id: isTipCarrier && tipCents > 0 ? tipStaffUserId : null,
+          })
+          .eq('id', String(row.id))
+          .eq('restaurant_id', terminal.restaurantId)
+        if (error) {
+          expectationError = error
+          break
+        }
+      }
 
       if (expectationError) {
         /**

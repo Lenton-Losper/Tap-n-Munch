@@ -75,6 +75,9 @@ jest.mock('@/lib/supabase/server', () => ({
         select: () => b,
         eq: () => b,
         is: () => b,
+        // The route reads the settlement's orders with .in('id', ids). Absent here it threw, the
+        // route's catch turned it into a 500, and the failure read as a route defect.
+        in: () => b,
         update: (patch: Row) => {
           if (table === 'orders') orderUpdates.push(patch)
           return b
@@ -100,7 +103,23 @@ jest.mock('@/lib/supabase/server', () => ({
           data: table === 'orders' ? { total: 100 } : null,
           error: null,
         }),
-        then: (r: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(r),
+        /**
+         * The route reads the orders being settled with `.select('id, total').in('id', ids)` and
+         * AWAITS the builder -- no maybeSingle -- so this thenable has to hand back rows for the
+         * orders table. It previously returned [], which the route correctly reads as "not every
+         * named order was readable" and refuses with 503 rather than launching a reader without
+         * recording what it was asked for.
+         *
+         * Modelled rather than worked around: that refusal is the point of the change.
+         */
+        then: (r: (v: unknown) => unknown) =>
+          Promise.resolve({
+            // The literal, not ORDER_ID: a jest.mock factory is hoisted above the file's consts and
+            // may only close over `mock`-prefixed names. Referencing it threw, the route's catch
+            // turned that into a 500, and the failure looked like a route defect.
+            data: table === 'orders' ? [{ id: '133ffc3a-106b-4076-bf23-2dd55cba8d9c', total: 100 }] : [],
+            error: null,
+          }).then(r),
       })
       return b
     },
