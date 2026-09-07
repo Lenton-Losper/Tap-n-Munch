@@ -18,6 +18,7 @@ import {Colors, Spacing, Typography} from '../constants/theme';
 import LoadingButton from '../components/LoadingButton';
 import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import StrandedRequestPrompt from '../components/StrandedRequestPrompt';
+import {GRATUITY_AMOUNT_LABEL, GRATUITY_NEEDS_STAFF} from '../constants/gratuityCopy';
 import GratuitySection, {
   GratuityState,
   gratuityExtras,
@@ -1163,6 +1164,9 @@ export default function TableDetailScreen({route, navigation}: Props) {
   };
 
   const handleTakeCash = () => {
+    // Cash too: a gratuity nobody is taking is not recordable, and payment_tips.staff_user_id is
+    // NOT NULL, so it would be dropped here or refused there.
+    if (!gratuityIsChargeable()) return;
     /**
      * WHAT THIS PROMPT IS ABOUT, decided once and held. In item mode an empty selection means the
      * whole tab, exactly as it always has at order level; the plan is built from every line that
@@ -1427,7 +1431,36 @@ export default function TableDetailScreen({route, navigation}: Props) {
     [table, refreshTable, payable],
   );
 
+  /**
+   * ================================================================================================
+   * A KEYED GRATUITY WITH NOBODY TO PAY IT TO MUST NOT REACH A READER
+   * ================================================================================================
+   *
+   * GratuitySection has always computed `valid` -- false when a tip is keyed and no staff member is
+   * chosen -- and its own docblock says "The caller DISABLES the charge buttons on this". NOTHING
+   * EVER READ IT. The contract was written down and never implemented.
+   *
+   * So gratuityExtras() dropped the tip (it returns {} without a tipStaffUserId), the charge went
+   * out for the bill alone, and the screen went on showing the gratuity the whole time. Found on a
+   * P5 at Digi Cofee 2026-09-09: N$20 item, N$10 gratuity shown in the UI, reader displayed
+   * NAD 20.00.
+   *
+   * IT IS CHECKED HERE, NOT AT THE SERVER, because the server never sees it: the tip is discarded
+   * on the device before any request is made. TIP_NEEDS_STAFF cannot fire for a field that was
+   * never sent.
+   *
+   * Returns TRUE when it is safe to proceed.
+   */
+  const gratuityIsChargeable = (): boolean => {
+    if (gratuity.valid) return true;
+    Alert.alert(GRATUITY_AMOUNT_LABEL, GRATUITY_NEEDS_STAFF);
+    return false;
+  };
+
   const handleSettleSelected = () => {
+    // Before anything is charged, on BOTH branches below -- the split path drops a tip exactly as
+    // silently as the whole-order one.
+    if (!gratuityIsChargeable()) return;
     if (!byItem) {
       runSettle(Array.from(selectedIds));
       return;
@@ -1444,6 +1477,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
   };
 
   const handleSettleEntireTab = () => {
+    if (!gratuityIsChargeable()) return;
     const unpaidIds = unpaidOrders.map(o => o.id);
     setSelectedIds(new Set(unpaidIds));
     setSelectedLineIds(new Set());
