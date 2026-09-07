@@ -218,11 +218,45 @@ export type Sdk6CashUpLine =
   | { type: 'feed'; lines: number }
   | { type: 'divider' }
 
+/**
+ * THE CHARACTER BUDGET OF ONE COLUMN IN AN SDK6 TWO-COLUMN ROW.
+ *
+ * ==================================================================================================
+ * WHY THIS IS NOT THE SAME ARITHMETIC AS twoColumnLine
+ * ==================================================================================================
+ *
+ * The ESC/POS renderer builds ONE string and can spend the width however it likes: twoColumnLine
+ * gives the value what it needs and hands the whole remainder to the label, so "No payments
+ * received" against "N$0.00" fits comfortably inside 32 characters.
+ *
+ * The built-in P5 printer is not given a string. It is given columns, and WiseSdk6PrinterModule
+ * splits the head EVENLY -- `columnWidth = CANVAS_WIDTH_DOTS / count` -- then sets
+ * `setColumnSpacing(0)`. So each column of a two-column row gets exactly half the paper and there
+ * is no gutter between them. A label longer than half runs straight into the value's cell.
+ *
+ * That is the overlap seen on the physical cash-up: "No payments received" is 20 characters against
+ * a 16-character half, and item rows like "2 x cheese toast" sit exactly on the boundary.
+ *
+ * The SDK reports success either way -- #166: return code 0 for every row while silently dropping
+ * characters -- so nothing downstream can detect this. The budget has to be enforced here.
+ *
+ * A CHARACTER OF GUTTER IS TAKEN FROM THE LABEL, not the value. setColumnSpacing(0) means adjacent
+ * cells touch, and the value is the half that must stay legible: a truncated price is a wrong
+ * number on a till report, while a truncated label is still recognisable.
+ */
+export function sdk6ColumnBudget(characterWidth: number): { left: number; right: number } {
+  const half = Math.max(1, Math.floor(characterWidth / 2))
+  return { left: Math.max(1, half - 1), right: half }
+}
+
 export function renderCashUpSdk6(
   report: ReportData,
   options: CashUpDocumentOptions,
 ): Sdk6CashUpLine[] {
   const out: Sdk6CashUpLine[] = []
+  // The terminal's own stored width, so the budget matches the paper actually loaded (#167).
+  const width = options.characterWidth ?? DEFAULT_CHARACTER_WIDTH
+  const budget = sdk6ColumnBudget(width)
 
   for (const row of buildCashUpRows(report, options)) {
     switch (row.kind) {
@@ -236,9 +270,35 @@ export function renderCashUpSdk6(
         out.push({ type: 'text', text: row.text, align: 'left', bold: true })
         break
       case 'pair':
-        // A 'row' lets the SDK do the column arithmetic against the real font metrics, which is
-        // why this does NOT reuse twoColumnLine: pre-padding with spaces would fight it.
-        out.push({ type: 'row', columns: [row.left, row.right] })
+        /**
+         * Still a 'row' -- the SDK does the dot-level placement and right-aligns the value, which
+         * is what keeps money legible on the real head. What it does NOT do is fit the text to the
+         * cell, so each side is cut to its own budget first. See sdk6ColumnBudget.
+         *
+         * The VALUES ARE UNCHANGED: this only bounds how much of each string is drawn. Every
+         * figure is computed in buildCashUpRows and neither renderer touches the arithmetic.
+         */
+        {
+          const value = truncate(row.right, budget.right)
+          if (row.left.length <= budget.left) {
+            // Fits its half. This is every row a receipt emits, and the shape the P5 is known to
+            // print correctly today -- receipts get away with it because their labels are all
+            // eight characters or fewer.
+            out.push({ type: 'row', columns: [row.left, value] })
+          } else {
+            /**
+             * TOO LONG FOR HALF THE PAPER, SO IT GETS A WHOLE LINE.
+             *
+             * Cutting it to fifteen characters would turn 'Card (12 orders)' into
+             * 'Card (12 order…' -- no longer overlapping, but a till report that has lost the
+             * order count. The label goes on its own full-width line and the money keeps its
+             * right-aligned column beneath, which is the ordinary thermal convention and uses only
+             * line types this printer already handles.
+             */
+            out.push({ type: 'text', text: truncate(row.left, width), align: 'left' })
+            out.push({ type: 'row', columns: ['', value] })
+          }
+        }
         break
       case 'divider':
         out.push({ type: 'divider' })
