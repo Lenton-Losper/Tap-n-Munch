@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { parseTipCents } from '@/lib/payments/tips'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
@@ -260,7 +261,7 @@ export async function POST(
        */
       const { data: orderRows, error: orderReadError } = await supabase
         .from('orders')
-        .select('id, total')
+        .select('id, total, pending_settlement_id')
         .in('id', settlementOrderIds)
         .eq('restaurant_id', terminal.restaurantId)
 
@@ -283,6 +284,63 @@ export async function POST(
       const chargeCents = orderCents + tipCents
 
       /**
+       * ================================================================================================
+       * THE SETTLEMENT ID, AND WHY IT IS NOT MINTED FRESH EACH TIME
+       * ================================================================================================
+       *
+       * It groups the orders being paid for by ONE charge, so verify-payment and the webhook can sum
+       * pending_charge_cents over the whole settlement rather than the lead order alone. It is NOT a
+       * gateway identity -- paycloud_merchant_order_no remains that, unchanged and unrotated -- and
+       * nothing about it is sent to PayCloud.
+       *
+       * ITS LIFECYCLE MIRRORS THE MERCHANT ORDER NUMBER'S. ensureTerminalMerchantOrderNo above is
+       * idempotent: an order that already holds a usable reference gets it back with created:false,
+       * because that value is minted once and NEVER rotated (the no-rotation rule exists to stop
+       * orphaned webhooks). A repeated prepare for the same active attempt must therefore reuse the
+       * same settlement id, and it does -- by reading it back off the LEAD order rather than
+       * inventing a second identity mechanism.
+       *
+       * So: retrying a payment on the same order keeps one settlement id, exactly as it keeps one
+       * merchant order number.
+       */
+      const leadRow = orderRow.find((r) => String(r.id) === orderId)
+      const existingSettlementId =
+        String(leadRow?.pending_settlement_id ?? '').trim() || null
+      const settlementId = existingSettlementId ?? randomUUID()
+
+      /**
+       * A RETRY MAY COVER FEWER ORDERS THAN THE LAST ONE.
+       *
+       * Prepare [o1,o2], then prepare [o1] alone: o2 would still carry this settlement id, the
+       * expansion would pull it back in, and both gates would expect MORE than was charged -- the
+       * exact failure this change exists to remove, pointing the other way.
+       *
+       * So any order still carrying this id that is NOT in the current set is released first. The
+       * set named by THIS request is the settlement.
+       */
+      if (existingSettlementId) {
+        const { error: staleError } = await supabase
+          .from('orders')
+          .update({
+            pending_settlement_id: null,
+            pending_charge_cents: null,
+            pending_tip_cents: 0,
+            pending_tip_staff_user_id: null,
+          })
+          .eq('pending_settlement_id', existingSettlementId)
+          .eq('restaurant_id', terminal.restaurantId)
+          .not('id', 'in', `(${settlementOrderIds.join(',')})`)
+        if (staleError) {
+          // Loud, then continue: a stale row left behind widens the expectation, and the gates fail
+          // safe on a mismatch rather than marking anything paid.
+          console.error('[terminal/prepare-payment] could not release stale settlement rows', {
+            settlementId: existingSettlementId,
+            error: staleError.message,
+          })
+        }
+      }
+
+      /**
        * THE EXPECTATION IS WRITTEN PER ORDER, and it has to be.
        *
        * expectedChargeForOrders SUMS each order's own pending_charge_cents. Writing the whole
@@ -301,6 +359,8 @@ export async function POST(
             pending_charge_cents: centsFor(row) + (isTipCarrier ? tipCents : 0),
             pending_tip_cents: isTipCarrier ? tipCents : 0,
             pending_tip_staff_user_id: isTipCarrier && tipCents > 0 ? tipStaffUserId : null,
+            // Every participating order, including the lead. The expansion keys off this.
+            pending_settlement_id: settlementId,
           })
           .eq('id', String(row.id))
           .eq('restaurant_id', terminal.restaurantId)

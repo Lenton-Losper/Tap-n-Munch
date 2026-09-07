@@ -16,6 +16,7 @@ import {
 } from '@/lib/payments/e04111-recovery'
 import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
 import { expectedChargeForOrders } from '@/lib/payments/expected-charge'
+import { settlementSetFor } from '@/lib/payments/settlement-set'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 
 function webhookAck() {
@@ -159,7 +160,7 @@ async function markOrdersPaidConfirmedByIds(
     // pending_charge_cents / pending_tip_cents must be SELECTED or expectedChargeForOrders falls
     // back to order totals for every row and this reads as though no gratuity was ever charged.
     .select(
-      'id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at, pending_charge_cents, pending_tip_cents',
+      'id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at, pending_charge_cents, pending_tip_cents, pending_settlement_id',
     )
     .in('id', orderIds)
 
@@ -174,7 +175,32 @@ async function markOrdersPaidConfirmedByIds(
    * untipped charges; correct rather than refusing once a gratuity is included.
    * See lib/payments/expected-charge.ts.
    */
-  const expectedAmount = expectedChargeForOrders(orderRows).expectedAmount
+  /**
+   * EXPANDED TO THE WHOLE SETTLEMENT FIRST.
+   *
+   * The resolver's leg 1 matches paycloud_merchant_order_no, which lives on the LEAD ROW only, so
+   * a multi-order charge resolved to one order and this compared the whole gateway amount against
+   * that order's expectation.
+   *
+   * NOT payment_events.order_ids, which already carries the full set: recordSaleEvent runs AFTER
+   * settleTab, so a webhook arriving first finds no event. An identity the webhook cannot rely on
+   * is not an identity.
+   *
+   * A NULL settlement id -- every order on production today -- expands to nothing and this is the
+   * rows it already had.
+   */
+  const expanded = new Map<string, (typeof orderRows)[number]>()
+  for (const row of orderRows) {
+    expanded.set(String(row.id), row)
+    const set = await settlementSetFor(supabase, row, String(row.restaurant_id))
+    for (const sibling of set.orders) {
+      const id = String((sibling as { id?: unknown }).id ?? '')
+      if (id) expanded.set(id, sibling as (typeof orderRows)[number])
+    }
+  }
+  const settlementRows = [...expanded.values()]
+
+  const expectedAmount = expectedChargeForOrders(settlementRows).expectedAmount
   const verified =
     params.gatewayAmount !== null &&
     amountsMatch(params.gatewayAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)

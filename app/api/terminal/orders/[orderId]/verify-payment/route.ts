@@ -13,7 +13,8 @@ import {
   finaticErrorCode,
 } from '@/lib/payments/query-finatic-order-paid'
 import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
-import { expectedChargeFor } from '@/lib/payments/expected-charge'
+import { expectedChargeForOrders } from '@/lib/payments/expected-charge'
+import { settlementSetFor } from '@/lib/payments/settlement-set'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 
@@ -63,7 +64,7 @@ export async function POST(
       // pending_charge_cents / pending_tip_cents are SELECTED, not merely written: without them
       // expectedChargeFor falls back to the order total on every row and the fix ships INERT.
       .select(
-        'id, restaurant_id, payment_status, total, paycloud_merchant_order_no, pending_charge_cents, pending_tip_cents',
+        'id, restaurant_id, payment_status, total, paycloud_merchant_order_no, pending_charge_cents, pending_tip_cents, pending_settlement_id',
       )
       .eq('id', orderId)
       .eq('restaurant_id', terminal.restaurantId)
@@ -264,7 +265,19 @@ export async function POST(
      * Zero tolerance is unchanged. The figure being compared is corrected; the comparison is not
      * loosened.
      */
-    const charge = expectedChargeFor(order)
+    /**
+     * THE WHOLE SETTLEMENT, not the lead order alone.
+     *
+     * This route is called with orderIds[0] and paycloud_merchant_order_no lives on that one row,
+     * so it saw ONE order however many were charged -- and compared the whole gateway amount
+     * against that order's expectation. For o1 = N$10, o2 = N$10 and a N$10 tip the reader is asked
+     * for N$30 and this expected N$20, refusing a payment that succeeded.
+     *
+     * A NULL settlement id yields the lead order alone, which is exactly today's behaviour and what
+     * every order on production currently has.
+     */
+    const settlement = await settlementSetFor(supabase, order, order.restaurant_id)
+    const charge = expectedChargeForOrders(settlement.orders)
     const expectedAmount = charge.expectedAmount
     let applied = false
     let outcome: string | null = null
