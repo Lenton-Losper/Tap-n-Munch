@@ -228,3 +228,51 @@ export const SPLIT_CARD_TABLE_OUT_OF_DATE =
  */
 export const SPLIT_CARD_NOT_STARTED =
   'The payment could not be started, and nothing was charged. Try again. If it keeps failing, take cash and tell a manager.';
+
+/**
+ * ================================================================================================
+ * DRAFT, AWAITING SIGNATURE. Written 2026-09-09. NOT YET SIGNED.
+ * ================================================================================================
+ *
+ * Two states that were previously told they had been DECLINED, which was false in both and
+ * dangerous in one.
+ */
+
+/**
+ * outcomeKind 'not_started' -- and a 'confirmed_failure' carrying no gateway code, which is the
+ * same thing wearing a misleading name.
+ *
+ * THE READER NEVER OPENED. On 2026-09-07 at Digi Cofee this state showed SPLIT_CARD_DECLINED:
+ * "The card was declined... try another card, or take cash." Nothing had been declined and nothing
+ * had been presented -- the machine never started. A waiter told that will ask the customer for a
+ * second card, which cannot possibly work, in front of them.
+ *
+ * SO IT NAMES THE TERMINAL AS THE FAULT and closes off the wrong move explicitly. "Another card
+ * will not help" is the sentence doing the work; without it, trying another card is the obvious
+ * thing to do.
+ */
+export const SPLIT_CARD_READER_DID_NOT_START =
+  'The card machine did not start and nothing was charged. This is the terminal, not the card — another card will not help. Try again, and if it still will not open, take cash or get a manager.';
+
+/**
+ * outcomeKind 'user_cancelled'. The reader DID open and the customer backed out.
+ *
+ * Distinct from a decline because nothing was refused, and distinct from the reader not starting
+ * because the machine is working. Every way of paying is still open, so it says so.
+ */
+export const SPLIT_CARD_CANCELLED_ON_READER =
+  'The payment was cancelled on the card machine and nothing was charged. Those items are free to pay for again — try again, use another card, or take cash.';
+
+/**
+ * Server codes TIP_NEEDS_STAFF and TIP_STAFF_NOT_A_MEMBER. ONE string for both, because the waiter
+ * does the same thing either way: the gratuity has nobody valid to go to.
+ *
+ * CHECKED BEFORE THE CHARGE, deliberately. The whole-order route refuses this at SETTLE time, which
+ * on the split path would refuse after the card had been charged -- money taken, nothing recorded.
+ */
+export const SPLIT_CARD_TIP_NEEDS_STAFF =
+  'This gratuity has nobody to go to. Pick the member of staff taking it, then try again. Nothing was charged.';
+
+/** Server codes TIP_NOT_A_NUMBER, TIP_NOT_AN_INTEGER, TIP_NEGATIVE, TIP_TOO_LARGE. */
+export const SPLIT_CARD_TIP_NOT_READABLE =
+  'That gratuity amount could not be read. Check it and try again. Nothing was charged.';

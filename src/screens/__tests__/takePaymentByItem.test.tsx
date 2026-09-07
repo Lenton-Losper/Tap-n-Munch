@@ -307,7 +307,7 @@ describe('which money path a payment takes', () => {
      * method 'card' having charged nothing at all.
      */
     mockPrepareSplitPayment.mockResolvedValue({
-      intentId: 'intent-1',
+      intentId: '99999999-9999-4999-8999-999999999999',
       merchantOrderNo: 'FT-SPLIT-ABC',
       amountCents: 15000,
       allocationIds: ['alloc-steak'],
@@ -342,10 +342,17 @@ describe('which money path a payment takes', () => {
     );
     expect(mockProcessPaymentIntent).toHaveBeenCalledTimes(1);
 
-    // The reader is driven with the INTENT's amount and reference, not the order's.
-    const [amount, reference] = mockProcessPaymentIntent.mock.calls[0];
+    /**
+     * THE REFERENCE TRAVELS IN THE OPTIONS, NOT AS THE SECOND ARGUMENT.
+     *
+     * The second argument is an ORDER identifier, which processPaymentIntent feeds to
+     * resolvePrepareOrderId -- a UUID check. Passing the merchant_order_no there is exactly what
+     * shipped on 2026-09-07 and threw before the reader was ever launched. paymentNativeBoundary
+     * proves that against the REAL implementation; this asserts the call site got it right.
+     */
+    const [amount, , options] = mockProcessPaymentIntent.mock.calls[0];
     expect(amount).toBe(150);
-    expect(reference).toBe('FT-SPLIT-ABC');
+    expect(options?.merchantOrderNo).toBe('FT-SPLIT-ABC');
 
     // Charge first, bookkeeping second -- never the other way round.
     expect(mockProcessPaymentIntent.mock.invocationCallOrder[0]).toBeGreaterThan(

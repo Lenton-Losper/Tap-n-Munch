@@ -21,7 +21,24 @@ export type PaymentOutcomeKind =
    * 'ambiguous': no payment order can exist, so the server may cancel without a Finatic verify.
    * Raised ONLY from Activity.RESULT_CANCELED in native -- never inferred from message text.
    */
-  | 'user_cancelled';
+  | 'user_cancelled'
+  /**
+   * THE READER WAS NEVER STARTED. Nothing was presented, no amount was authorised, and no result
+   * can arrive later.
+   *
+   * Distinct from 'confirmed_failure', which claims the gateway said no, and from 'user_cancelled',
+   * which means a customer was standing at a reader that opened. This is "the machine did not
+   * start": no foreground activity, WiseCashier not resolvable, a missing or over-long reference,
+   * or any JS-side throw before the native call.
+   *
+   * IT EXISTS BECAUSE THE DEFAULT WAS LYING. Every unrecognised error became 'confirmed_failure',
+   * so a reader that never opened told a waiter the card had been declined -- sending them to try
+   * a second card for a fault no card can fix. Digi Cofee, 2026-09-07.
+   *
+   * SAFE TO TREAT AS FAILED FOR THE MONEY, NEVER FOR THE WORDING. Items may be released, because
+   * no charge exists to collide with. What must differ is what a human is told.
+   */
+  | 'not_started';
 
 export interface PaymentResult {
   success: boolean;
@@ -532,14 +549,58 @@ export async function consumeOrphanedIfAny(): Promise<PaymentResult | null> {
   }
 }
 
+/**
+ * How this charge gets its gateway reference.
+ *
+ * ================================================================================================
+ * WHY THIS OPTION EXISTS
+ * ================================================================================================
+ *
+ * By default this function MINTS ITS OWN reference: it calls POST
+ * /api/terminal/orders/{id}/prepare-payment and uses orders.paycloud_merchant_order_no. That is
+ * right for a whole-order charge -- one order, one reference, minted once and never rotated so a
+ * webhook can always correlate.
+ *
+ * IT IS WRONG FOR A SPLIT PAYMENT, twice over. Three people paying for their own items on one
+ * order would all charge under that ONE order reference, and the webhook could not tell their
+ * settlements apart -- which is the exact collision terminal_payment_intents exists to prevent.
+ * And `orderId` is fed to resolvePrepareOrderId, which REQUIRES a UUID.
+ *
+ * Passing an intent's merchant_order_no as `orderId` therefore threw before the reader was ever
+ * launched. Measured on production 2026-09-07: three split attempts at Digi Cofee, resolved in
+ * 0.68s, 0.71s and 0.66s. WiseCashier was never asked. The throw carried no native code, so it
+ * defaulted to 'confirmed_failure' and a waiter was told the card had been declined.
+ *
+ * So a caller that already HOLDS a reference passes it here, and prepare-payment is skipped. The
+ * native layer has always accepted an explicit reference -- launchPayment(amount, orderId,
+ * merchantOrderNo) -- it was only this wrapper that insisted on minting one.
+ */
+export type PaymentReferenceOptions = {
+  /**
+   * A reference minted by the caller. When present, prepare-payment is NOT called and this exact
+   * value is what the reader charges under.
+   */
+  merchantOrderNo?: string;
+  /**
+   * Extra charged on top of the bill, in major units, already included in `amount`.
+   *
+   * Carried only so the wiretap and the timeout record what the customer was actually asked for.
+   * The reader is told ONE number; this says how much of it was the gratuity.
+   */
+  tipAmount?: number;
+};
+
 export async function processPaymentIntent(
   amount: number,
   orderId: string,
+  options?: PaymentReferenceOptions,
 ): Promise<PaymentResult> {
   if (Platform.OS !== 'android' || !PaymentModule?.launchPayment) {
     return {
       success: false,
-      outcomeKind: 'confirmed_failure',
+      // NOT a decline. The reader was never reachable, so nothing was presented and nothing can
+      // land later. See PaymentOutcomeKind 'not_started'.
+      outcomeKind: 'not_started',
       error: 'Payment module not available on this platform',
     };
   }
@@ -567,14 +628,21 @@ export async function processPaymentIntent(
   try {
     const token = await getTerminalToken();
     if (!token) {
-      return {success: false, outcomeKind: 'confirmed_failure', error: 'Session expired'};
+      // Nothing was presented to a reader, so this is not a decline either.
+      return {success: false, outcomeKind: 'not_started', error: 'Session expired'};
     }
 
-    const prepareOrderId = resolvePrepareOrderId(orderId);
-
-    // Persist backend-owned merchant_order_no before Finatic so webhooks can correlate.
-    const prepared = await prepareTerminalPayment(prepareOrderId, token);
-    const merchantOrderNo = prepared.merchantOrderNo;
+    /**
+     * A CALLER-SUPPLIED REFERENCE SKIPS prepare-payment ENTIRELY.
+     *
+     * The split path has already minted its own reference, in its own row, precisely so that two
+     * charges against one order cannot share one. Calling prepare-payment here would hand back the
+     * ORDER's reference and undo that.
+     */
+    const suppliedRef = String(options?.merchantOrderNo ?? '').trim();
+    const merchantOrderNo = suppliedRef
+      ? suppliedRef
+      : (await prepareTerminalPayment(resolvePrepareOrderId(orderId), token)).merchantOrderNo;
 
     const amountInCents = String(Math.round(amount * 100));
 
@@ -587,7 +655,16 @@ export async function processPaymentIntent(
       merchantOrderNo,
     );
 
-    await notifyPaymentAttemptStarted(prepareOrderId, token, merchantOrderNo);
+    /**
+     * ONLY FOR A WHOLE-ORDER CHARGE. markTerminalPaymentAttemptStarted posts to an ORDER route and
+     * stamps orders.terminal_pushed_at -- the card-in-flight marker. A split charge is not attached
+     * to an order, and stamping one would block cash on every OTHER item of that order for the
+     * in-flight timeout. Its own hold, on terminal_payment_intents, already covers exactly the
+     * allocations it named.
+     */
+    if (!suppliedRef) {
+      await notifyPaymentAttemptStarted(resolvePrepareOrderId(orderId), token, merchantOrderNo);
+    }
 
     /**
      * #346 — THE PROMISE NOW HAS A CEILING. It never did: if WiseCashier never returned, this
@@ -715,6 +792,58 @@ export async function processPaymentIntent(
         success: false,
         outcomeKind: 'user_cancelled',
         error: message || 'Payment cancelled on the reader',
+        gatewayResult,
+      };
+    }
+
+    /**
+     * ============================================================================================
+     * FAILURES BEFORE THE READER EVER STARTS ARE NOT DECLINES
+     * ============================================================================================
+     *
+     * Every code below is raised by PaymentModule BEFORE, or INSTEAD OF,
+     * activity.startActivityForResult -- so no card was presented, no amount was authorised, and
+     * nothing can land later:
+     *
+     *   NO_ACTIVITY                 no foreground activity to launch from
+     *   INTENT_ERROR                startActivityForResult threw (WiseCashier not resolvable)
+     *   MISSING_MERCHANT_ORDER_NO   we called it with no reference
+     *   INVALID_MERCHANT_ORDER_NO   reference over Finatic's 32-character limit
+     *
+     * These used to fall to the `confirmed_failure` default below and a waiter was told "the card
+     * was declined" for a reader that never opened -- sending them to try a second card for a
+     * problem no card can fix. Digi Cofee, 2026-09-07.
+     *
+     * THE DEFAULT ITSELF IS THE DEEPER FAULT. `confirmed_failure` is what ANY unrecognised error
+     * becomes, so its name claims a determination nobody made. It is kept for compatibility with
+     * the whole-order screens, which already require a gatewayResult alongside it before treating
+     * it as a decline -- but a pre-reader code must never reach it.
+     */
+    const NEVER_REACHED_THE_READER = [
+      'NO_ACTIVITY',
+      'INTENT_ERROR',
+      'MISSING_MERCHANT_ORDER_NO',
+      'INVALID_MERCHANT_ORDER_NO',
+    ];
+    if (NEVER_REACHED_THE_READER.includes(code)) {
+      return {
+        success: false,
+        outcomeKind: 'not_started',
+        error: message || 'The card machine could not be started',
+        gatewayResult,
+      };
+    }
+
+    /**
+     * A JS-SIDE THROW WITH NO NATIVE CODE also never reached the reader -- the native call is the
+     * last thing this function does, so anything that throws without a code threw before it. That
+     * is what resolvePrepareOrderId's UUID check did on every split payment.
+     */
+    if (!code) {
+      return {
+        success: false,
+        outcomeKind: 'not_started',
+        error: message || 'The payment could not be started',
         gatewayResult,
       };
     }

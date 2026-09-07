@@ -2743,13 +2743,24 @@ export async function prepareSplitPayment(
   tabId: string,
   allocationIds: string[],
   token: string,
+  /**
+   * The gratuity, if any. It goes in BEFORE the charge because the intent's amount_cents is what
+   * the reader is asked for AND what a gateway echo is reconciled against -- so a tip added later
+   * would mean charging the bill and recording a tip nobody collected.
+   */
+  gratuity?: {tipCents?: number; tipStaffUserId?: string},
 ): Promise<SplitPaymentIntent> {
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/prepare-split-payment`,
     {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({allocation_ids: allocationIds}),
+      body: JSON.stringify({
+        allocation_ids: allocationIds,
+        ...(gratuity?.tipCents
+          ? {tip_cents: gratuity.tipCents, tip_staff_user_id: gratuity.tipStaffUserId}
+          : {}),
+      }),
     },
     token,
   );

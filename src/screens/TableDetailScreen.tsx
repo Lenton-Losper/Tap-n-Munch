@@ -51,6 +51,7 @@ import {
   mustNotOfferPaymentAgain,
   outcomeForDeviceResult,
   splitCardFailureMessage,
+  splitCardFailureMessageForResult,
   splitCardResultMessage,
 } from '../lib/splitCardPayment';
 import {
@@ -1302,14 +1303,39 @@ export default function TableDetailScreen({route, navigation}: Props) {
         // unknown, and they must stop being selectable whatever went wrong.
         heldOnFailure = allocationIds;
 
-        const intent = await prepareSplitPayment(tabId, allocationIds, token);
+        /**
+         * THE TIP RIDES ON THE INTENT, so the reader, the gateway and the ledger all agree.
+         *
+         * The intent's amount_cents is what the reader is asked to charge, and it is what
+         * checkSaleAmount compares a gateway echo against -- non-advisory, at zero tolerance. So
+         * the gratuity has to be inside it BEFORE the charge; adding it only at settle time would
+         * charge the bill and record a tip nobody collected.
+         */
+        const tipCents = gratuityExtras(gratuity).tipCents ?? 0;
+        const intent = await prepareSplitPayment(tabId, allocationIds, token, {
+          tipCents,
+          tipStaffUserId: gratuityExtras(gratuity).tipStaffUserId,
+        });
 
         // From here on the customer may have been charged. See `phase` above.
         phase = 'record';
         const result = await processPaymentIntent(
           intent.amountCents / 100,
-          // The reference the server minted. NOT an order id: this charge belongs to items.
-          intent.merchantOrderNo,
+          /**
+           * THE ORDER THIS CHARGE HANGS OFF, for native's orphan matching and its wiretap only.
+           *
+           * The REFERENCE is passed separately below. Until 2026-09-07 the reference was passed
+           * HERE, as the order id -- and resolvePrepareOrderId requires a UUID, so every split
+           * payment threw before the reader was launched and the waiter was told the card had been
+           * declined. Three of them on production, all resolved in under a second.
+           */
+          intent.intentId,
+          {
+            // Skips prepare-payment entirely: this charge already HAS its own reference, which is
+            // the whole point of minting one per charge rather than reusing the order's.
+            merchantOrderNo: intent.merchantOrderNo,
+            tipAmount: tipCents / 100,
+          },
         );
 
         const outcome = outcomeForDeviceResult(result);
@@ -1335,7 +1361,14 @@ export default function TableDetailScreen({route, navigation}: Props) {
           setHeldAllocationIds((prev: string[]) => [...new Set([...prev, ...allocationIds])]);
           Alert.alert(SPLIT_CARD_PENDING_TITLE, splitCardResultMessage(recorded.status));
         } else {
-          Alert.alert('Take Payment', splitCardResultMessage(recorded.status));
+          /**
+           * THE DEVICE'S ANSWER, NOT ONLY THE SERVER'S STATUS. A reader that never opened, a
+           * customer who cancelled, and a gateway refusal all resolve the intent to 'failed' --
+           * correctly, since none of them charged anything -- but they are three different things
+           * to say to a waiter. Reading the status alone is what told Digi Cofee the card had been
+           * declined by a machine that never started.
+           */
+          Alert.alert('Take Payment', splitCardFailureMessageForResult(recorded.status, result));
         }
 
         setSelectedLineIds(new Set());

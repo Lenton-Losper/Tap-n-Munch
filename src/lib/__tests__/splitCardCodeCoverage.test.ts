@@ -58,9 +58,17 @@ const env = (
 /** Where the two routes live. Overridable so this is not pinned to one machine's layout. */
 const WEB_REPO = env.FLASHTAP_WEB_REPO ?? 'D:/dev/flashtap/build';
 
+/**
+ * The sources a refusal code can come from.
+ *
+ * The two routes, plus lib/payments/tips.ts -- prepare-split-payment returns `code: tipParse.code`,
+ * a value computed elsewhere, so scanning only the route files would miss every TIP_* code while
+ * they still reach the device verbatim. A dynamic passthrough is still an emitted code.
+ */
 const ROUTES = [
   'app/api/terminal/tabs/[tabId]/prepare-split-payment/route.ts',
   'app/api/terminal/tabs/[tabId]/record-split-payment/route.ts',
+  'lib/payments/tips.ts',
 ];
 
 /**

@@ -21,8 +21,12 @@ import {
   SPLIT_CARD_NOTHING_TO_CHARGE,
   SPLIT_CARD_OUTCOME_NOT_RECORDED,
   SPLIT_CARD_PAID,
+  SPLIT_CARD_CANCELLED_ON_READER,
   SPLIT_CARD_PENDING_BODY,
+  SPLIT_CARD_READER_DID_NOT_START,
   SPLIT_CARD_TABLE_OUT_OF_DATE,
+  SPLIT_CARD_TIP_NEEDS_STAFF,
+  SPLIT_CARD_TIP_NOT_READABLE,
   SPLIT_CARD_TERMINAL_NOT_ALLOWED,
 } from '../constants/splitCardCopy';
 import type {PaymentResult} from './payment';
@@ -43,7 +47,32 @@ export function outcomeForDeviceResult(result: PaymentResult): SplitPaymentOutco
   if (result.success && result.outcomeKind === 'success') {
     return 'success';
   }
-  if (result.outcomeKind === 'confirmed_failure' || result.outcomeKind === 'user_cancelled') {
+  /**
+   * THREE WAYS TO BE SURE NOTHING WAS CHARGED, and they are not interchangeable to a human.
+   *
+   *   not_started       the reader never opened. Nothing was presented.
+   *   user_cancelled    the customer walked away from a reader that did open.
+   *   confirmed_failure the gateway said no -- but ONLY with a gateway code to prove it.
+   *
+   * All three release the items, because no charge exists to collide with. What they must NOT
+   * share is the wording: see splitCardFailureMessageForResult.
+   */
+  if (result.outcomeKind === 'not_started' || result.outcomeKind === 'user_cancelled') {
+    return 'failed';
+  }
+
+  /**
+   * A DECLINE MUST CARRY PROOF OF A DECLINE.
+   *
+   * `confirmed_failure` is the DEFAULT for any error this build does not recognise, so the name
+   * claims a determination nobody made. The whole-order screens already require a gatewayResult
+   * alongside it before calling anything declined (PaymentScreen.tsx:579); the split path did not,
+   * and told a waiter a reader that never opened had refused the card.
+   *
+   * Without a gateway code this is not evidence of a decline -- but it is also not evidence of a
+   * charge, so it stays 'failed' rather than becoming a hold. Only the wording changes.
+   */
+  if (result.outcomeKind === 'confirmed_failure') {
     return 'failed';
   }
   // 'ambiguous', 'orphaned_ambiguous', 'orphaned_success', and anything added later.
@@ -91,6 +120,12 @@ const CODE_MESSAGES: Record<string, string> = {
   HOLD_CHECK_FAILED: SPLIT_CARD_HOLD_UNKNOWN,
   ITEMS_HELD_BY_CARD: SPLIT_CARD_ITEMS_HELD,
   PREPARE_FAILED: SPLIT_CARD_NOT_STARTED,
+  TIP_NEEDS_STAFF: SPLIT_CARD_TIP_NEEDS_STAFF,
+  TIP_STAFF_NOT_A_MEMBER: SPLIT_CARD_TIP_NEEDS_STAFF,
+  TIP_NOT_A_NUMBER: SPLIT_CARD_TIP_NOT_READABLE,
+  TIP_NOT_AN_INTEGER: SPLIT_CARD_TIP_NOT_READABLE,
+  TIP_NEGATIVE: SPLIT_CARD_TIP_NOT_READABLE,
+  TIP_TOO_LARGE: SPLIT_CARD_TIP_NOT_READABLE,
 
   // Record side. The reader has already run for every one of these.
   RECORD_BAD_TAB_ID: SPLIT_CARD_OUTCOME_NOT_RECORDED,
@@ -146,6 +181,39 @@ export function splitCardFailureMessage(code: string | null, phase: SplitCardPha
 
 /** The codes this build maps. Read by the coverage test; not used at runtime. */
 export const MAPPED_SPLIT_CARD_CODES = Object.keys(CODE_MESSAGES);
+
+/**
+ * WHAT TO SAY WHEN A CHARGE FAILS, given what the DEVICE said rather than only what the server
+ * recorded.
+ *
+ * splitCardResultMessage answers from the intent's status alone, so every 'failed' reads as
+ * "declined". That is right for a gateway refusal and wrong for everything else that lands in
+ * 'failed' -- a reader that never opened, or a customer who walked away. Telling a waiter the card
+ * was declined for a machine that never started sends them to try a second card for a fault no
+ * card can fix.
+ */
+export function splitCardFailureMessageForResult(
+  status: 'confirmed' | 'failed' | 'uncertain',
+  result: PaymentResult,
+): string {
+  if (status !== 'failed') {
+    return splitCardResultMessage(status);
+  }
+  if (result.outcomeKind === 'not_started') {
+    return SPLIT_CARD_READER_DID_NOT_START;
+  }
+  if (result.outcomeKind === 'user_cancelled') {
+    return SPLIT_CARD_CANCELLED_ON_READER;
+  }
+  /**
+   * A decline is only claimed with a gateway code to back it. Without one, 'confirmed_failure' is
+   * merely "unrecognised", and the honest reading is that the machine did not complete.
+   */
+  if (result.outcomeKind === 'confirmed_failure' && !result.gatewayResult) {
+    return SPLIT_CARD_READER_DID_NOT_START;
+  }
+  return SPLIT_CARD_DECLINED;
+}
 
 /** What to show once a charge resolves. */
 export function splitCardResultMessage(

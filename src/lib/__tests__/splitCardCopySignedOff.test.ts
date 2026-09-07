@@ -51,11 +51,15 @@ describe(`the signed split-card copy (signed ${SIGNED_ON})`, () => {
     expect(Copy.SPLIT_CARD_IN_PROGRESS).toBe('Follow the card machine…');
   });
 
-  it('seventeen strings, and no eighteenth added without a signature', () => {
+  it('twenty-one strings: seventeen signed, four DRAFT awaiting signature', () => {
     const exported = Object.keys(Copy).filter(
       k => typeof (Copy as Record<string, unknown>)[k] === 'string',
     );
-    expect(exported).toHaveLength(17);
+    /**
+     * FOUR OF THESE ARE NOT YET SIGNED, and are pinned separately below so the distinction is
+     * visible rather than buried in a count. Nothing is built into a binary until they are.
+     */
+    expect(exported).toHaveLength(21);
   });
 });
 
@@ -322,6 +326,54 @@ describe('every refusal says what to do', () => {
         name,
         placeholder: false,
       });
+    }
+  });
+});
+
+describe('DRAFT copy, written 2026-09-09, NOT YET SIGNED', () => {
+  /**
+   * Pinned so a draft cannot drift between being written and being signed -- but kept in its own
+   * block, and named, so nobody mistakes these for owner-approved wording. When they are signed
+   * they move into the signed describe above with a date.
+   */
+  it('reads as drafted', () => {
+    expect(Copy.SPLIT_CARD_READER_DID_NOT_START).toBe(
+      'The card machine did not start and nothing was charged. This is the terminal, not the card — another card will not help. Try again, and if it still will not open, take cash or get a manager.',
+    );
+    expect(Copy.SPLIT_CARD_CANCELLED_ON_READER).toBe(
+      'The payment was cancelled on the card machine and nothing was charged. Those items are free to pay for again — try again, use another card, or take cash.',
+    );
+    expect(Copy.SPLIT_CARD_TIP_NEEDS_STAFF).toBe(
+      'This gratuity has nobody to go to. Pick the member of staff taking it, then try again. Nothing was charged.',
+    );
+    expect(Copy.SPLIT_CARD_TIP_NOT_READABLE).toBe(
+      'That gratuity amount could not be read. Check it and try again. Nothing was charged.',
+    );
+  });
+
+  it('the reader-did-not-start string closes off the wrong move', () => {
+    /**
+     * The whole reason it exists. Told "declined", a waiter asks for a second card -- which cannot
+     * work, because the machine never opened. It must name the terminal as the fault and say so.
+     */
+    expect(Copy.SPLIT_CARD_READER_DID_NOT_START).toMatch(/another card will not help/i);
+    expect(Copy.SPLIT_CARD_READER_DID_NOT_START).toMatch(/nothing was charged/i);
+    expect(Copy.SPLIT_CARD_READER_DID_NOT_START).not.toMatch(/declined/i);
+  });
+
+  it('neither new failure string claims a decline', () => {
+    expect(Copy.SPLIT_CARD_CANCELLED_ON_READER).not.toMatch(/declined/i);
+    expect(Copy.SPLIT_CARD_CANCELLED_ON_READER).toMatch(/cancelled/i);
+  });
+
+  it('all four say nothing was charged, because in all four nothing was', () => {
+    for (const name of [
+      'SPLIT_CARD_READER_DID_NOT_START',
+      'SPLIT_CARD_CANCELLED_ON_READER',
+      'SPLIT_CARD_TIP_NEEDS_STAFF',
+      'SPLIT_CARD_TIP_NOT_READABLE',
+    ] as const) {
+      expect({name, ok: /nothing was charged/i.test(Copy[name])}).toEqual({name, ok: true});
     }
   });
 });
