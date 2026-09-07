@@ -39,6 +39,9 @@ const intent = (over: Partial<PaymentIntent> = {}): PaymentIntent => ({
   status: 'launched',
   restaurantId: 'r1',
   tabId: 'tab1',
+  // Most charges carry no gratuity; the tip cases override these two explicitly.
+  tipCents: 0,
+  tipStaffUserId: null,
   ...over,
 })
 

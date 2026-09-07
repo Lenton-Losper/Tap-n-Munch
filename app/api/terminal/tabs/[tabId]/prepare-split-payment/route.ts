@@ -34,6 +34,7 @@
  * records the outcome. Nothing here writes to an order, an allocation, or a payment.
  */
 import { NextResponse } from 'next/server'
+import { parseTipCents } from '@/lib/payments/tips'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
@@ -95,7 +96,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       )
     }
 
-    const body = (await req.json().catch(() => ({}))) as { allocation_ids?: unknown }
+    const body = (await req.json().catch(() => ({}))) as {
+      allocation_ids?: unknown
+      tip_cents?: unknown
+      tipCents?: unknown
+      tip_staff_user_id?: unknown
+      tipStaffUserId?: unknown
+    }
     const rawIds = Array.isArray(body.allocation_ids) ? body.allocation_ids : []
     const allocationIds = [...new Set(rawIds.map((id) => String(id).trim()))].filter(Boolean)
 
@@ -209,7 +216,74 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
      * `order_line_allocation_settlements.amount_cents` is always the allocation's own amount — v1
      * settles an allocation whole — so this is the figure the ledger will record too.
      */
-    const amountCents = rows.reduce((sum, r) => sum + Number(r.amount_cents ?? 0), 0)
+    const itemsCents = rows.reduce((sum, r) => sum + Number(r.amount_cents ?? 0), 0)
+
+    /**
+     * ================================================================================================
+     * THE GRATUITY IS PART OF WHAT THE READER IS ASKED FOR
+     * ================================================================================================
+     *
+     * `amount_cents` on this row is the single figure the customer is charged, and it is also what
+     * checkSaleAmount reconciles a gateway echo against -- basis 'intent', NOT advisory, at
+     * GATEWAY_AMOUNT_TOLERANCE_CENTS of zero. So the tip has to be inside it BEFORE the charge.
+     *
+     * WHAT HAPPENED WITHOUT THIS. Every processPaymentIntent call site passed bill-only amounts, so
+     * the reader was asked for the bill and the tip was recorded afterwards as though collected --
+     * an under-charge, silent, with the ledger disagreeing with the money. Adding the tip only at
+     * settle time reproduces exactly that.
+     *
+     * ITEMS AND TIP ARE KEPT APART IN THE LEDGER. This sum is what the CARD is charged; the
+     * allocations settle at their own amounts and the gratuity is written to payment_tips, which is
+     * why the tip is carried separately below rather than folded into any allocation. A tip is not
+     * revenue and must never enter an order total -- owner's ruling, 2026-09-05.
+     */
+    const tipParse = parseTipCents(body.tip_cents ?? body.tipCents)
+    if (!tipParse.ok) {
+      return NextResponse.json(
+        { error: tipParse.message, code: tipParse.code },
+        { status: 400 },
+      )
+    }
+    const tipCents = tipParse.tipCents
+    const tipStaffUserId = String(body.tip_staff_user_id ?? body.tipStaffUserId ?? '').trim()
+
+    /**
+     * A GRATUITY NEEDS A NAMED RECIPIENT, checked here rather than at settle time.
+     *
+     * The whole-order route refuses this at settle -- which on the split path would refuse AFTER the
+     * card had been charged, leaving money taken and nothing recorded. Refusing before the reader
+     * launches is the only safe place for it.
+     */
+    if (tipCents > 0 && !tipStaffUserId) {
+      return NextResponse.json(
+        {
+          error:
+            'Choose who is taking this gratuity before settling. A tip has to be recorded ' +
+            'against a member of staff.',
+          code: 'TIP_NEEDS_STAFF',
+          tip_cents: tipCents,
+        },
+        { status: 400 },
+      )
+    }
+    if (tipCents > 0) {
+      const { data: tipMember, error: tipMemberError } = await supabase
+        .from('restaurant_users')
+        .select('user_id')
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('user_id', tipStaffUserId)
+        .maybeSingle()
+      // FAILS CLOSED. An unverifiable recipient is not a verified one, and this runs before any
+      // money moves, so refusing costs a retry rather than a reconciliation.
+      if (tipMemberError || !tipMember) {
+        return NextResponse.json(
+          { error: 'That person does not work at this venue.', code: 'TIP_STAFF_NOT_A_MEMBER' },
+          { status: 400 },
+        )
+      }
+    }
+
+    const amountCents = itemsCents + tipCents
     if (!Number.isFinite(amountCents) || amountCents <= 0) {
       return NextResponse.json(
         { error: 'Those items do not add up to a chargeable amount', code: 'NOT_CHARGEABLE' },
@@ -223,6 +297,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       tabId,
       amountCents,
       scope: 'allocations',
+      tipCents,
+      tipStaffUserId: tipCents > 0 ? tipStaffUserId : null,
       allocationIds,
     })
 

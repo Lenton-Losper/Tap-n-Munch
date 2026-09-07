@@ -1,5 +1,6 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import type { PaymentIntent } from '@/lib/payments/payment-intents'
+import { recordTip } from '@/lib/payments/tips'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -40,7 +41,14 @@ type Supabase = ReturnType<typeof createServerSupabaseClient>
  */
 
 export type SettleForIntentResult =
-  | { ok: true; settledAllocationIds: string[]; ordersClosed: string[]; alreadySettled: boolean }
+  | {
+      ok: true
+      settledAllocationIds: string[]
+      ordersClosed: string[]
+      alreadySettled: boolean
+      /** 'none' when the charge carried no gratuity; 'recorded', or why it was not. */
+      tipRecorded: 'none' | 'recorded' | string
+    }
   | { ok: false; reason: string }
 
 export async function settleAllocationsForIntent(
@@ -135,7 +143,15 @@ export async function settleAllocationsForIntent(
       intentId: intent.id,
       error: appliedRowsError.message,
     })
-    return { ok: true, settledAllocationIds, ordersClosed: [], alreadySettled: allAlreadySettled }
+    return {
+      ok: true,
+      settledAllocationIds,
+      ordersClosed: [],
+      alreadySettled: allAlreadySettled,
+      // Only the closing sweep is affected; the tip is reported as not attempted rather than
+      // silently 'none', so a lost gratuity cannot hide behind a re-read failure.
+      tipRecorded: intent.tipCents > 0 ? 'skipped_read_failed' : 'none',
+    }
   }
 
   const orderIds = [...new Set((appliedRows ?? []).map((r) => String(r.order_id)))]
@@ -182,5 +198,58 @@ export async function settleAllocationsForIntent(
     if ((claimed ?? []).length > 0) ordersClosed.push(orderId)
   }
 
-  return { ok: true, settledAllocationIds, ordersClosed, alreadySettled: allAlreadySettled }
+  /**
+   * ================================================================================================
+   * THE GRATUITY, SPLIT BACK OUT OF THE CHARGE
+   * ================================================================================================
+   *
+   * intent.amountCents is ONE number -- what the reader was asked for -- because that is what a
+   * gateway echo is reconciled against. The allocations settled at their own amounts just above;
+   * whatever was charged on top of them is the tip, and it goes to payment_tips attributed to the
+   * person named before the charge.
+   *
+   * RECORDED HERE, IN THE SHARED WRITER, so the webhook path records it too. The device is not the
+   * only caller: when a charge is proven by the gateway instead, this is the only code that runs --
+   * and a tip recorded only on the device path would be silently lost exactly when nobody is
+   * watching.
+   *
+   * A FAILED TIP DOES NOT FAIL THE SETTLEMENT. The items are paid for either way, and refusing here
+   * would leave a charged customer with unsettled items over a gratuity. It is reported instead.
+   */
+  let tipRecorded: 'none' | 'recorded' | string = 'none'
+  if (intent.tipCents > 0 && intent.tipStaffUserId) {
+    try {
+      const tip = await recordTip(supabase, {
+        restaurantId: intent.restaurantId,
+        tipCents: intent.tipCents,
+        // Taken by the same instrument as the bill it rode on.
+        method: 'card',
+        staffUserId: intent.tipStaffUserId,
+        tabId: intent.tabId,
+        paymentReference,
+      })
+      tipRecorded = tip.recorded ? 'recorded' : tip.reason
+    } catch (tipError) {
+      tipRecorded = 'failed'
+      console.error(`[settleAllocationsForIntent:${source}] tip write failed`, {
+        intentId: intent.id,
+        error: tipError instanceof Error ? tipError.message : String(tipError),
+      })
+    }
+    if (tipRecorded !== 'recorded') {
+      console.error(`[settleAllocationsForIntent:${source}] gratuity NOT recorded`, {
+        intentId: intent.id,
+        tipCents: intent.tipCents,
+        outcome: tipRecorded,
+      })
+    }
+  }
+
+  return {
+    ok: true,
+    settledAllocationIds,
+    ordersClosed,
+    alreadySettled: allAlreadySettled,
+    tipRecorded,
+  }
 }

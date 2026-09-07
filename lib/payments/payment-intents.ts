@@ -52,6 +52,9 @@ export type PaymentIntent = {
   orderIds: string[]
   allocationIds: string[]
   status: IntentStatus
+  /** Part of amountCents that is a gratuity. Zero for most charges. */
+  tipCents: number
+  tipStaffUserId: string | null
   restaurantId: string
   tabId: string | null
 }
@@ -66,10 +69,17 @@ type IntentRow = {
   status: string
   restaurant_id: string
   tab_id: string | null
+  tip_cents: number | null
+  tip_staff_user_id: string | null
 }
 
+/**
+ * SELECTED, not merely written. A column the route writes and never reads back is inert -- the
+ * gratuity has to come back out of this row for the settlement to split the charge into items and
+ * tip, and a webhook-settled payment has no other source for it.
+ */
 const SELECT =
-  'id, merchant_order_no, amount_cents, scope, order_ids, allocation_ids, status, restaurant_id, tab_id'
+  'id, merchant_order_no, amount_cents, scope, order_ids, allocation_ids, status, restaurant_id, tab_id, tip_cents, tip_staff_user_id'
 
 function toIntent(row: IntentRow): PaymentIntent {
   return {
@@ -82,6 +92,8 @@ function toIntent(row: IntentRow): PaymentIntent {
     status: row.status as IntentStatus,
     restaurantId: String(row.restaurant_id),
     tabId: row.tab_id ? String(row.tab_id) : null,
+    tipCents: Number(row.tip_cents ?? 0),
+    tipStaffUserId: row.tip_staff_user_id ? String(row.tip_staff_user_id) : null,
   }
 }
 
@@ -105,6 +117,13 @@ export async function createPaymentIntent(
     scope: IntentScope
     orderIds?: string[]
     allocationIds?: string[]
+    /**
+     * How much of amountCents is a gratuity. amountCents is what the READER is asked for -- items
+     * plus tip -- because that one figure is what a gateway echo is reconciled against. This is
+     * what lets the settlement split it back apart afterwards.
+     */
+    tipCents?: number
+    tipStaffUserId?: string | null
   },
 ): Promise<PaymentIntent> {
   const amountCents = Math.round(Number(params.amountCents))
@@ -136,6 +155,8 @@ export async function createPaymentIntent(
         merchant_order_no: merchantOrderNo,
         amount_cents: amountCents,
         scope: params.scope,
+      tip_cents: Math.max(0, Math.round(Number(params.tipCents ?? 0))),
+      tip_staff_user_id: params.tipStaffUserId ?? null,
         order_ids: params.scope === 'orders' ? orderIds : null,
         allocation_ids: params.scope === 'allocations' ? allocationIds : null,
         status: 'launched',
