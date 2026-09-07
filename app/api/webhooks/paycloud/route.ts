@@ -356,6 +356,103 @@ function unappliedClaims(outcome: MarkPaidOutcome) {
   return outcome.unclaimed.filter((u) => u.reason !== 'already_paid')
 }
 
+/**
+ * SETTLE AN ALLOCATION-SCOPE INTENT. THE ONE COPY, CALLED BY BOTH WEBHOOK PATHS.
+ *
+ * ==================================================================================================
+ * WHY THIS IS A FUNCTION AND NOT A BRANCH
+ * ==================================================================================================
+ *
+ * This logic used to live only on the signature-VALID path. The signature-FAILED fallback resolved
+ * the same reference -- it already had `resolved.intent` in hand -- and then handed the order ids
+ * straight to markOrdersPaidConfirmedByIds, the WHOLE-ORDER writer.
+ *
+ * On 2026-09-07 that closed order #45 at Digi Cofee. A split card payment took N$17.00 of items
+ * plus a N$20.00 gratuity; the gateway was charged N$37.00, which happened to equal the order
+ * total, so the whole-order amount check saw no mismatch and marked all seven lines paid. N$17.00
+ * of revenue was collected against an order recorded as N$37.00 paid, and the same N$20.00 was
+ * counted once as a tip and again as revenue.
+ *
+ * A GRATUITY IS NOT ITEM SETTLEMENT. settleAllocationsForIntent settles exactly the intent's own
+ * allocation ids and records the tip in payment_tips, so the two can never be added together to
+ * reach "fully paid". `order_is_fully_paid_by_allocations` remains the sole authority on closing an
+ * order. Nothing here compares the gateway amount to an order total, because for a part-order
+ * charge that comparison is meaningless.
+ *
+ * SHARED RATHER THAN COPIED so the two paths cannot drift: a second copy is how the fallback came
+ * to be missing the already-confirmed short-circuit as well as the scope fork.
+ */
+type AllocationIntentSupabase = Parameters<typeof settleAllocationsForIntent>[0]
+type AllocationScopeIntent = Parameters<typeof settleAllocationsForIntent>[1]['intent']
+
+async function settleAllocationScopeIntent(
+  supabase: AllocationIntentSupabase,
+  intent: AllocationScopeIntent,
+  merchantOrderNo: string,
+  source: string,
+): Promise<Response> {
+    if (intent.status === 'confirmed') {
+      // Already settled, by the device or by an earlier delivery of this same webhook.
+      console.log('[WEBHOOK] split payment already confirmed:', merchantOrderNo)
+      return webhookAck()
+    }
+    if (intent.status === 'failed') {
+      /**
+       * THE GATEWAY SAYS PAID AND THE DEVICE SAID FAILED. The device's report is a claim about
+       * what a reader displayed; this is the gateway's own record of money. It is NOT resolved
+       * silently either way — the items are not settled on a failed intent, because releasing
+       * and then settling would be two contradictory answers written a second apart, and a human
+       * needs to see this.
+       */
+      console.error('[WEBHOOK] gateway reports paid for an intent the device reported FAILED', {
+        merchantOrderNo,
+        intentId: intent.id,
+      })
+      await supabase.from('audit_logs').insert({
+        restaurant_id: intent.restaurantId,
+        action: 'payment.split_intent_gateway_disagrees',
+        entity_type: 'payment_intent',
+        entity_id: intent.id,
+        metadata: {
+          merchantOrderNo,
+          deviceOutcome: 'failed',
+          gatewayOutcome: 'paid',
+          allocationIds: intent.allocationIds,
+          note: 'The gateway says this was paid and the terminal reported a failure. Items were NOT settled automatically. Reconcile against the gateway before taking payment again.',
+        },
+      })
+      return webhookAck()
+    }
+
+    const settled = await settleAllocationsForIntent(supabase, {
+      intent,
+      paymentReference: merchantOrderNo,
+      source,
+    })
+
+    if (!settled.ok) {
+      /**
+       * 503 SO FINATIC RETRIES. The charge is real and the items are still unsettled; the intent
+       * is deliberately left holding them rather than being marked failed, so nothing releases
+       * food that has been paid for.
+       */
+      console.error('[WEBHOOK] split settlement failed', {
+        merchantOrderNo,
+        intentId: intent.id,
+        reason: settled.reason,
+      })
+      return NextResponse.json({ error: 'Split settlement failed' }, { status: 503 })
+    }
+
+    await markIntentConfirmed(supabase, intent.id)
+    console.log('[WEBHOOK] split payment settled:', merchantOrderNo, {
+      settled: settled.settledAllocationIds.length,
+      ordersClosed: settled.ordersClosed.length,
+      alreadySettled: settled.alreadySettled,
+    })
+    return webhookAck()
+}
+
 export async function POST(req: Request) {
   const rate = enforceWebhookRateLimit(getClientIp(req))
   if (!rate.allowed) {
@@ -446,68 +543,12 @@ export async function POST(req: Request) {
      * settled allocation, which is what makes the race harmless.
      */
     if (resolved.intent && resolved.intent.scope === 'allocations') {
-      const intent = resolved.intent
-
-      if (intent.status === 'confirmed') {
-        // Already settled, by the device or by an earlier delivery of this same webhook.
-        console.log('[WEBHOOK] split payment already confirmed:', merchantOrderNo)
-        return webhookAck()
-      }
-      if (intent.status === 'failed') {
-        /**
-         * THE GATEWAY SAYS PAID AND THE DEVICE SAID FAILED. The device's report is a claim about
-         * what a reader displayed; this is the gateway's own record of money. It is NOT resolved
-         * silently either way — the items are not settled on a failed intent, because releasing
-         * and then settling would be two contradictory answers written a second apart, and a human
-         * needs to see this.
-         */
-        console.error('[WEBHOOK] gateway reports paid for an intent the device reported FAILED', {
-          merchantOrderNo,
-          intentId: intent.id,
-        })
-        await supabase.from('audit_logs').insert({
-          restaurant_id: intent.restaurantId,
-          action: 'payment.split_intent_gateway_disagrees',
-          entity_type: 'payment_intent',
-          entity_id: intent.id,
-          metadata: {
-            merchantOrderNo,
-            deviceOutcome: 'failed',
-            gatewayOutcome: 'paid',
-            allocationIds: intent.allocationIds,
-            note: 'The gateway says this was paid and the terminal reported a failure. Items were NOT settled automatically. Reconcile against the gateway before taking payment again.',
-          },
-        })
-        return webhookAck()
-      }
-
-      const settled = await settleAllocationsForIntent(supabase, {
-        intent,
-        paymentReference: merchantOrderNo,
-        source: 'webhook/paycloud',
-      })
-
-      if (!settled.ok) {
-        /**
-         * 503 SO FINATIC RETRIES. The charge is real and the items are still unsettled; the intent
-         * is deliberately left holding them rather than being marked failed, so nothing releases
-         * food that has been paid for.
-         */
-        console.error('[WEBHOOK] split settlement failed', {
-          merchantOrderNo,
-          intentId: intent.id,
-          reason: settled.reason,
-        })
-        return NextResponse.json({ error: 'Split settlement failed' }, { status: 503 })
-      }
-
-      await markIntentConfirmed(supabase, intent.id)
-      console.log('[WEBHOOK] split payment settled:', merchantOrderNo, {
-        settled: settled.settledAllocationIds.length,
-        ordersClosed: settled.ordersClosed.length,
-        alreadySettled: settled.alreadySettled,
-      })
-      return webhookAck()
+      return settleAllocationScopeIntent(
+        supabase,
+        resolved.intent,
+        merchantOrderNo,
+        'webhook/paycloud',
+      )
     }
 
     if (!resolved.orderIds.length) {
@@ -616,6 +657,26 @@ export async function POST(req: Request) {
       finaticAmount: fallback.finatic.amount,
       sigFailReason,
     })
+
+    /**
+     * THE SAME FORK THE SIGNATURE-VALID PATH MAKES, AND FOR THE SAME REASON.
+     *
+     * Finatic has just independently confirmed this reference was paid, so the money is proven --
+     * that is what makes settling here safe even though the signature did not verify. What is NOT
+     * proven is that the charge covers a whole order: only the intent can answer that, and an
+     * allocation-scope intent covers named items plus, separately, a gratuity.
+     *
+     * Reaching markOrdersPaidConfirmedByIds with one of those is the defect that closed order #45.
+     * After this, only whole-order references get there.
+     */
+    if (resolved.intent && resolved.intent.scope === 'allocations') {
+      return settleAllocationScopeIntent(
+        supabase,
+        resolved.intent,
+        merchantOrderNo,
+        'webhook/paycloud-sig-fallback',
+      )
+    }
 
     const orderIds = fallback.orderIds.length ? fallback.orderIds : resolved.orderIds
     if (!orderIds.length) {
