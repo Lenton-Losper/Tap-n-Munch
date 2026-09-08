@@ -305,7 +305,53 @@ export async function POST(
         { status: 409 },
       )
     }
-    if (!amountsMatch(amount, expectedAmount)) {
+    /**
+     * ================================================================================================
+     * A DEVICE THAT PREDATES THE OUTSTANDING BASIS IS NOT A DEVICE THAT DISAGREES
+     * ================================================================================================
+     *
+     * The client leg is a CROSS-CHECK -- it catches a terminal whose idea of the money differs from
+     * the server's. It is not the source of the figure; expectedAmount above is.
+     *
+     * APK 136 and earlier compute their amount the way selectClaimableOrdersForSettle does, by
+     * summing order.total. That was the only basis in existence when they were built. Against the
+     * outstanding basis they now differ by exactly the already-settled cents on a part-paid order,
+     * and the check would refuse them.
+     *
+     * REFUSING IS THE DANGEROUS DIRECTION HERE. On the card path the reader has ALREADY been
+     * charged the correct outstanding amount by the time this runs, so a refusal leaves a real
+     * charge with no settlement recorded against it -- precisely the orphan this area exists to
+     * prevent. On the cash path it blocks a legitimate collection outright.
+     *
+     * So the legacy basis is accepted TOO, and only the legacy basis: an exact second expectation,
+     * both figures computed here from the server's own rows. No tolerance is widened -- amountsMatch
+     * runs at its existing precision against each -- and an amount matching neither is still
+     * refused.
+     *
+     * WHAT IS RECORDED IS ALWAYS expectedAmount. A device sending the legacy figure does not cause
+     * the legacy figure to be written: payments.amount and the audit row stay the outstanding truth.
+     *
+     * DELETE THIS once every terminal in the field sends the outstanding basis. It is dead weight
+     * from the moment the oldest deployed APK computes it, and the warning below is how you will
+     * know that day has come -- it stops being logged.
+     */
+    const legacyWholeOrderAmount = roundToCents(
+      (tabOrders ?? []).reduce((sum, o) => sum + Number(o.total), 0),
+    )
+    const matchesLegacyBasis =
+      legacyWholeOrderAmount !== expectedAmount && amountsMatch(amount, legacyWholeOrderAmount)
+
+    if (matchesLegacyBasis) {
+      console.warn('[terminal/tabs/settle] client sent the pre-outstanding basis', {
+        tabId,
+        received: amount,
+        expected: expectedAmount,
+        legacy: legacyWholeOrderAmount,
+        recording: expectedAmount,
+      })
+    }
+
+    if (!matchesLegacyBasis && !amountsMatch(amount, expectedAmount)) {
       return NextResponse.json(
         {
           error: 'amount does not match order totals',
