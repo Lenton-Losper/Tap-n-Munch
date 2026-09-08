@@ -86,7 +86,7 @@ const report = (over: Partial<ReportData['summary']> = {}): ReportData =>
 
 const text = (r: ReportData, o = OPTIONS) =>
   buildCashUpRows(r, o).map((row) =>
-    row.kind === 'pair' ? `${row.left}|${row.right}` : row.kind === 'divider' ? '--' : (row as { text: string }).text,
+    row.kind === 'pair' ? `${row.left}|${row.right}` : row.kind === 'divider' ? '--' : row.kind === 'blank' ? '' : (row as { text: string }).text,
   )
 
 describe('the permission is its own, and manager/owner only', () => {
@@ -214,13 +214,19 @@ describe('the route refuses before it reports', () => {
 describe('the printed document', () => {
   it('splits takings by method with money AND order count', () => {
     const lines = text(report())
-    expect(lines).toContain('Card (12 orders)|N$1200.00')
-    expect(lines).toContain('Cash (8 orders)|N$800.00')
+    // One BLOCK per method now -- name, indented count, indented total. Same figures, and the
+    // order count still printed, which is the part truncation used to cost a manager.
+    expect(lines).toContain('Card')
+    expect(lines).toContain('  12 orders')
+    expect(lines).toContain('  Total:|N$1200.00')
+    expect(lines).toContain('Cash')
+    expect(lines).toContain('  8 orders')
+    expect(lines).toContain('  Total:|N$800.00')
   })
 
   it('bridges gross to net through refunds', () => {
     const lines = text(report())
-    expect(lines).toContain('Gross taken|N$2000.00')
+    expect(lines).toContain('GRAND TOTAL:|N$2000.00')
     expect(lines).toContain('Less refunds|N$-100.00')
     expect(lines).toContain('Net revenue|N$1900.00')
   })
@@ -250,7 +256,7 @@ describe('the printed document', () => {
     expect(lines).toContain('4 gratuities|N$120.00')
     // A gratuity is not consideration for the supply. Folding it into takings here would undo the
     // whole reason it lives in its own table, outside the VAT base.
-    expect(lines).toContain('Gross taken|N$2000.00')
+    expect(lines).toContain('GRAND TOTAL:|N$2000.00')
     expect(lines).toContain('Net revenue|N$1900.00')
     expect(lines.some((l) => l.includes('N$2120.00'))).toBe(false)
   })

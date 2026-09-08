@@ -130,7 +130,7 @@ describe('every row fits its column', () => {
     for (const row of rowsOf(r)) expect(row.columns[0].length).toBeLessThanOrEqual(BUDGET.left)
   })
 
-  it('2. a normal payment row keeps its whole label', () => {
+  it('2. a normal payment row keeps its whole label and count', () => {
     /**
      * 'Card (12 orders)' is sixteen characters against a fifteen-character half, so it takes a
      * line of its own and the amount sits beneath it. What matters is that the ORDER COUNT
@@ -139,8 +139,10 @@ describe('every row fits its column', () => {
      */
     const lines = renderCashUpSdk6(report(), { ...OPTIONS, characterWidth: WIDTH })
     const flat = lines.map((l) => (l.type === 'row' ? l.columns.join('|') : l.type === 'text' ? l.text : '')).join('\n')
-    expect(flat).toContain('Card (12 orders)')
-    expect(flat).toContain('Cash (8 orders)')
+    expect(flat).toContain('Card')
+    expect(flat).toContain('12 orders')
+    expect(flat).toContain('Cash')
+    expect(flat).toContain('8 orders')
     expect(flat).not.toContain('order…')
   })
 

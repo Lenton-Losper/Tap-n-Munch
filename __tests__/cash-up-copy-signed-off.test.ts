@@ -57,7 +57,7 @@ const report = (over: Partial<ReportData['summary']> = {}): ReportData =>
 
 const printedText = (r: ReportData, o = OPTIONS) =>
   buildCashUpRows(r, o).map((row) =>
-    row.kind === 'pair' ? row.left : row.kind === 'divider' ? '--' : (row as { text: string }).text,
+    row.kind === 'pair' ? row.left : row.kind === 'divider' ? '--' : row.kind === 'blank' ? '' : (row as { text: string }).text,
   )
 
 describe(`the signed cash-up slip copy (signed ${SIGNED_ON})`, () => {
@@ -77,11 +77,17 @@ describe(`the signed cash-up slip copy (signed ${SIGNED_ON})`, () => {
     expect(Copy.CASH_UP_NOT_A_TAX_INVOICE).toBe('Not a tax invoice.')
   })
 
-  it('thirteen strings, and no fourteenth added without a signature', () => {
+  it('sixteen strings, and no seventeenth added without a signature', () => {
     const exported = Object.keys(Copy).filter(
       (k) => typeof (Copy as Record<string, unknown>)[k] === 'string',
     )
-    expect(exported).toHaveLength(13)
+    /**
+     * SIXTEEN, not thirteen. The outlet manager supplied the wording for the payment-summary
+     * block on 2026-09-08 -- PAYMENT SUMMARY / Total: / GRAND TOTAL: -- which is the signature
+     * for those three. The count is the guard: a fourth string cannot arrive without someone
+     * changing this number and having to say who approved it.
+     */
+    expect(exported).toHaveLength(16)
   })
 })
 
@@ -135,10 +141,24 @@ describe('the rest of the slip carries its signed words', () => {
   })
 
   it('the bridge lines are the signed ones', () => {
+    /**
+     * GRAND TOTAL: carries the figure CASH_UP_GROSS_TAKEN used to, and the bridge below it is
+     * unchanged. Printing both would put one number on the paper twice under two names.
+     * CASH_UP_GROSS_TAKEN stays exported and signed -- it is the concept the bridge is built from
+     * and the PDF and CSV still word it that way -- so this asserts what is PRINTED, not what is
+     * exported.
+     */
     const rows = printedText(report())
-    for (const line of [Copy.CASH_UP_GROSS_TAKEN, Copy.CASH_UP_LESS_REFUNDS, Copy.CASH_UP_NET_REVENUE]) {
+    for (const line of [Copy.CASH_UP_GRAND_TOTAL, Copy.CASH_UP_LESS_REFUNDS, Copy.CASH_UP_NET_REVENUE]) {
       expect(rows).toContain(line)
     }
+    expect(rows).not.toContain(Copy.CASH_UP_GROSS_TAKEN)
+  })
+
+  it('the payment-summary wording is exactly what the manager asked for', () => {
+    expect(Copy.CASH_UP_PAYMENT_SUMMARY_HEADING).toBe('PAYMENT SUMMARY')
+    expect(Copy.CASH_UP_METHOD_TOTAL).toBe('Total:')
+    expect(Copy.CASH_UP_GRAND_TOTAL).toBe('GRAND TOTAL:')
   })
 
   it('the gratuity note is printed whenever a gratuity is', () => {

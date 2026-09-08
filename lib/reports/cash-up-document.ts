@@ -14,6 +14,9 @@ import {
   CASH_UP_ORDERS,
   CASH_UP_PRINTED_BY,
   CASH_UP_TAKINGS_HEADING,
+  CASH_UP_PAYMENT_SUMMARY_HEADING,
+  CASH_UP_METHOD_TOTAL,
+  CASH_UP_GRAND_TOTAL,
 } from './cash-up-copy'
 import {
   centered,
@@ -93,6 +96,13 @@ type Row =
   | { kind: 'pair'; left: string; right: string; bold?: boolean }
   | { kind: 'divider' }
   | { kind: 'blank' }
+  /**
+   * A full-width, left-aligned, unemphasised line.
+   *
+   * `meta` is centred and `heading` is bold, and the per-method block needs neither: the indented
+   * order count sits under its method name and must read as detail, not as a section of its own.
+   */
+  | { kind: 'line'; text: string }
 
 const money = (n: number) => `N$${(Number.isFinite(n) ? n : 0).toFixed(2)}`
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
@@ -128,15 +138,46 @@ export function buildCashUpRows(report: ReportData, options: CashUpDocumentOptio
     // A quiet day is a real answer. An empty section reads as a broken print.
     out.push({ kind: 'pair', left: CASH_UP_NO_PAYMENTS, right: money(0) })
   } else {
+    /**
+     * ============================================================================================
+     * ONE BLOCK PER METHOD -- name, order count, total
+     * ============================================================================================
+     *
+     * Asked for by the outlet manager, 2026-09-08. The old layout put the method, its order count
+     * and its money on ONE line -- "Card (12 orders)" against "N$1200.00" in a sixteen-character
+     * column. A manager reconciling a drawer reads down one method at a time, and that label was
+     * the row most likely to wrap.
+     *
+     * THE FIGURES ARE UNCHANGED. These are the same cashUpRows the previous layout rendered, built
+     * in get-report-data by bucketing every PAID order on its own `orders.payment_method`. An
+     * order therefore lands in exactly one method and cannot be counted twice, and the order
+     * counts are the ones that already reconciled to summary.totalOrders.
+     *
+     * CASH, CARD AND PAYTODAY ARE SEPARATE KEYS AT SOURCE. Nothing here merges or re-maps them --
+     * paytoday in particular is its own method and is never folded into mobile_money, which is the
+     * owner's ruling of 2026-09-09 and the reason PAYMENT_METHOD_LABELS carries it explicitly.
+     */
+    out.push({ kind: 'heading', text: CASH_UP_PAYMENT_SUMMARY_HEADING })
     for (const row of rows) {
-      out.push({
-        kind: 'pair',
-        left: `${row.label} (${plural(row.orders, 'order')})`,
-        right: money(row.gross),
-      })
+      out.push({ kind: 'blank' })
+      out.push({ kind: 'line', text: row.label })
+      out.push({ kind: 'line', text: `  ${plural(row.orders, 'order')}` })
+      out.push({ kind: 'pair', left: `  ${CASH_UP_METHOD_TOTAL}`, right: money(row.gross) })
     }
+    out.push({ kind: 'blank' })
+    out.push({ kind: 'divider' })
   }
-  out.push({ kind: 'pair', left: CASH_UP_GROSS_TAKEN, right: money(recon.grossTaken), bold: true })
+  /**
+   * THE GRAND TOTAL IS THE SUM OF THE BLOCKS ABOVE, computed by cashUpReconciliation from those
+   * same rows rather than read from summary.totalRevenue -- so if the parts and the headline ever
+   * disagreed, the slip would show it instead of hiding it behind a figure nothing printed was
+   * derived from.
+   *
+   * Gross of refunds, which is why the bridge below it still exists. GRATUITIES ARE NOT IN IT:
+   * they come from payment_tips, print in their own section further down, and carry a note saying
+   * they are not part of takings.
+   */
+  out.push({ kind: 'pair', left: CASH_UP_GRAND_TOTAL, right: money(recon.grossTaken), bold: true })
   if (recon.refunded > 0) {
     // Printed only when there were refunds. A "Less refunds N$0.00" line on an ordinary day is
     // noise on paper somebody has to read at the end of a shift.
@@ -236,6 +277,9 @@ export function renderCashUpEscPos(
         if (row.bold) builder.bold(true)
         builder.line(twoColumnLine(row.left, row.right, width))
         if (row.bold) builder.bold(false)
+        break
+      case 'line':
+        builder.line(truncate(row.text, width))
         break
       case 'divider':
         builder.line(divider(width))
@@ -337,6 +381,10 @@ export function renderCashUpSdk6(
             out.push({ type: 'row', columns: ['', value] })
           }
         }
+        break
+      case 'line':
+        // Truncated to the paper, same as every other full-width line on this document.
+        out.push({ type: 'text', text: truncate(row.text, width), align: 'left' })
         break
       case 'divider':
         out.push({ type: 'divider' })

@@ -34,6 +34,25 @@ export const CASH_UP_HEADING = 'CASH-UP';
 /** Section: what came in and how it was paid. */
 export const CASH_UP_TAKINGS_HEADING = 'TAKINGS';
 
+/**
+ * The per-method block, and the line that closes it.
+ *
+ * Wording supplied by the outlet manager, 2026-09-08: each method gets its own named block with
+ * an order count and a total, then a rule, then the grand total. A manager counting a drawer
+ * reads down one method at a time; the previous one-line-per-method layout made them scan across
+ * a sixteen-character column for the figure they were checking, and it was the row most likely
+ * to wrap.
+ *
+ * GRAND TOTAL REPLACES 'Gross taken' ON THE RECEIPT and is the same figure -- the sum of the
+ * method blocks, before refunds. Printing both would put one number on the paper twice under two
+ * names, which is exactly what makes a reconciliation slip look wrong to the person checking it.
+ * CASH_UP_GROSS_TAKEN stays exported and signed: it is still the concept the refund bridge is
+ * built from, and the PDF and CSV carry their own wording for it.
+ */
+export const CASH_UP_PAYMENT_SUMMARY_HEADING = 'PAYMENT SUMMARY';
+export const CASH_UP_METHOD_TOTAL = 'Total:';
+export const CASH_UP_GRAND_TOTAL = 'GRAND TOTAL:';
+
 /** Section: tips, printed BELOW the total and never inside it. */
 export const CASH_UP_GRATUITIES_HEADING = 'GRATUITIES';
 

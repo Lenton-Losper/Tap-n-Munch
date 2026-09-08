@@ -90,11 +90,26 @@ const flat = () =>
 
 describe('the figures survive rendering unchanged', () => {
   it('takings, per method, are the production figures', () => {
+    /**
+     * One block per method since 2026-09-08: the name on its own line, the count indented beneath
+     * it, then the total. The FIGURES are the same ones the single-line layout carried.
+     */
     const f = flat()
-    expect(f).toContain('Card (2 orders)')
+    expect(f).toContain('Card')
+    expect(f).toContain('2 orders')
     expect(f).toContain('N$156.00')
-    expect(f).toContain('PayToday (1 order)')
+    expect(f).toContain('PayToday')
+    expect(f).toContain('1 order')
     expect(f).toContain('N$3.00')
+  })
+
+  it('cash, card and PayToday are separate methods, never merged', () => {
+    // PayToday is its own method and is never folded into mobile_money (owner's ruling
+    // 2026-09-09). This day had no cash, so there is no cash block to find.
+    const f = flat()
+    expect(f).toContain('PayToday')
+    expect(f).not.toContain('mobile_money')
+    expect(f).not.toContain('Mobile Money')
   })
 
   it('reports NO cash takings — order #45 is corrected', () => {
@@ -107,10 +122,16 @@ describe('the figures survive rendering unchanged', () => {
     expect(f).not.toContain('N$37.00')
   })
 
-  it('gross taken and net revenue are N$159.00, and the parts sum to it', () => {
+  it('the GRAND TOTAL is N$159.00, and the method blocks sum to it', () => {
+    /**
+     * RECONCILIATION, which is the whole point of the section: card N$156.00 + PayToday N$3.00 is
+     * the grand total exactly. 'Gross taken' no longer prints -- GRAND TOTAL: carries that figure
+     * now, and printing both would put one number on the paper twice under two names.
+     */
     const f = flat()
-    expect(f).toContain('Gross taken')
+    expect(f).toContain('GRAND TOTAL:')
     expect(f).toContain('N$159.00')
+    expect(f).not.toContain('Gross taken')
     expect(156 + 3).toBe(159)
     // items sold sum to the same figure
     expect(12 + 120 + 12 + 15).toBe(159)
@@ -164,15 +185,28 @@ describe('it fits the P5 paper', () => {
     }
   })
 
-  it("'Card (2 orders)' is exactly the budget and stays on its row", () => {
-    expect('Card (2 orders)'.length).toBe(BUDGET.left)
-    expect(rows().some((r) => r.columns[0] === 'Card (2 orders)')).toBe(true)
+  it('a method block prints its name and count as full-width lines', () => {
+    /**
+     * The old layout crammed "Card (2 orders)" into a fifteen-character half -- exactly on the
+     * boundary, and the row most likely to wrap. The block layout removes that pressure: the name
+     * and the count are their own left-aligned lines and only the money shares a row.
+     */
+    const lines = renderCashUpSdk6(PRODUCTION_DAY, OPTIONS)
+    expect(lines.some((l) => l.type === 'text' && l.text === 'Card')).toBe(true)
+    expect(lines.some((l) => l.type === 'text' && l.text === '  2 orders')).toBe(true)
+    expect(rows().some((r) => r.columns[0] === '  Total:' && r.columns[1] === 'N$156.00')).toBe(true)
   })
 
-  it("'PayToday (1 order)' is over the budget and takes its own line, whole", () => {
-    // 18 characters. Truncating would have cost the order count off a till report.
-    expect('PayToday (1 order)'.length).toBeGreaterThan(BUDGET.left)
-    expect(lines().some((l) => l.type === 'text' && l.text === 'PayToday (1 order)')).toBe(true)
+  it('PayToday keeps its name and its count, neither truncated', () => {
+    /**
+     * 'PayToday (1 order)' was eighteen characters against a fifteen-character half and had to
+     * wrap. Split across two lines it cannot be truncated at all -- and the order count, which
+     * truncation used to eat, is now on a line of its own.
+     */
+    const l = lines()
+    expect(l.some((x) => x.type === 'text' && x.text === 'PayToday')).toBe(true)
+    expect(l.some((x) => x.type === 'text' && x.text === '  1 order')).toBe(true)
+    expect(rows().some((r) => r.columns[1] === 'N$3.00')).toBe(true)
   })
 
   it("'2 x cheese toast' — the row seen overlapping on paper — no longer shares a half", () => {
