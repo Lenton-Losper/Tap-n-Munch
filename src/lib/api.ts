@@ -2729,6 +2729,16 @@ export interface CashUpReport {
     /** null when the venue does not report tips yet. NEVER read as zero. */
     gratuityTotal: number | null;
     gratuityCount: number | null;
+    /**
+     * Who received the gratuities, aggregated per staff member and ordered by amount.
+     *
+     * Null only when the tips read failed -- the same meaning the two fields above carry. An
+     * EMPTY array means nobody was tipped, which is a different answer and must not be shown as
+     * 'not reported'. The names are resolved server-side and never blank: a staff member the
+     * server cannot name arrives as 'Unknown staff (xxxxxxxx)' so the rows still add up to the
+     * total above them.
+     */
+    gratuityByStaff: Array<{name: string; total: number}> | null;
   };
   escposBase64: string;
   sdk6Lines: Sdk6ReceiptLine[];
