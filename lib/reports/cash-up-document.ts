@@ -72,6 +72,18 @@ export interface CashUpDocumentOptions {
   gratuityTotal?: number | null
   /** Number of gratuities in the period. Meaningless without gratuityTotal. */
   gratuityCount?: number | null
+  /**
+   * WHO RECEIVED THE GRATUITIES, aggregated per staff member.
+   *
+   * Straight from getGratuityReport().byStaff, which already sums repeat tips to one person,
+   * orders by amount and never emits a blank name -- a staff member it cannot name becomes
+   * "Unknown staff (xxxxxxxx)" rather than being dropped, because a breakdown whose rows do not
+   * add up to its own total is one nobody trusts again.
+   *
+   * ABSENT AND EMPTY ARE DIFFERENT. Absent means the tips table could not be read at all, and the
+   * whole gratuity section is already omitted for that. Empty means nobody was tipped.
+   */
+  gratuityByStaff?: Array<{ name: string; total: number }> | null
 }
 
 type Row =
@@ -153,6 +165,32 @@ export function buildCashUpRows(report: ReportData, options: CashUpDocumentOptio
       left: options.gratuityCount != null ? gratuityCountLabel(options.gratuityCount) : 'Total',
       right: money(options.gratuityTotal),
     })
+
+    /**
+     * ============================================================================================
+     * WHO RECEIVED THEM
+     * ============================================================================================
+     *
+     * The aggregate above answers "how much was tipped". A manager reconciling a shift needs the
+     * other half: who it was keyed to. The rows are indented two spaces so the eye reads them as
+     * belonging to the total rather than as more totals -- the amounts can otherwise look like a
+     * second, contradictory figure sitting directly beneath the first.
+     *
+     * ORDINARY 'pair' ROWS ON PURPOSE. They inherit the column budget and the wrapping, so a long
+     * staff name takes a full-width line with its amount beneath instead of running into the money
+     * column. Emitting a bespoke line type here is how the overlap would come back.
+     *
+     * ATTRIBUTION IS THE SETTLER AND IS UNVERIFIED -- a picker on the terminal with no PIN behind
+     * it. This faithfully repeats what was keyed; it is not proof of who earned what. That is
+     * getGratuityReport's ruling and this only prints it.
+     *
+     * NOT ADDED TO ANYTHING. These rows sit below the total and outside takings, and the note
+     * below still terminates the section.
+     */
+    for (const recipient of options.gratuityByStaff ?? []) {
+      out.push({ kind: 'pair', left: `  ${recipient.name}`, right: money(recipient.total) })
+    }
+
     out.push({ kind: 'meta', text: CASH_UP_GRATUITIES_NOTE })
   }
 

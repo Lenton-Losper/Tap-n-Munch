@@ -181,6 +181,8 @@ export async function POST(req: Request) {
      */
     let gratuityTotal: number | null = null
     let gratuityCount: number | null = null
+    /** Who received them. Null only when the tips read failed, exactly like the two above. */
+    let gratuityByStaff: Array<{ name: string; total: number }> | null = null
     try {
       const { startIso, endIsoExclusive } = calendarDateRangeToUtcIso(
         range.startDate,
@@ -194,6 +196,8 @@ export async function POST(req: Request) {
       })
       gratuityTotal = gratuities.total
       gratuityCount = gratuities.tipCount
+      // byStaff is already aggregated per person, ordered by amount, and never blank-named.
+      gratuityByStaff = gratuities.byStaff.map((s) => ({ name: s.name, total: s.total }))
     } catch (gratuityErr) {
       console.error('[terminal/reports/cash-up] gratuity read failed', gratuityErr)
     }
@@ -228,6 +232,7 @@ export async function POST(req: Request) {
       periodLabel: preset.label,
       gratuityTotal,
       gratuityCount,
+      gratuityByStaff,
     }
 
     return NextResponse.json({
@@ -240,6 +245,7 @@ export async function POST(req: Request) {
         itemsSold: report.summary.itemsSold,
         gratuityTotal,
         gratuityCount,
+        gratuityByStaff,
       },
       escposBase64: Buffer.from(renderCashUpEscPos(report, options)).toString('base64'),
       sdk6Lines: renderCashUpSdk6(report, options),
