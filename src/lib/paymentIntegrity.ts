@@ -16,6 +16,8 @@
  * against origin/main) so the terminal has the same three-way split the
  * server has, instead of only the narrowest one.
  */
+
+import {settlementAmountFor, type OutstandingLineLike} from './settlementAmount';
 function matchesStatusSet(status: unknown, set: readonly string[]): boolean {
   const s = String(status ?? '')
     .trim()
@@ -98,6 +100,7 @@ export interface ClaimableSettleSelection<T> {
 export function selectClaimableOrdersForSettle<T extends ClaimableOrderLike>(
   orders: T[],
   orderIds: string[],
+  lines?: readonly OutstandingLineLike[],
 ): ClaimableSettleSelection<T> {
   const claimable = orders.filter(
     order =>
@@ -106,6 +109,17 @@ export function selectClaimableOrdersForSettle<T extends ClaimableOrderLike>(
   return {
     orderIds: claimable.map(order => order.id),
     orders: claimable,
-    amount: claimable.reduce((sum, order) => sum + order.total, 0),
+    /**
+     * THE OUTSTANDING AMOUNT, NOT THE ORDER TOTAL.
+     *
+     * The server's whole-order charge basis is `max(0, total - alreadySettled)`. Summing
+     * `order.total` here made the device disagree with it on any part-paid order -- and because
+     * the reader is charged BEFORE this figure is checked, that disagreement orphaned a real
+     * charge rather than merely refusing one. See settlementAmount.ts.
+     *
+     * `lines` absent, or an order with no lines, falls back to the total: an allocation exists
+     * only against a line, so an order with none cannot have been part-paid.
+     */
+    amount: settlementAmountFor(claimable, lines),
   };
 }

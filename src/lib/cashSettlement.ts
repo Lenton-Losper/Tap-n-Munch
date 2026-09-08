@@ -17,6 +17,8 @@
  * that does not match the orders it closed.
  */
 
+import {settlementAmountFor, type OutstandingLineLike} from './settlementAmount';
+
 /** Only the fields the selection depends on. */
 export interface CashSettleableOrderLike {
   id: string;
@@ -40,6 +42,7 @@ export interface CashSettleSelection {
 export function selectCashSettleableOrders(
   orders: CashSettleableOrderLike[],
   requestedOrderIds: string[],
+  lines?: readonly OutstandingLineLike[],
 ): CashSettleSelection {
   const eligible = orders.filter(
     order =>
@@ -47,6 +50,11 @@ export function selectCashSettleableOrders(
   );
   return {
     orderIds: eligible.map(order => order.id),
-    amount: eligible.reduce((sum, order) => sum + order.total, 0),
+    /**
+     * THE SAME INVARIANT AS THE CARD PATH, and it has to be the same. Taking cash for the full
+     * total on an order whose items are half paid collects the same money twice at the till,
+     * where there is no gateway record to reconcile it against afterwards.
+     */
+    amount: settlementAmountFor(eligible, lines),
   };
 }

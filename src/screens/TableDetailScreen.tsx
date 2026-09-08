@@ -607,9 +607,14 @@ export default function TableDetailScreen({route, navigation}: Props) {
     // from the same filtered set so the WiseCashier charge and the settleTab
     // call always agree on exactly what was paid for. See
     // selectClaimableOrdersForSettle's tests for the exact guarantee.
+    /**
+     * `payable` carries each line's outstandingCents, derived from the SAME allocations the
+     * server reads. Passing it is what makes the device's figure and the server's one number.
+     */
     const {orderIds, amount} = selectClaimableOrdersForSettle(
       orders,
       requestedOrderIds,
+      payable,
     );
 
     if (amount <= 0 || orderIds.length === 0) {
@@ -906,6 +911,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
     const {orderIds, amount} = selectCashSettleableOrders(
       orders,
       requestedOrderIds,
+      payable,
     );
 
     if (orderIds.length === 0 || amount <= 0) {
