@@ -34,6 +34,16 @@ export type CreateBusinessDocumentInput = {
   referenceNote?: string | null
   quoteId?: string | null
   createdBy: string
+  /**
+   * The FlashTap order this document bills for, when it was raised from one.
+   *
+   * Absent for every hand-written document, which is all four that exist in production today, and
+   * absent is written as NULL rather than defaulted to anything -- "not raised from an order" is
+   * the truth for those rows. Carried here rather than patched onto the row afterwards so that the
+   * link is part of the same INSERT as the document number: a second statement could fail and
+   * leave a numbered invoice that belongs to no order.
+   */
+  orderId?: string | null
 }
 
 export type CreateBusinessDocumentResult = {
@@ -93,8 +103,18 @@ export async function createBusinessDocument(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   input: CreateBusinessDocumentInput,
 ): Promise<CreateBusinessDocumentResult> {
-  const { restaurantId, type, shipTo, billTo, lineItems, dueDate, referenceNote, quoteId, createdBy } =
-    input
+  const {
+    restaurantId,
+    type,
+    shipTo,
+    billTo,
+    lineItems,
+    dueDate,
+    referenceNote,
+    quoteId,
+    createdBy,
+    orderId,
+  } = input
 
   const { data: restaurant, error: restaurantError } = await supabase
     .from('restaurants')
@@ -150,6 +170,7 @@ export async function createBusinessDocument(
     document_type: type,
     document_number: String(nextNumber),
     quote_id: quoteId ?? null,
+    order_id: orderId ?? null,
     due_date: dueDate ?? null,
     reference_note: referenceNote ?? null,
     business_name: restaurant.name ?? null,
