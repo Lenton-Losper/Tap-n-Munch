@@ -24,6 +24,7 @@ import {
 } from '@/lib/reports/date-range-presets'
 import { DEFAULT_REPORT_TIMEZONE } from '@/lib/reports/format-report-datetime'
 import { REPORTING_COPY } from '@/lib/reporting/reporting-copy'
+import { CreateInvoiceAction } from '@/components/order-history/create-invoice-action'
 
 type OrderItem = {
   name?: string
@@ -593,12 +594,13 @@ export function OrderHistoryContent() {
                       <th className="px-4 py-3 font-medium">Total</th>
                       <th className="px-4 py-3 font-medium">Payment</th>
                       <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium">Invoice</th>
                     </tr>
                   </thead>
                   <tbody>
                     {(data?.orders || []).length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="px-4 py-12 text-center text-[#6B675F]">
+                        <td colSpan={9} className="px-4 py-12 text-center text-[#6B675F]">
                           No orders found for the selected filters.
                         </td>
                       </tr>
@@ -640,6 +642,14 @@ export function OrderHistoryContent() {
                               <StatusBadge status={order.status} />
                               <PaymentStatusBadge paymentStatus={order.paymentStatus} />
                             </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <CreateInvoiceAction
+                              orderId={order.id}
+                              restaurantId={restaurantId}
+                              orderStatus={order.status}
+                              orderNumber={order.order_number}
+                            />
                           </td>
                         </tr>
                       ))

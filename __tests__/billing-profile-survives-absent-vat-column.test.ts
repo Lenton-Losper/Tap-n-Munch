@@ -114,7 +114,7 @@ function patchRequest(body: unknown) {
   })
 }
 
-const getRequest = () =>
+const getRequest = (_id?: string) =>
   new Request('http://localhost/api/admin/restaurants/x/billing-profile')
 
 const FULL_PROFILE = {
