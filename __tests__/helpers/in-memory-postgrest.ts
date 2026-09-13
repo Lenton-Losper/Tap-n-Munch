@@ -87,7 +87,11 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   private filters: Filter[] = []
   private inFilters: Array<{ column: string; values: readonly unknown[] }> = []
   private containsFilters: Array<{ column: string; values: readonly unknown[] }> = []
-  private pending: { kind: 'insert' | 'update'; payload: Row | Row[] } | null = null
+  private pending: {
+    kind: 'insert' | 'update' | 'upsert'
+    payload: Row | Row[]
+    onConflict?: string
+  } | null = null
   private orderBy: { column: string; ascending: boolean } | null = null
   private limitN: number | null = null
 
@@ -146,6 +150,22 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   }
   update(payload: Row) {
     this.pending = { kind: 'update', payload }
+    return this
+  }
+  /**
+   * PostgREST's insert-or-update, keyed on `onConflict` as the real DDL's unique constraint.
+   *
+   * The conflict target is REQUIRED and is not defaulted to `id`: every caller in this app names
+   * one (`{ onConflict: 'restaurant_id' }`), and silently guessing a key would let an upsert
+   * insert a second row where Postgres would have updated the first -- a fake that writes a row
+   * the database would not is worse than one that refuses.
+   */
+  upsert(payload: Row | Row[], options?: { onConflict?: string }) {
+    const onConflict = options?.onConflict?.trim()
+    if (!onConflict) {
+      throw new Error('in-memory .upsert() requires { onConflict } naming the unique column(s)')
+    }
+    this.pending = { kind: 'upsert', payload, onConflict }
     return this
   }
 
@@ -222,6 +242,33 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
       const hit = this.matching()
       for (const r of hit) Object.assign(r, this.pending.payload)
       return { data: hit, error: null }
+    }
+    if (this.pending?.kind === 'upsert') {
+      const keys = (this.pending.onConflict ?? '').split(',').map((k) => k.trim()).filter(Boolean)
+      const payloads = Array.isArray(this.pending.payload)
+        ? this.pending.payload
+        : [this.pending.payload]
+      const rules = this.db.rules[this.table] ?? {}
+      const written: Row[] = []
+      for (const p of payloads) {
+        const existing = this.db
+          .rows(this.table)
+          .find((r) => keys.every((k) => String(r[k] ?? '') === String(p[k] ?? '')))
+        if (existing) {
+          Object.assign(existing, p)
+          written.push(existing)
+          continue
+        }
+        const row: Row = {
+          id: testUuid(this.table),
+          created_at: new Date().toISOString(),
+          ...(rules.defaults ?? {}),
+          ...p,
+        }
+        this.db.rows(this.table).push(row)
+        written.push(row)
+      }
+      return { data: written, error: null }
     }
     return { data: this.matching(), error: null }
   }
