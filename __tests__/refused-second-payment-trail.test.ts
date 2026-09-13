@@ -159,7 +159,13 @@ describe('the route actually calls it', () => {
     // assertion was `toMatch(/payment_reference/)`, which passed when the column was removed
     // from the query because the COMMENT above it still contained the word. A source-text
     // assertion has to name where the text must be, or it pins prose.
-    expect(ROUTE).toMatch(/'id, tab_id[^']*payment_reference'/)
+    //
+    // BOTH QUOTING FORMS, because the select became a TEMPLATE LITERAL when the route adopted
+    // SETTLEMENT_SET_COLUMNS to get the charge columns (the outstanding-basis fix). The column is
+    // still selected and the guarantee is unchanged; only the quote character moved. Pinning the
+    // apostrophe would make this assertion a test of punctuation rather than of the query -- and
+    // it would fail CLOSED on a correct refactor, which is how a useful guard gets deleted.
+    expect(ROUTE).toMatch(/(['`])id, tab_id[^'`]*payment_reference/)
   })
 
   it('compares against the row read BEFORE the merchant-order safety net', () => {
