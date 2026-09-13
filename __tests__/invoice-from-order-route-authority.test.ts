@@ -46,7 +46,7 @@ jest.mock('@/lib/documents/create-invoice-from-order', () => ({
   },
 }))
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+ 
 const route = require('@/app/api/admin/documents/from-order/route') as {
   POST: (req: Request) => Promise<Response>
 }

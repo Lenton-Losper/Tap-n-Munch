@@ -83,7 +83,7 @@ jest.mock('@/lib/tabs/settle-tab-state', () => ({
   clearReadyToPayAndReopenTab: async () => undefined,
 }))
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+ 
 const route = require('@/app/api/terminal/orders/[orderId]/payment/route') as {
   POST: (req: Request, ctx: { params: Promise<{ orderId: string }> }) => Promise<Response>
 }
