@@ -1,7 +1,8 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { createBusinessDocument, type LineItemInput } from '@/lib/documents/create-document'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
-import { round2 } from '@/lib/tax-rates/apply-tax'
+import { round2, resolveTaxRate } from '@/lib/tax-rates/apply-tax'
+import { getTaxRatesForRestaurant, defaultTaxRate } from '@/lib/tax-rates/queries'
 
 /**
  * RAISE A FORMAL INVOICE FROM AN EXISTING ORDER.
@@ -299,11 +300,24 @@ export async function createInvoiceFromOrder(
   if (billingError) throw billingError
 
   /**
-   * Whether this sale carried VAT, taken from the ORDER rather than guessed from the venue's
-   * current settings -- the question is what the customer was charged, not what they would be
-   * charged today.
+   * WHETHER THE DOCUMENT WILL ACTUALLY CHARGE VAT -- resolved the way the engine resolves it, not
+   * guessed from whether a line names a rate.
+   *
+   * A line with NO `tax_rate_id` is not an untaxed line: `resolveTaxRate` falls back to the venue's
+   * default rate, which is the same hierarchy order pricing uses. 289 of 4,463 paid production
+   * orders have at least one such line, and reading them as "no VAT" would issue a VAT-charging
+   * invoice from a venue that has never supplied a VAT number -- exactly the compliance gap
+   * 20260901120000 measured and exactly the one this check exists to prevent.
+   *
+   * So the question is asked of the resolved rate, per line, with a non-zero percentage.
    */
-  const chargesVat = lineItems.some((l) => l.tax_rate_id != null)
+  const taxRates = await getTaxRatesForRestaurant(supabase, restaurantId)
+  const ratesById = new Map(taxRates.map((rate) => [rate.id, rate]))
+  const fallback = defaultTaxRate(taxRates)
+  const chargesVat = lineItems.some((line) => {
+    const rate = resolveTaxRate(line.tax_rate_id, ratesById, fallback)
+    return rate != null && Number(rate.percentage) > 0
+  })
   const required = requiredBillingFieldsFor(chargesVat)
   const profile = (billingProfile ?? {}) as Record<string, unknown>
   const missing = required.filter((field) => !String(profile[field] ?? '').trim())
