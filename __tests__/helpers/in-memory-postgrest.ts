@@ -87,6 +87,7 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   private filters: Filter[] = []
   private inFilters: Array<{ column: string; values: readonly unknown[] }> = []
   private containsFilters: Array<{ column: string; values: readonly unknown[] }> = []
+  private overlapFilters: Array<{ column: string; values: readonly unknown[] }> = []
   private pending: {
     kind: 'insert' | 'update' | 'upsert'
     payload: Row | Row[]
@@ -125,6 +126,17 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   }
   in(column: string, values: readonly unknown[]) {
     this.inFilters.push({ column, values })
+    return this
+  }
+  /**
+   * PostgREST's array OVERLAP (`&&`): the row's array shares AT LEAST ONE element with `values`.
+   *
+   * Distinct from `contains` one method down, which requires the row to hold EVERY value. The
+   * payment projection uses overlap to find a tab sale covering any of several orders, where
+   * `contains` would find only a sale covering all of them.
+   */
+  overlaps(column: string, values: readonly unknown[]) {
+    this.overlapFilters.push({ column, values })
     return this
   }
   /** `.contains('order_ids', [id])` — array containment, as issueReceipt uses on payment_events. */
@@ -186,6 +198,13 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
     for (const f of this.inFilters) {
       const allowed = f.values.map(String)
       out = out.filter((r) => allowed.includes(String(r[f.column] ?? '')))
+    }
+    for (const f of this.overlapFilters) {
+      const wanted = f.values.map(String)
+      out = out.filter((r) => {
+        const held = Array.isArray(r[f.column]) ? (r[f.column] as unknown[]).map(String) : []
+        return held.some((v) => wanted.includes(v))
+      })
     }
     for (const f of this.containsFilters) {
       out = out.filter((r) => {
