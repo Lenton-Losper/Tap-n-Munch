@@ -8,6 +8,8 @@ import {
   SETTLEMENT_PAYMENT_METHODS,
   normalizeSettlementPaymentMethod, amountsMatch, owesMoney } from '@/lib/payments/payment-integrity'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
+import { expectedChargeForOrders } from '@/lib/payments/expected-charge'
+import { settlementSetFor, SETTLEMENT_SET_COLUMNS } from '@/lib/payments/settlement-set'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 import { recordRefusedSecondPayment } from '@/lib/payments/record-refused-second-payment'
@@ -100,7 +102,10 @@ export async function POST(
         // THIS attempt presents against the one the order already carries, and a different one
         // means a second gateway transaction rather than a repeated callback. Read here, before
         // the safety net below can write a merchant order number onto a row that had none.
-        'id, tab_id, restaurant_id, status, total, payment_status, paycloud_merchant_order_no, payment_reference',
+        // SETTLEMENT_SET_COLUMNS carries total, pending_charge_cents, pending_tip_cents and
+        // pending_settlement_id. Without them expectedChargeForOrders silently falls back to the
+        // order total on every row -- the exact defect this route had, reintroduced invisibly.
+        `id, tab_id, restaurant_id, status, payment_status, paycloud_merchant_order_no, payment_reference, ${SETTLEMENT_SET_COLUMNS}`,
       )
       .eq('id', orderId)
       .eq('restaurant_id', terminal.restaurantId)
@@ -113,7 +118,41 @@ export async function POST(
     let canClose = false
 
     if (status === 'success') {
-      const expectedAmount = Number(order.total)
+      /**
+       * ==========================================================================================
+       * THE FOURTH GATE JOINS THE OTHER THREE
+       * ==========================================================================================
+       *
+       * This route compared the device's figure against `Number(order.total)` -- the ONE gate that
+       * never adopted the shared authority. verify-payment, the paycloud webhook and the reconcile
+       * cron all ask expectedChargeForOrders over the settlement set; this one recomputed the raw
+       * order total, which is a DIFFERENT NUMBER the moment either of two things is true:
+       *
+       *   the order is part-paid   prepare-payment charges `total - already settled`, so the
+       *                            reader is asked for the outstanding amount and this gate
+       *                            expected the full total
+       *   the charge carried a tip prepare-payment adds the gratuity, and this gate expected the
+       *                            bill without it
+       *
+       * In both cases the customer's card has ALREADY been debited by the time this runs -- the
+       * device only calls back after WiseCashier reports success -- so the disagreement produced an
+       * orphaned charge: money taken, order left pending, later swept as auto_timeout and
+       * indistinguishable from a customer who never paid.
+       *
+       * `expectedChargeFor` PREFERS `pending_charge_cents`, which prepare-payment writes BEFORE the
+       * reader launches and which is the only record that knows what was actually asked for, and
+       * falls back to the order total for every order that predates it. So this is inert for the
+       * ordinary whole-order sale -- the overwhelming majority of production -- and correct for the
+       * two cases that were broken.
+       *
+       * Expanded over the settlement set for the same reason the webhook is: one charge can cover
+       * several orders, and comparing the whole gateway amount against one order's expectation
+       * refuses a payment that succeeded. A NULL settlement id yields the lead order alone, which
+       * is every order on production today.
+       */
+      const settlement = await settlementSetFor(supabase, order, terminal.restaurantId)
+      const charge = expectedChargeForOrders(settlement.orders)
+      const expectedAmount = charge.expectedAmount
       if (!amountsMatch(amount, expectedAmount)) {
         // The card has ALREADY been charged when this runs -- WiseCashier reported success.
         // Refusing is still right (the figures genuinely disagree), but leaving no trace is
