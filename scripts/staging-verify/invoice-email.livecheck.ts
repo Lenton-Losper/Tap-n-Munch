@@ -49,7 +49,7 @@ if (!url.includes(STAGING_REF)) throw new Error(`REFUSING: unrecognised project 
 // The only Resend key in the repo. See the header.
 process.env.RESEND_API_KEY = fromFile('.env.local', 'RESEND_API_KEY')
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const db = createClient(url, fromFile('.env.test', 'SUPABASE_SERVICE_ROLE_KEY'), {
   auth: { persistSession: false },
 }) as any

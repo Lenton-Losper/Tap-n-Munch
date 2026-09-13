@@ -30,7 +30,7 @@ const url = env('SUPABASE_URL')
 if (url.includes(PRODUCTION_REF)) throw new Error('REFUSING: .env.test points at PRODUCTION')
 if (!url.includes(STAGING_REF)) throw new Error(`REFUSING: unrecognised project in ${url}`)
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const db = createClient(url, env('SUPABASE_SERVICE_ROLE_KEY'), {
   auth: { persistSession: false },
 }) as any
@@ -44,7 +44,7 @@ jest.mock('@/lib/supabase/admin-restaurant-auth', () => ({
 }))
 jest.mock('@/lib/permissions/authorize', () => ({ requirePermission: async () => null }))
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+ 
 const route = require('@/app/api/admin/restaurants/[id]/billing-profile/route') as {
   GET: (req: Request, ctx: { params: Promise<{ id: string }> }) => Promise<Response>
   PATCH: (req: Request, ctx: { params: Promise<{ id: string }> }) => Promise<Response>

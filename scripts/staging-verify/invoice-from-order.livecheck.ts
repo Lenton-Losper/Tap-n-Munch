@@ -33,7 +33,7 @@ const url = env('SUPABASE_URL')
 if (url.includes(PRODUCTION_REF)) throw new Error('REFUSING: .env.test points at PRODUCTION')
 if (!url.includes(STAGING_REF)) throw new Error(`REFUSING: unrecognised project in ${url}`)
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const db = createClient(url, env('SUPABASE_SERVICE_ROLE_KEY'), {
   auth: { persistSession: false },
 }) as any
