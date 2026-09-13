@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs'
 import { createClient } from '@supabase/supabase-js'
 import { createInvoiceFromOrder } from '@/lib/documents/create-invoice-from-order'
 import { generateDocumentPdfBytes } from '@/lib/documents/generate-document-pdf'
+import { calibrateSchemaProbes, probeTable } from '@/lib/supabase/schema-probe'
 
 const STAGING_REF = 'mdqjpxwczrhkxkbqatqa'
 const PRODUCTION_REF = 'ihlmmpmolnpchzgwyhgh'
@@ -254,17 +255,40 @@ async function main() {
   check('order total unchanged', Number(orderAfter.total) === Number(candidate.total))
 
   /**
-   * A MISSING TABLE MUST NOT READ AS "NO ROWS".
+   * ================================================================================================
+   * A MISSING TABLE MUST NEVER READ AS "NO ROWS"
+   * ================================================================================================
    *
    * `terminal_payment_intents` does not exist on staging -- 20260908090000 is one of the twelve
-   * main-branch migrations not applied there -- and `{ head: true, count: 'exact' }` returns a null
-   * count for a table that is absent rather than an error. So this assertion PASSED against a table
-   * that cannot be written to, proving nothing. That is precisely the instrument fault
-   * lib/supabase/schema-probe.ts exists to prevent, and it was reproduced here.
+   * main-branch migrations not applied there -- and `{ head: true, count: 'exact' }` returns a NULL
+   * COUNT AND NO ERROR for an absent relation. So `(count ?? 0) === 0` was true, and this assertion
+   * PASSED against a table that cannot be written to at all. It proved nothing while looking
+   * exactly like proof.
    *
-   * Each table is now probed for existence first, and an absent one is reported as NOT CHECKED
-   * rather than counted as a pass.
+   * That is the #169 defect, in the same shape lib/supabase/schema-probe.ts was written to prevent,
+   * reproduced here by hand. So the fix is not a second hand-rolled probe -- it is that module,
+   * CALIBRATED against a known-absent control first, because a probe that has only ever been
+   * pointed at things that exist has not been tested.
+   *
+   * THREE OUTCOMES, AND ONLY ONE OF THEM CAN PASS:
+   *
+   *   present   the count is meaningful -> assert it
+   *   absent    confirmed by PGRST205   -> NOT CHECKED
+   *   neither   a permission error, a network failure, an unrecognised code, or an uncalibrated
+   *             instrument -> NOT CHECKED
+   *
+   * The third case is the one that matters: an inconclusive probe is not evidence of absence, and
+   * silently treating it as one is how this assertion lied the first time. Nothing here can reach
+   * `check()` unless the table is confirmed to exist.
    */
+  const calibration = await calibrateSchemaProbes(db, 'orders', 'id')
+  for (const line of calibration.lines) console.log(`  calibration: ${line}`)
+  if (!calibration.sound) {
+    for (const f of calibration.failures) console.log(`  calibration FAILURE: ${f}`)
+  }
+  check('the schema probe can tell present from absent on this database', calibration.sound,
+    calibration.failures.join('; '))
+
   for (const [table, col] of [
     ['payments', 'created_at'],
     ['payment_events', 'created_at'],
@@ -272,9 +296,16 @@ async function main() {
     ['order_line_allocation_settlements', 'settled_at'],
     ['payment_tips', 'recorded_at'],
   ] as const) {
-    const probe = await db.from(table).select('*').limit(1)
-    if (probe.error && String(probe.error.code) === 'PGRST205') {
-      console.log(`  NOT CHECKED  ${table} does not exist on staging — cannot assert absence of writes`)
+    if (!calibration.sound) {
+      console.log(`  NOT CHECKED  ${table} — the probe is not calibrated on this database`)
+      continue
+    }
+    const probe = await probeTable(db, table)
+    if (!probe.present) {
+      const why = probe.absent
+        ? `does not exist on staging (${probe.code})`
+        : `could not be probed (${probe.code}: ${probe.message})`
+      console.log(`  NOT CHECKED  ${table} ${why} — cannot assert absence of writes`)
       continue
     }
     const { count } = await db
