@@ -145,6 +145,25 @@ jobs:
           fi
           echo "self-check OK: upload only, no promote, no secrets, no migrations"
 
+      - name: Refuse if the preview token is not configured
+        env:
+          CLOUDFLARE_STAGING_PREVIEW_TOKEN: ${{ secrets.CLOUDFLARE_STAGING_PREVIEW_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Checked before the build so a missing secret costs seconds, not a six-minute build
+          # that dies at the last step -- which is exactly how run 34808854795 was spent.
+          if [ -z "${CLOUDFLARE_STAGING_PREVIEW_TOKEN:-}" ]; then
+            echo "FAIL: CLOUDFLARE_STAGING_PREVIEW_TOKEN is not configured."
+            echo ""
+            echo "This workflow uses a DEDICATED token and deliberately does not fall back to"
+            echo "CLOUDFLARE_API_TOKEN (which cannot do 'versions upload' -- auth error 10000)"
+            echo "or to CLOUDFLARE_API_TOKEN_SHADOW (which can also write to production)."
+            echo ""
+            echo "Create it in the Cloudflare dashboard and store it as a repository secret."
+            exit 1
+          fi
+          echo "preview token present"
+
       - name: Refuse if the staging secrets do not point at the staging database
         env:
           STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
@@ -217,7 +236,12 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "preview=$PREVIEW" >> "$GITHUB_OUTPUT"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # A DEDICATED, staging-only token. Deliberately NOT CLOUDFLARE_API_TOKEN, which can
+          # `wrangler deploy` but cannot `versions upload` (run 34808854795: auth error 10000 on
+          # /accounts/*/workers/services/flashtap-staging), and deliberately NOT
+          # CLOUDFLARE_API_TOKEN_SHADOW, which production-worker.yml uses for every call and can
+          # therefore write to the production Worker.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_STAGING_PREVIEW_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Report the preview
