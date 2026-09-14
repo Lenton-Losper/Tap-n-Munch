@@ -1,0 +1,148 @@
+name: Cloudflare staging token capability check (read-only)
+
+# ==================================================================================================
+# CAN THE EXISTING STAGING TOKEN DO `versions upload`, AND IS IT EVEN ALIVE?
+# ==================================================================================================
+#
+# Run 34808854795 failed with `Authentication error [code: 10000]` on
+# /accounts/*/workers/services/flashtap-staging while doing a `versions upload` with
+# CLOUDFLARE_API_TOKEN. Cloudflare returns 10000 for BOTH "this token is invalid or expired" and
+# "this token lacks the permission for this endpoint", and those two have different fixes:
+#
+#   expired / revoked      -> refresh CLOUDFLARE_API_TOKEN. No new secret needed, and staging
+#                             deploys are broken too (the same token runs `wrangler deploy`).
+#   missing permission     -> that token genuinely cannot do this, and a dedicated one is required.
+#
+# So this asks, read-only, before anyone creates a secret that may not be needed.
+#
+# READ-ONLY BY CONSTRUCTION. whoami / versions list / deployments list only. It uploads nothing,
+# deploys nothing, promotes nothing and writes nothing — asserted by the self-check below, which
+# reads the invocations rather than the prose.
+#
+# IT TESTS ONLY THE STAGING CREDENTIAL. CLOUDFLARE_API_TOKEN_SHADOW is deliberately never
+# referenced: production-worker.yml uses it to promote production traffic to 100%, so it is
+# production-capable and is not a candidate whatever this reports.
+#
+# TEMPORARY. Delete once the token question is settled.
+# ==================================================================================================
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: cf-token-capability-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    name: Probe CLOUDFLARE_API_TOKEN against flashtap-staging
+    env:
+      WRANGLER_CONFIG: wrangler.toml
+      STAGING_WORKER_NAME: flashtap-staging
+      PRODUCTION_WORKER_NAME: flashtap-production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refuse if this workflow could write anything
+        run: |
+          set -euo pipefail
+          SELF=.github/workflows/cf-token-capability-check.yml
+          # The set of wrangler invocations, not a search for forbidden words — a comment naming
+          # `versions upload` (this file has several) must not trip a guard about running it.
+          CMDS=$(grep -oE 'npx wrangler@[0-9.]+ [a-z]+( [a-z]+)?' "$SELF" | sed 's/npx wrangler@[0-9.]* //' | sort -u | tr '\n' ',')
+          echo "wrangler invocations: $CMDS"
+          EXPECTED="deployments list,versions list,whoami,"
+          if [ "$CMDS" != "$EXPECTED" ]; then
+            echo "FAIL: expected exactly read-only invocations [$EXPECTED], got [$CMDS]"
+            exit 1
+          fi
+          # ASSERTS THE BINDING, NOT THE MENTION. Grepping the file for the SHADOW name matches
+          # this very line and the header that explains why SHADOW is excluded. What matters is
+          # which secret is bound to the CLOUDFLARE_API_TOKEN env var, so only those lines are read.
+          if grep -E '^[[:space:]]*CLOUDFLARE_API_TOKEN:' "$SELF" | grep -q 'SHADOW'; then
+            echo "FAIL: this check must never use the production-capable token."
+            exit 1
+          fi
+          echo "token bindings:"; grep -E '^[[:space:]]*CLOUDFLARE_API_TOKEN:' "$SELF" | sort -u | sed 's/^/  /'
+          echo "self-check OK: read-only, staging credential only"
+
+      - name: Confirm the config targets staging, not production
+        run: |
+          set -euo pipefail
+          grep -Fxq "name = \"$STAGING_WORKER_NAME\"" "$WRANGLER_CONFIG" \
+            || { echo "FAIL: $WRANGLER_CONFIG does not declare $STAGING_WORKER_NAME"; exit 1; }
+          if grep -Fq "$PRODUCTION_WORKER_NAME" "$WRANGLER_CONFIG"; then
+            echo "FAIL: $WRANGLER_CONFIG mentions $PRODUCTION_WORKER_NAME"; exit 1
+          fi
+          echo "config OK -> $STAGING_WORKER_NAME"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── 1. IS THE TOKEN ALIVE, AND WHAT IS IT ALLOWED TO DO? ────────────────────────────────
+      # `whoami` prints the token's PERMISSION LIST, which is metadata about the credential and
+      # never the credential. GitHub masks the account id regardless.
+      - name: Token identity and permissions
+        id: whoami
+        continue-on-error: true
+        run: npx wrangler@3.99.0 whoami
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # ── 2. CAN IT READ THE WORKER AT ALL? ───────────────────────────────────────────────────
+      # If this succeeds the token is alive and can see flashtap-staging, so a later failure on
+      # the versions API is a PERMISSION gap and not an expired credential.
+      - name: Read deployments (proves the token is alive for this Worker)
+        id: deployments
+        continue-on-error: true
+        run: npx wrangler@3.99.0 deployments list --config "$WRANGLER_CONFIG"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # ── 3. CAN IT REACH THE VERSIONS API? ───────────────────────────────────────────────────
+      # The read sibling of `versions upload`. Same API family, no write.
+      - name: Read versions (the API family `versions upload` needs)
+        id: versions
+        continue-on-error: true
+        run: npx wrangler@3.99.0 versions list --config "$WRANGLER_CONFIG"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Verdict
+        run: |
+          set -euo pipefail
+          W='${{ steps.whoami.outcome }}'
+          D='${{ steps.deployments.outcome }}'
+          V='${{ steps.versions.outcome }}'
+          echo "whoami=$W  deployments-list=$D  versions-list=$V"
+          {
+            echo "### CLOUDFLARE_API_TOKEN capability against flashtap-staging"
+            echo ""
+            echo "| probe | result |"
+            echo "|---|---|"
+            echo "| whoami | $W |"
+            echo "| deployments list | $D |"
+            echo "| versions list | $V |"
+            echo ""
+            if [ "$W" = "failure" ]; then
+              echo "**Token is not usable at all** — expired, revoked or rotated."
+              echo "Fix by refreshing CLOUDFLARE_API_TOKEN; no new secret is required."
+              echo "Note staging deploys use this same token and are therefore broken too."
+            elif [ "$D" = "success" ] && [ "$V" = "failure" ]; then
+              echo "**Token is alive but cannot reach the versions API.**"
+              echo "This is a permission gap, not an expiry — a dedicated token is required."
+            elif [ "$V" = "success" ]; then
+              echo "**Token can read the versions API.** The upload failure is something other"
+              echo "than a missing versions permission; re-examine before creating any secret."
+            else
+              echo "Inconclusive — see the step logs above."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
