@@ -1,0 +1,237 @@
+name: Staging Preview (0% traffic)
+
+# ==================================================================================================
+# BUILD AN ARBITRARY REF AND UPLOAD IT TO THE STAGING WORKER AT 0% TRAFFIC.
+# ==================================================================================================
+#
+# WHAT THIS IS FOR. `staging.yml` deploys to 100% of staging traffic and fires only on a push to
+# `cloudflare-staging`. There was no way to see a feature branch running against the staging
+# database without first advancing that branch — which, for a branch cut from `main`, also means
+# shipping every commit `main` has that `cloudflare-staging` does not.
+#
+# This does the other thing: `wrangler versions upload` creates a new Worker version, gives it its
+# own preview URL, and leaves the live version serving 100% of traffic exactly as it was.
+#
+# WHAT IT DELIBERATELY DOES NOT DO:
+#
+#   it does not promote           there is no `versions deploy` and no `wrangler deploy` here, so
+#                                 no traffic moves. A step below greps this file to prove it.
+#   it does not apply migrations  no `supabase db`, no `migration repair`, no drift repair. If the
+#                                 ref needs a migration, apply it deliberately and separately
+#                                 first; otherwise the preview runs against the schema staging has.
+#   it does not touch git         nothing is pushed, and `cloudflare-staging` is never written to.
+#   it does not set worker secrets
+#                                 `staging.yml` owns those. `wrangler secret put` writes to the
+#                                 WORKER, not to a version, so doing it here would change what the
+#                                 LIVE staging worker runs with — the one thing a 0% preview is
+#                                 supposed to avoid. The uploaded version inherits the secrets the
+#                                 worker already has, which is what "use the existing staging
+#                                 environment" means.
+#
+# PRODUCTION CANNOT BE SELECTED. The config path is a constant, not an input, and the guards below
+# read the CHECKED-OUT config rather than trusting that constant — because the config comes from the
+# ref being previewed, and a ref could carry a wrangler.toml that names the production worker.
+# ==================================================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to build and preview (e.g. feat/formal-invoice-from-order)'
+        required: true
+        type: string
+
+# Its own group: a 0% upload neither blocks nor is blocked by the real staging deploy, but two
+# uploads racing each other produce two versions and an ambiguous "which one am I looking at".
+concurrency:
+  group: staging-preview
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    name: Upload staging preview at 0% traffic
+    env:
+      # Constants, never inputs. Changing any of these is a deliberate edit to this file.
+      WRANGLER_CONFIG: wrangler.toml
+      STAGING_WORKER_NAME: flashtap-staging
+      PRODUCTION_WORKER_NAME: flashtap-production
+      STAGING_SUPABASE_REF: mdqjpxwczrhkxkbqatqa
+      PRODUCTION_SUPABASE_REF: ihlmmpmolnpchzgwyhgh
+      STAGING_WORKER_URL: https://flashtap-staging.llosperofficial.workers.dev
+
+    steps:
+      - name: Checkout the ref being previewed
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Say exactly what is being built
+        id: resolve
+        run: |
+          set -euo pipefail
+          # github.sha is the commit the WORKFLOW was dispatched from, not the input ref. Reading
+          # HEAD after checkout is the only value that describes what actually gets uploaded.
+          SHA=$(git rev-parse HEAD)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "short=${SHA:0:8}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Staging preview"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| requested ref | \`${{ inputs.ref }}\` |"
+            echo "| resolved commit | \`$SHA\` |"
+            echo "| subject | $(git log -1 --format=%s) |"
+            echo "| wrangler config | \`$WRANGLER_CONFIG\` |"
+            echo "| traffic | 0% — the live staging worker is untouched |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Previewing $SHA from ref '${{ inputs.ref }}'"
+
+      # ────────────────────────────────────────────────────────────────────────────────────────
+      # GUARDS. All of them run BEFORE npm ci, so a wrong target costs seconds and not a build.
+      # ────────────────────────────────────────────────────────────────────────────────────────
+      - name: Refuse anything that is not the staging worker config
+        run: |
+          set -euo pipefail
+          test -f "$WRANGLER_CONFIG" || { echo "FAIL: $WRANGLER_CONFIG is missing on this ref"; exit 1; }
+
+          # The config is read from the PREVIEWED REF, so it is not trusted just because the path
+          # is hardcoded. It must name the staging worker and must not mention the production one.
+          grep -Fxq "name = \"$STAGING_WORKER_NAME\"" "$WRANGLER_CONFIG" \
+            || { echo "FAIL: $WRANGLER_CONFIG does not declare name = \"$STAGING_WORKER_NAME\""; exit 1; }
+          if grep -Fq "$PRODUCTION_WORKER_NAME" "$WRANGLER_CONFIG"; then
+            echo "FAIL: $WRANGLER_CONFIG mentions $PRODUCTION_WORKER_NAME — refusing to upload."
+            exit 1
+          fi
+
+          # Same question of the database the config points the Worker at.
+          grep -Fq "$STAGING_SUPABASE_REF" "$WRANGLER_CONFIG" \
+            || { echo "FAIL: $WRANGLER_CONFIG does not point at the staging Supabase project"; exit 1; }
+          if grep -Fq "$PRODUCTION_SUPABASE_REF" "$WRANGLER_CONFIG"; then
+            echo "FAIL: $WRANGLER_CONFIG references the PRODUCTION Supabase project — refusing."
+            exit 1
+          fi
+          echo "config OK: $WRANGLER_CONFIG -> $STAGING_WORKER_NAME, Supabase $STAGING_SUPABASE_REF"
+
+      - name: Refuse if this workflow could promote or migrate
+        run: |
+          set -euo pipefail
+          SELF=.github/workflows/staging-preview.yml
+
+          # ASSERTS WHAT IS INVOKED, NOT WHAT IS MENTIONED. An earlier version of this guard
+          # grepped the file for "versions deploy", "secret put" and friends — and failed on its
+          # own comments, which name those commands in order to say it does not run them. A
+          # source-text check has to name where the text must be, or it pins prose.
+          #
+          # So it extracts every actual CLI invocation and asserts the SET of them, which is a
+          # claim about behaviour: a later edit adding a promote step changes this set and fails
+          # here, while a comment mentioning one does not.
+          WRANGLER_CMDS=$(grep -oE 'npx wrangler@[0-9.]+ [a-z]+( [a-z]+)?' "$SELF" | sed 's/npx wrangler@[0-9.]* //' | sort -u)
+          SUPABASE_CMDS=$(grep -oE 'npx supabase [a-z]+( [a-z]+)?' "$SELF" | sort -u || true)
+
+          echo "wrangler invocations found:"; echo "${WRANGLER_CMDS:-(none)}" | sed 's/^/  /'
+
+          if [ "$WRANGLER_CMDS" != "versions upload" ]; then
+            echo "FAIL: expected exactly one wrangler invocation, 'versions upload'."
+            echo "      A promote ('versions deploy'), a full deploy, or a 'secret put' would"
+            echo "      change the LIVE staging worker. This workflow may only upload at 0%."
+            exit 1
+          fi
+          if [ -n "$SUPABASE_CMDS" ]; then
+            echo "FAIL: this workflow invokes the supabase CLI; it must never apply migrations."
+            echo "$SUPABASE_CMDS" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "self-check OK: upload only, no promote, no secrets, no migrations"
+
+      - name: Refuse if the staging secrets do not point at the staging database
+        env:
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          # Compared, never printed. A secret mis-set to the production project would otherwise
+          # build a bundle whose NEXT_PUBLIC_SUPABASE_URL points customers' browsers at production.
+          if [ -z "${STAGING_SUPABASE_URL:-}" ]; then
+            echo "FAIL: STAGING_SUPABASE_URL is not configured."
+            exit 1
+          fi
+          case "$STAGING_SUPABASE_URL" in
+            *"$PRODUCTION_SUPABASE_REF"*)
+              echo "FAIL: STAGING_SUPABASE_URL resolves to the PRODUCTION project — refusing."
+              exit 1 ;;
+          esac
+          case "$STAGING_SUPABASE_URL" in
+            *"$STAGING_SUPABASE_REF"*) echo "staging secret OK" ;;
+            *) echo "FAIL: STAGING_SUPABASE_URL is not the staging project."; exit 1 ;;
+          esac
+
+      # ────────────────────────────────────────────────────────────────────────────────────────
+      # BUILD — the same commands staging.yml and production-worker.yml use, unchanged.
+      # ────────────────────────────────────────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build with OpenNext
+        run: npx @opennextjs/cloudflare@1.20.1 build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_APP_URL: ${{ env.STAGING_WORKER_URL }}
+          NEXT_PUBLIC_BASE_URL: ${{ env.STAGING_WORKER_URL }}
+          # The PREVIEWED commit, not github.sha — see the resolve step.
+          NEXT_PUBLIC_COMMIT_SHA: ${{ steps.resolve.outputs.sha }}
+          GIT_COMMIT_SHA: ${{ steps.resolve.outputs.sha }}
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+
+      # 2026-09-01: a short OpenNext artifact passed `next build`, the OpenNext step and
+      # `wrangler deploy`, and every route returned 500. This is the step that notices.
+      - name: Refuse a malformed OpenNext artifact
+        run: node scripts/deploy/check-opennext-artifact.mjs .open-next
+
+      # ────────────────────────────────────────────────────────────────────────────────────────
+      # UPLOAD AT 0% TRAFFIC. Nothing after this promotes it.
+      # ────────────────────────────────────────────────────────────────────────────────────────
+      - name: Upload version at 0% traffic
+        id: upload
+        run: |
+          set -euo pipefail
+          OUT=$(npx wrangler@3.99.0 versions upload --config "$WRANGLER_CONFIG" \
+            --var GIT_COMMIT_SHA:${{ steps.resolve.outputs.sha }} \
+            --var NEXT_PUBLIC_COMMIT_SHA:${{ steps.resolve.outputs.sha }} \
+            --tag "preview-${{ steps.resolve.outputs.short }}" \
+            --message "Staging preview of ${{ inputs.ref }} (${{ steps.resolve.outputs.sha }}) — 0% traffic, not promoted" 2>&1 | tee /dev/stderr)
+          VERSION=$(echo "$OUT" | grep -oE 'Worker Version ID: [0-9a-f-]+' | awk '{print $4}')
+          PREVIEW=$(echo "$OUT" | grep -oE 'Version Preview URL: https://[^ ]+' | awk '{print $4}')
+          if [ -z "$VERSION" ]; then
+            echo "Could not read a version id from the upload output — refusing to report success."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "preview=$PREVIEW" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Report the preview
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "**Version ID:** \`${{ steps.upload.outputs.version }}\`"
+            echo ""
+            echo "**Preview URL:** ${{ steps.upload.outputs.preview }}"
+            echo ""
+            echo "Live staging is unchanged and still serving 100% of traffic."
+            echo "Nothing was promoted; no migration was applied."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Version:  ${{ steps.upload.outputs.version }}"
+          echo "Preview:  ${{ steps.upload.outputs.preview }}"
+          echo "Verify with: curl -s '${{ steps.upload.outputs.preview }}/api/version'"
