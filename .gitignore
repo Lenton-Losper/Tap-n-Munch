@@ -72,3 +72,10 @@ next-env.d.ts
 
 .vercel
 sim-concurrent-report.json
+
+# Claude Code agent worktrees -- machine-local checkouts, not source.
+# Untracked AND unignored until now, so `git add -A` in this repo would stage ~930MB of
+# duplicated working trees under another developer's authorship. Nothing under .claude/ has
+# ever been tracked (`git ls-files .claude` is empty), so ignoring the whole directory loses
+# nothing; drop a negation here if shared .claude config is ever added.
+.claude/
