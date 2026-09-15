@@ -74,3 +74,10 @@ yarn-error.log
 !.yarn/sdks
 !.yarn/versions
 *.apk
+
+# Local env files. NOT read by the build -- Android values come from buildConfigField in
+# android/app/build.gradle -> BuildConfig -> RuntimeConfigModule.kt. Ignored so that a file
+# named .env.production cannot become the place a real secret is added in a public repo.
+.env
+.env.*
+!.env.example
