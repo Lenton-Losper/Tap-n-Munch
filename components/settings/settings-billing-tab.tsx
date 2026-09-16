@@ -5,6 +5,7 @@ import { useAuth } from '@/components/auth/auth-provider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { useToast } from '@/hooks/use-toast'
 import { usePermissions } from '@/hooks/use-permissions'
 import { PERMISSIONS } from '@/lib/permissions'
@@ -18,6 +19,32 @@ type BillingProfile = {
   bank_account_name: string
   bank_account_number: string
   bank_branch_code: string
+}
+
+/**
+ * THREE STATES, BECAUSE THE COLUMN HAS THREE.
+ *
+ * `restaurant_billing_profiles.vat_registered` is `boolean NULL`, and the route that reads it
+ * (app/api/admin/restaurants/[id]/billing-profile/route.ts) goes out of its way to keep the third
+ * state alive: null means the merchant has never been asked, which is every venue today, and is
+ * NOT the same answer as "no". A two-state control would have to invent one of those on load, and
+ * the invented answer would then be written back on the first unrelated save.
+ *
+ * So the form carries the same three states the database does, and a merchant who has never
+ * answered stays unanswered until they say something.
+ */
+type VatRegistration = 'unanswered' | 'registered' | 'not_registered'
+
+const VAT_REGISTRATION_FROM_BOOLEAN = (value: unknown): VatRegistration => {
+  if (value === true) return 'registered'
+  if (value === false) return 'not_registered'
+  return 'unanswered'
+}
+
+const VAT_REGISTRATION_TO_BOOLEAN = (value: VatRegistration): boolean | null => {
+  if (value === 'registered') return true
+  if (value === 'not_registered') return false
+  return null
 }
 
 const EMPTY_BILLING_PROFILE: BillingProfile = {
@@ -48,6 +75,15 @@ export function SettingsBillingTab() {
   const { hasPermission, permissionsLoaded } = usePermissions()
   const canWrite = !permissionsLoaded || hasPermission(PERMISSIONS.DOCUMENTS_WRITE)
   const [profile, setProfile] = useState<BillingProfile>(EMPTY_BILLING_PROFILE)
+  const [vatRegistration, setVatRegistration] = useState<VatRegistration>('unanswered')
+  /**
+   * Whether this venue's database can hold the answer at all -- the route reports it as
+   * `vatRegistrationSupported` precisely so the client can hide a control the database cannot
+   * back, rather than offering a toggle whose save is guaranteed to be refused with a 409.
+   *
+   * Starts false so nothing is offered before the GET has said otherwise.
+   */
+  const [vatRegistrationSupported, setVatRegistrationSupported] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -67,6 +103,8 @@ export function SettingsBillingTab() {
         throw new Error(payload?.error || 'Failed to load billing profile')
       }
       setProfile(billingProfileFromPayload(payload.billingProfile))
+      setVatRegistration(VAT_REGISTRATION_FROM_BOOLEAN(payload.billingProfile?.vat_registered))
+      setVatRegistrationSupported(payload.vatRegistrationSupported === true)
     } catch (error: unknown) {
       toast({
         title: 'Could not load billing profile',
@@ -86,29 +124,69 @@ export function SettingsBillingTab() {
   const handleSave = async () => {
     if (!restaurantId || !canWrite) return
 
+    /**
+     * THE SAME RULE THE ROUTE AND THE DATABASE CHECK BOTH ENFORCE, asked here first so the
+     * merchant is told which field to fill in rather than being handed the server's refusal as a
+     * bare "Save failed". This is a courtesy, not the check: the route validates the MERGED
+     * profile regardless of what this form sends.
+     */
+    if (vatRegistration === 'registered' && !profile.vat_number.trim()) {
+      toast({
+        title: 'VAT number required',
+        description:
+          'A business that is VAT registered must state its VAT number, because it appears on ' +
+          'every invoice and receipt that charges VAT.',
+        variant: 'destructive',
+      })
+      return
+    }
+
     try {
       setSaving(true)
       const token = await getSettingsAccessToken()
+      /**
+       * `vat_registered` IS SENT ON EVERY SAVE where the column exists, and is OMITTED where it
+       * does not.
+       *
+       * Omitting it used to be unconditional, and that was defect D1: the route treated a missing
+       * key as an explicit null and upserted it, so saving a bank branch code silently wiped a
+       * merchant's VAT-registration answer. The route no longer does that -- an omitted field now
+       * keeps its stored value -- but this form owns the answer it is displaying, so it states it
+       * rather than relying on the server to leave it alone.
+       *
+       * Where the column is absent the key is left out entirely, which is the one thing that both
+       * avoids the route's VAT_REGISTRATION_UNAVAILABLE refusal and changes nothing stored.
+       */
+      const body: Record<string, string | boolean | null> = {
+        registration_number: profile.registration_number.trim() || null,
+        vat_number: profile.vat_number.trim() || null,
+        bank_name: profile.bank_name.trim() || null,
+        bank_account_name: profile.bank_account_name.trim() || null,
+        bank_account_number: profile.bank_account_number.trim() || null,
+        bank_branch_code: profile.bank_branch_code.trim() || null,
+      }
+      if (vatRegistrationSupported) {
+        body.vat_registered = VAT_REGISTRATION_TO_BOOLEAN(vatRegistration)
+      }
+
       const response = await fetch(`/api/admin/restaurants/${restaurantId}/billing-profile`, {
         method: 'PATCH',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          registration_number: profile.registration_number.trim() || null,
-          vat_number: profile.vat_number.trim() || null,
-          bank_name: profile.bank_name.trim() || null,
-          bank_account_name: profile.bank_account_name.trim() || null,
-          bank_account_number: profile.bank_account_number.trim() || null,
-          bank_branch_code: profile.bank_branch_code.trim() || null,
-        }),
+        body: JSON.stringify(body),
       })
       const payload = await response.json()
       if (!response.ok) {
         throw new Error(payload?.error || 'Failed to save billing profile')
       }
       setProfile(billingProfileFromPayload(payload.billingProfile))
+      // Echoed back from the row that was actually written, not from what this form sent.
+      setVatRegistration(VAT_REGISTRATION_FROM_BOOLEAN(payload.billingProfile?.vat_registered))
+      if (typeof payload.vatRegistrationSupported === 'boolean') {
+        setVatRegistrationSupported(payload.vatRegistrationSupported)
+      }
       toast({ title: 'Billing saved', description: 'Your billing details have been updated.' })
     } catch (error: unknown) {
       toast({
@@ -148,14 +226,56 @@ export function SettingsBillingTab() {
         />
       </div>
 
+      {vatRegistrationSupported ? (
+        <div className="space-y-2">
+          <Label>VAT registration</Label>
+          <p className="text-sm text-muted-foreground">
+            Whether this business is registered for VAT. Invoices state this, so leave it
+            unanswered rather than guessing.
+          </p>
+          <RadioGroup
+            value={vatRegistration}
+            onValueChange={(value) => setVatRegistration(value as VatRegistration)}
+            disabled={saving || !canWrite}
+            className="pt-1"
+          >
+            <div className="flex items-center gap-2">
+              <RadioGroupItem value="registered" id="billing-vat-registered-yes" />
+              <Label htmlFor="billing-vat-registered-yes" className="font-normal">
+                Yes — this business is VAT registered
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <RadioGroupItem value="not_registered" id="billing-vat-registered-no" />
+              <Label htmlFor="billing-vat-registered-no" className="font-normal">
+                No — this business is not VAT registered
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <RadioGroupItem value="unanswered" id="billing-vat-registered-unanswered" />
+              <Label htmlFor="billing-vat-registered-unanswered" className="font-normal">
+                Not answered
+              </Label>
+            </div>
+          </RadioGroup>
+        </div>
+      ) : null}
+
       <div className="space-y-2">
-        <Label htmlFor="billing-vat-number">VAT number</Label>
+        <Label htmlFor="billing-vat-number">
+          VAT number{vatRegistration === 'registered' ? ' (required)' : ''}
+        </Label>
         <Input
           id="billing-vat-number"
           value={profile.vat_number}
           onChange={(e) => updateField('vat_number', e.target.value)}
           disabled={saving || !canWrite}
         />
+        {vatRegistration === 'registered' && !profile.vat_number.trim() ? (
+          <p className="text-sm text-destructive">
+            A VAT registered business must state its VAT number.
+          </p>
+        ) : null}
       </div>
 
       <div className="space-y-2">

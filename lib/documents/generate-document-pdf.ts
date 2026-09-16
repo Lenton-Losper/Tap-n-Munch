@@ -38,6 +38,17 @@ export type DocumentParty = {
   name?: string
   email?: string
   organization?: string
+  /**
+   * The party's postal/street address, free text, newlines allowed.
+   *
+   * IT WAS ALWAYS BEING STORED AND NEVER RENDERED. Every writer of this jsonb passes the party
+   * object through verbatim (`trimParty` in app/api/admin/documents/route.ts and in
+   * .../from-order/route.ts copy every key), and "Create invoice" on Order History has collected
+   * a bill-to address since it shipped. `parseParty` dropped the key on the way back out and
+   * `partyLines` had no branch for it, so the address sat in the database and appeared on no
+   * invoice. An invoice that does not say who it is addressed to is not much of an invoice.
+   */
+  address?: string
   phone?: string
   customFields?: Record<string, string>
 }
@@ -155,7 +166,21 @@ function drawRightText(
   page.drawText(text, { x: rightX - width, y, size, font, color })
 }
 
-function partyLines(party: DocumentParty): string[] {
+/**
+ * `maxWidth` is honoured for the ADDRESS ONLY, and that is not an oversight.
+ *
+ * Nothing in this block has ever been wrapped: a name or an email longer than the column simply
+ * ran past it, and changing that now would move text on every invoice already issued. An address
+ * is different -- it is the one field that is routinely longer than half a page and that arrives
+ * with its own line breaks -- so it is broken on those breaks first and then wrapped to the column
+ * with the same wrapText() the line-item descriptions use. Every other line is emitted exactly as
+ * before, in exactly the order it was before.
+ */
+function partyLines(
+  party: DocumentParty,
+  font?: PDFFont,
+  maxWidth?: number,
+): string[] {
   const lines: string[] = []
   const name = String(party.name ?? '').trim()
   if (name) lines.push(name)
@@ -163,6 +188,19 @@ function partyLines(party: DocumentParty): string[] {
   if (email) lines.push(email)
   const organization = String(party.organization ?? '').trim()
   if (organization) lines.push(organization)
+  const address = String(party.address ?? '').trim()
+  if (address) {
+    for (const segment of address.split(/\r?\n/)) {
+      const trimmed = segment.trim()
+      if (!trimmed) continue
+      // Without a font we cannot measure, so the segment goes out whole rather than guessing.
+      if (font && maxWidth && maxWidth > 0) {
+        lines.push(...wrapText(trimmed, font, BODY_SIZE, maxWidth))
+      } else {
+        lines.push(trimmed)
+      }
+    }
+  }
   const phone = String(party.phone ?? '').trim()
   if (phone) lines.push(phone)
   const customFields = party.customFields ?? {}
@@ -295,8 +333,8 @@ function drawPartyColumns(
   })
   y -= SECTION_TITLE_SIZE + 8
 
-  const shipLines = partyLines(document.ship_to)
-  const billLines = partyLines(document.bill_to)
+  const shipLines = partyLines(document.ship_to, fonts.regular, colWidth)
+  const billLines = partyLines(document.bill_to, fonts.regular, colWidth)
   const maxLines = Math.max(shipLines.length, billLines.length)
 
   for (let i = 0; i < maxLines; i += 1) {

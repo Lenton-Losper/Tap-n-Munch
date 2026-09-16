@@ -27,6 +27,13 @@ export function parseParty(value: unknown): DocumentParty {
     name: row.name != null ? String(row.name) : undefined,
     email: row.email != null ? String(row.email) : undefined,
     organization: row.organization != null ? String(row.organization) : undefined,
+    /**
+     * THE SECOND HALF OF THE SAME DEFECT the note on DocumentParty.address describes. Both writers
+     * of this jsonb store whatever keys the party object carries, so `bill_to.address` has been in
+     * the database since "Create invoice" shipped — but this parser is the only way back out, and
+     * it did not name the key. The renderer could not have drawn an address it was never handed.
+     */
+    address: row.address != null ? String(row.address) : undefined,
     phone: row.phone != null ? String(row.phone) : undefined,
     customFields,
   }
