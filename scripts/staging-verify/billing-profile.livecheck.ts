@@ -175,3 +175,92 @@ test('an invalid bank account number is refused before any write', async () => {
     .single()
   expect(after.data.bank_account_number).toBe(before.data.bank_account_number)
 })
+
+/**
+ * ================================================================================================
+ * D1 / D2 AGAINST THE REAL DATABASE
+ * ================================================================================================
+ *
+ * Everything above was already green while both defects were live, which is the reason to add
+ * these rather than trust the unit suite alone: the in-memory PostgREST stand-in applies an upsert
+ * with Object.assign, so a route that wrote only the columns it mentioned would look correct there
+ * whatever the real INSERT ... ON CONFLICT DO UPDATE does with the rest of the row.
+ *
+ * These drive the real handlers against the real staging Postgres, and read the stored row back
+ * with a separate service-role client rather than believing the route's own response.
+ */
+async function storedProfile() {
+  const { data } = await db
+    .from('restaurant_billing_profiles')
+    .select('*')
+    .eq('restaurant_id', targetRestaurantId)
+    .single()
+  return data as Record<string, unknown>
+}
+
+test('D1 — saving the six text fields does not wipe a stored vat_registered', async () => {
+  await route.PATCH(patchReq({ ...PROFILE, vat_registered: true }), ctx())
+  expect((await storedProfile()).vat_registered).toBe(true)
+
+  // Exactly what Settings -> Billing sent before it grew a VAT control: six fields, no answer.
+  const res = await route.PATCH(patchReq({ ...PROFILE, bank_branch_code: '482872' }), ctx())
+  expect(res.status).toBe(200)
+
+  const after = await storedProfile()
+  expect(after.bank_branch_code).toBe('482872')
+  // The defect, measured on the real row and not on the route's reply.
+  expect(after.vat_registered).toBe(true)
+  expect((await res.json()).billingProfile.vat_registered).toBe(true)
+})
+
+test('D1 — a single-field patch leaves the other stored columns standing', async () => {
+  await route.PATCH(patchReq({ ...PROFILE, vat_registered: true }), ctx())
+
+  const res = await route.PATCH(patchReq({ bank_name: 'Nedbank' }), ctx())
+  expect(res.status).toBe(200)
+
+  expect(await storedProfile()).toMatchObject({
+    ...PROFILE,
+    bank_name: 'Nedbank',
+    vat_registered: true,
+  })
+})
+
+test('D2 — PATCH {vat_registered: true} alone is accepted when the STORED row has a VAT number', async () => {
+  await route.PATCH(patchReq({ ...PROFILE, vat_registered: false }), ctx())
+  expect((await storedProfile()).vat_registered).toBe(false)
+
+  // No vat_number in this request at all. It used to be refused as if there were none anywhere.
+  const res = await route.PATCH(patchReq({ vat_registered: true }), ctx())
+  expect(res.status).toBe(200)
+
+  const after = await storedProfile()
+  expect(after.vat_registered).toBe(true)
+  expect(after.vat_number).toBe(PROFILE.vat_number)
+})
+
+test('D2 — the VAT-number rule still bites, judged on the merged row', async () => {
+  await route.PATCH(patchReq({ ...PROFILE, vat_registered: true }), ctx())
+
+  // Clearing the number of a registered business is refused, though the request says nothing
+  // about registration -- the refusal comes from the row the write would produce.
+  const res = await route.PATCH(patchReq({ vat_number: null }), ctx())
+  expect(res.status).toBe(400)
+  expect((await res.json()).error).toMatch(/vat_number is required/i)
+
+  const after = await storedProfile()
+  expect(after.vat_number).toBe(PROFILE.vat_number)
+  expect(after.vat_registered).toBe(true)
+})
+
+test('an explicit null still clears the field it names, and only that field', async () => {
+  await route.PATCH(patchReq({ ...PROFILE, vat_registered: true }), ctx())
+
+  const res = await route.PATCH(patchReq({ bank_branch_code: null }), ctx())
+  expect(res.status).toBe(200)
+
+  const after = await storedProfile()
+  expect(after.bank_branch_code).toBeNull()
+  expect(after.bank_name).toBe(PROFILE.bank_name)
+  expect(after.vat_registered).toBe(true)
+})
