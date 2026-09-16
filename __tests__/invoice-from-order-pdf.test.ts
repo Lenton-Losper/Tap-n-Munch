@@ -12,6 +12,8 @@ import {
   generateDocumentPdfBytes,
   type BusinessDocumentRow,
 } from '@/lib/documents/generate-document-pdf'
+import { toBusinessDocumentRow } from '@/lib/documents/business-document-row'
+import { extractPdfText, extractPdfTextLines } from './helpers/extract-pdf-text'
 
 const RESTAURANT_ID = testUuid('pd01')
 const ORDER_ID = testUuid('pd02')
@@ -149,4 +151,139 @@ test('the renderer is handed the invoice row unchanged — no receipt formatting
   expect(doc).not.toHaveProperty('renderer_version')
   expect(doc).not.toHaveProperty('outlet')
   expect(doc).not.toHaveProperty('snapshot_json')
+})
+
+/**
+ * ================================================================================================
+ * D4 -- THE BILL-TO ADDRESS WAS STORED AND NEVER PRINTED
+ * ================================================================================================
+ *
+ * "Create invoice" on Order History has collected a bill-to address since it shipped, and both
+ * writers of the `bill_to` jsonb copy every key of the party object through verbatim. So the
+ * address was in the database. It appeared on no invoice: `parseParty` did not name the key on the
+ * way back out, and `partyLines` had no branch that drew it.
+ *
+ * The test below is deliberately not "the PDF is bigger than 1000 bytes". It reads the text back
+ * out of the rendered page and asserts the address is on it -- see the note on
+ * helpers/extract-pdf-text.ts for why a grep over the raw bytes cannot answer this question.
+ */
+describe('the invoice PDF prints the party block it was given', () => {
+  const ADDRESS = 'PO Box 11, Independence Avenue, Windhoek, Namibia'
+
+  async function renderInvoice(billTo: Record<string, unknown>) {
+    const { client } = makeClient()
+    const result = await createInvoiceFromOrder(client, {
+      orderId: ORDER_ID,
+      restaurantId: RESTAURANT_ID,
+      createdBy: USER_ID,
+      billTo,
+    })
+    if (!result.ok) throw new Error(`expected ok, got ${result.code}`)
+    const doc = result.document as unknown as BusinessDocumentRow
+    return { doc, bytes: await generateDocumentPdfBytes(doc) }
+  }
+
+  test('the bill-to address is in the extracted text of the rendered PDF', async () => {
+    const { doc, bytes } = await renderInvoice({
+      name: 'Acme Trading CC',
+      email: 'ap@acme.test',
+      address: ADDRESS,
+    })
+
+    // The address really was stored, so a failure below is about rendering and nothing else.
+    expect((doc.bill_to as { address?: string }).address).toBe(ADDRESS)
+
+    const text = await extractPdfText(bytes)
+
+    /**
+     * POSITIVE CONTROL, FIRST. If the extractor silently understood nothing, every `toContain`
+     * below would fail for the wrong reason and every `not.toContain` would pass for the wrong
+     * reason. These two assertions prove the instrument reads this document before it is asked
+     * anything about the address.
+     */
+    expect(text).toContain('Riviera Wine Shop')
+    expect(text).toContain('Acme Trading CC')
+
+    /**
+     * The address may be wrapped to the Bill To column, so it is asserted line by line rather than
+     * as one string -- wrapping is correct behaviour and must not read as a regression.
+     */
+    for (const word of ['PO', 'Box', '11,', 'Independence', 'Avenue,', 'Windhoek,', 'Namibia']) {
+      expect(text).toContain(word)
+    }
+    // And the whole address survives once the column wrapping is undone.
+    expect(text.replace(/\s+/g, ' ')).toContain(ADDRESS)
+  })
+
+  test('a newline in the address becomes separate lines, not one run-on line', async () => {
+    const { bytes } = await renderInvoice({
+      name: 'Acme Trading CC',
+      address: 'Unit 4, Maerua Mall\nWindhoek',
+    })
+
+    const lines = await extractPdfTextLines(bytes)
+    expect(lines).toContain('Unit 4, Maerua Mall')
+    expect(lines).toContain('Windhoek')
+    expect(lines.some((line) => line.includes('Maerua Mall Windhoek'))).toBe(false)
+  })
+
+  test('the existing party lines are unchanged, and in the order they were already in', async () => {
+    const { bytes } = await renderInvoice({
+      name: 'Acme Trading CC',
+      email: 'ap@acme.test',
+      organization: 'Acme Group',
+      address: 'Erf 512',
+      phone: '+264 81 000 0000',
+    })
+
+    const lines = await extractPdfTextLines(bytes)
+    const at = (value: string) => lines.indexOf(value)
+
+    expect(at('Acme Trading CC')).toBeGreaterThan(-1)
+    expect(at('ap@acme.test')).toBeGreaterThan(at('Acme Trading CC'))
+    expect(at('Acme Group')).toBeGreaterThan(at('ap@acme.test'))
+    expect(at('Erf 512')).toBeGreaterThan(at('Acme Group'))
+    expect(at('+264 81 000 0000')).toBeGreaterThan(at('Erf 512'))
+  })
+
+  test('an invoice with no bill-to address still renders, and prints no blank line for it', async () => {
+    const { bytes } = await renderInvoice({ name: 'Acme Trading CC', email: 'ap@acme.test' })
+
+    const lines = await extractPdfTextLines(bytes)
+    expect(lines).toContain('Acme Trading CC')
+    expect(lines.some((line) => line.trim() === '')).toBe(false)
+  })
+})
+
+/**
+ * THE DOWNLOAD AND EMAIL PATHS DO NOT GET THE DOCUMENT ROW HANDED TO THEM.
+ *
+ * Everything above renders `result.document` -- the object createInvoiceFromOrder returns, whose
+ * `bill_to` is the jsonb as written. But nobody downloads an invoice that way. Both
+ * app/api/admin/documents/[id]/pdf/route.ts and lib/documents/sendDocumentEmail.ts re-read the row
+ * from the database and rebuild it with `toBusinessDocumentRow`, and it was THAT parser -- not the
+ * renderer -- that dropped `bill_to.address` on the floor.
+ *
+ * So this is the second half of D4, and the half a test that renders result.document directly
+ * cannot see: a renderer that draws an address it is never handed prints nothing.
+ */
+describe('the stored row survives the round trip the download route makes', () => {
+  test('toBusinessDocumentRow keeps bill_to.address, and the PDF prints it', async () => {
+    const { client } = makeClient()
+    const result = await createInvoiceFromOrder(client, {
+      orderId: ORDER_ID,
+      restaurantId: RESTAURANT_ID,
+      createdBy: USER_ID,
+      billTo: { name: 'Acme Trading CC', email: 'ap@acme.test', address: 'Erf 512, Klein Windhoek' },
+    })
+    if (!result.ok) throw new Error('expected ok')
+
+    // Exactly what the download route does with the row it re-reads from the database.
+    const rebuilt = toBusinessDocumentRow(result.document as unknown as Record<string, unknown>)
+    expect(rebuilt.bill_to.address).toBe('Erf 512, Klein Windhoek')
+
+    const text = await extractPdfText(await generateDocumentPdfBytes(rebuilt))
+    expect(text).toContain('Acme Trading CC') // positive control on the extraction
+    expect(text.replace(/\s+/g, ' ')).toContain('Erf 512, Klein Windhoek')
+  })
 })

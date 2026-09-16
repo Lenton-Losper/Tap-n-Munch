@@ -134,27 +134,76 @@ function toBillingProfilePayload(
   return base
 }
 
-function parseBillingProfileBody(body: unknown): BillingProfilePayload | null {
-  if (!body || typeof body !== 'object') return null
+/**
+ * What the caller ACTUALLY SENT -- nothing more.
+ *
+ * ================================================================================================
+ * #WHY THIS IS A PARTIAL AND NOT A WHOLE PROFILE -- THE TWO DEFECTS IT CLOSES
+ * ================================================================================================
+ *
+ * This function used to start from `emptyBillingProfile()` and fill in the keys the request
+ * carried. Every key the request did NOT carry therefore came back as an explicit `null`, and the
+ * caller could not tell "the merchant cleared this field" from "the request never mentioned it".
+ * Two separate defects fell out of that single conflation:
+ *
+ *   D1  Settings -> Billing sends the six text fields and no `vat_registered`. The absent key
+ *       became `vat_registered: null`, which was then UPSERT into the row -- so saving a bank
+ *       branch code silently wiped the venue's VAT-registration answer. A merchant who had
+ *       answered "we are VAT registered" was un-answered by an unrelated save, and told
+ *       "Billing saved".
+ *
+ *   D2  PATCH {"vat_registered": true} on its own became
+ *       {vat_registered: true, vat_number: null, ...}, so `validateBillingProfilePayload` refused
+ *       it with "vat_number is required when the business is VAT registered" -- against a stored
+ *       profile that HAD a VAT number all along. Validation was reading the request instead of the
+ *       resulting profile.
+ *
+ * Both are the same mistake, and both are fixed in the same place: a PATCH is a patch. This parser
+ * reports only what was sent; `mergeBillingProfile` below lays it over what is stored; and it is
+ * the MERGED profile -- the row as it will exist after the write -- that is validated and written.
+ *
+ * `emptyBillingProfile()` remains, but only for its one honest use: the shape of a profile that
+ * does not exist yet. It is never the basis of an update.
+ */
+function parseBillingProfilePatch(body: unknown): Partial<BillingProfilePayload> | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
   const record = body as Record<string, unknown>
-  const payload = emptyBillingProfile()
+  const patch: Partial<BillingProfilePayload> = {}
   for (const key of BILLING_PROFILE_FIELDS) {
     if (!(key in record)) continue
     const raw = record[key]
     if (raw == null) {
-      payload[key] = null
+      // An EXPLICIT null is an instruction to clear, and is kept as one. Only absence is silence.
+      patch[key] = null
       continue
     }
     if (typeof raw !== 'string') return null
     const trimmed = raw.trim()
-    payload[key] = trimmed || null
+    patch[key] = trimmed || null
   }
   if ('vat_registered' in record) {
     const raw = record.vat_registered
     if (raw !== null && typeof raw !== 'boolean') return null
-    payload.vat_registered = raw as boolean | null
+    patch.vat_registered = raw as boolean | null
   }
-  return payload
+  return patch
+}
+
+/**
+ * The profile as it WILL BE once this patch is applied -- the thing validation and the upsert are
+ * both entitled to see. Keys absent from the patch keep their stored value; keys present in it,
+ * including an explicit null, take the patch's value.
+ */
+function mergeBillingProfile(
+  stored: BillingProfilePayload,
+  patch: Partial<BillingProfilePayload>,
+): BillingProfilePayload {
+  const merged: BillingProfilePayload = { ...stored }
+  for (const key of BILLING_PROFILE_FIELDS) {
+    if (key in patch) merged[key] = patch[key] ?? null
+  }
+  if ('vat_registered' in patch) merged.vat_registered = patch.vat_registered ?? null
+  return merged
 }
 
 function validateBillingProfilePayload(payload: BillingProfilePayload): string | null {
@@ -249,14 +298,9 @@ export async function PATCH(
   try {
     const { id } = await params
     const body = await request.json()
-    const billingProfile = parseBillingProfileBody(body)
-    if (!billingProfile) {
+    const patch = parseBillingProfilePatch(body)
+    if (!patch) {
       return NextResponse.json({ error: 'Invalid billing profile payload' }, { status: 400 })
-    }
-
-    const validationError = validateBillingProfilePayload(billingProfile)
-    if (validationError) {
-      return NextResponse.json({ error: validationError }, { status: 400 })
     }
 
     const supabase = createServerSupabaseClient()
@@ -268,6 +312,27 @@ export async function PATCH(
     if (denied) return denied
 
     /**
+     * THE STORED ROW IS READ BEFORE ANYTHING IS VALIDATED, because a PATCH only means anything
+     * relative to it.
+     *
+     * AUTHORIZATION RESOLVES THE RESTAURANT, so this read necessarily comes after the two checks
+     * above and is scoped to the id they returned -- never to the one the client put in the URL.
+     * Validation therefore moved below them too, and that reordering is deliberate: a caller who
+     * is not entitled to this venue is now refused BEFORE their payload is judged, so a 400 can
+     * no longer be used to learn anything about a venue the caller cannot read.
+     *
+     * Six columns only. `vat_registered` is read separately by readVatRegistered() below, for the
+     * reason the note on BILLING_PROFILE_FIELDS gives: one absent column takes the whole select
+     * down with it.
+     */
+    const { data: storedRow, error: storedError } = await supabase
+      .from('restaurant_billing_profiles')
+      .select(BILLING_PROFILE_FIELDS.join(', '))
+      .eq('restaurant_id', restaurantId)
+      .maybeSingle()
+    if (storedError) throw storedError
+
+    /**
      * ASKED BEFORE ANYTHING IS WRITTEN, so the refusal below is atomic: either the whole save
      * happens or none of it does. Probing after a partial write would leave the six text fields
      * saved and the VAT answer silently discarded, which is the outcome this check exists to
@@ -275,13 +340,32 @@ export async function PATCH(
      */
     const vatRegistration = await readVatRegistered(supabase, restaurantId)
 
+    const stored = toBillingProfilePayload(
+      storedRow as Partial<Record<BillingProfileField, string | null>> | null,
+    )
+    // The stored answer comes from its own tolerant read, never from the six-column select above.
+    stored.vat_registered = vatRegistration.value
+
+    /**
+     * THE ROW AS IT WILL EXIST ONCE THIS WRITE LANDS. The validation and the upsert below both
+     * read this and not the request, which is what makes a field the request never mentioned mean
+     * "leave it alone" instead of "set it to null". See the note on parseBillingProfilePatch for
+     * the two defects that one distinction closes.
+     */
+    const billingProfile = mergeBillingProfile(stored, patch)
+
     /**
      * FAILS CLOSED ON A COMPLIANCE FIELD. An explicit true/false that this database cannot store
      * is REFUSED, never dropped: a merchant who answers "we are VAT registered", sees "Billing
      * saved", and then gets invoices that say nothing about registration has been told something
      * untrue by this endpoint. An absent or explicitly-null answer is a no-op and still saves.
+     *
+     * Asked of THE PATCH, not of the merge. Where the column is absent the stored answer is always
+     * null, so the two tests agree today -- but only the patch can distinguish "the caller sent an
+     * answer this database cannot hold" from "an answer was already there", and the day the second
+     * becomes possible the merge would start refusing saves that touch nothing to do with VAT.
      */
-    if (billingProfile.vat_registered !== null && !vatRegistration.supported) {
+    if (patch.vat_registered != null && !vatRegistration.supported) {
       return NextResponse.json(
         {
           error:
@@ -292,6 +376,11 @@ export async function PATCH(
         },
         { status: 409 },
       )
+    }
+
+    const validationError = validateBillingProfilePayload(billingProfile)
+    if (validationError) {
+      return NextResponse.json({ error: validationError }, { status: 400 })
     }
 
     const writeRow: Record<string, unknown> = {
