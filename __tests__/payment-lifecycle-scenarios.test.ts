@@ -116,9 +116,19 @@ const confirm = (reference: string, source = 'terminal_callback') =>
     source,
   })
 
-/** The terminal reported a failure. `gateway` is what Finatic says when asked. */
+/**
+ * The terminal reported a failure. `gateway` is what Finatic says when asked.
+ *
+ * EVERY not-paid stub must state `statusRecognised` explicitly. The real queryFinaticOrderPaid
+ * always returns it — it is non-optional on FinaticOrderPaidResult — so a literal that omits it
+ * models an answer the gateway cannot produce. Since D-1 an UNRECOGNISED answer no longer
+ * authorises a cancel, so omitting the field silently turns a "decline cancels" test into an
+ * "unknown status" test. A decline is trans_status 1, which IS recognised.
+ */
 const reportFailure = (
-  gateway: (() => Promise<{ paid: boolean }>) | (() => Promise<never>),
+  gateway:
+    | (() => Promise<{ paid: boolean; statusRecognised?: boolean; status?: string }>)
+    | (() => Promise<never>),
   cancellationReason = 'payment_declined',
 ) =>
   handleTerminalPaymentFailed(
@@ -251,7 +261,7 @@ describe('3. retries', () => {
 
 describe('4. decline — the gateway agrees no money was taken', () => {
   it('cancels the order and issues no receipt', async () => {
-    const r = await reportFailure(async () => ({ paid: false }), 'payment_declined')
+    const r = await reportFailure(async () => ({ paid: false, statusRecognised: true, status: 'failed' }), 'payment_declined')
     expect(r.outcome).toBe('cancelled')
     expect(order()).toMatchObject({ payment_status: 'cancelled', status: 'cancelled' })
     expect(order().cancellation_reason).toBe('payment_declined')
@@ -264,7 +274,7 @@ describe('5. cancellation on the reader', () => {
     let asked = 0
     const r = await reportFailure(async () => {
       asked += 1
-      return { paid: false }
+      return { paid: false, statusRecognised: true, status: 'failed' }
     }, 'terminal_user_cancelled')
     expect(asked).toBe(1)
     expect(r.outcome).toBe('cancelled')
@@ -358,7 +368,7 @@ describe('7. a receipt is never issued for money that has not arrived', () => {
   })
 
   it('a cancelled order cannot be receipted', async () => {
-    await reportFailure(async () => ({ paid: false }))
+    await reportFailure(async () => ({ paid: false, statusRecognised: true, status: 'failed' }))
     await expect(issueReceiptForOrder(ORDER)).rejects.toThrow(/not reached final paid state/)
     expect(receipts()).toHaveLength(0)
   })

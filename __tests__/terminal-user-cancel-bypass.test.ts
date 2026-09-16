@@ -71,13 +71,28 @@ function baseParams(over: Row = {}) {
   } as never
 }
 
-/** Stands in for Finatic. Records whether it was called at all. */
-function makeQuery(result: { paid: boolean } | Error) {
+/**
+ * Stands in for Finatic. Records whether it was called at all.
+ *
+ * `statusRecognised` DEFAULTS TO TRUE, and the default is the point. The real
+ * `queryFinaticOrderPaid` always returns the field, so a stub that omitted it was modelling an
+ * answer the gateway cannot produce — and every existing test here means a RECOGNISED answer
+ * (a genuine decline is trans_status 1, which is recognised). An UNRECOGNISED answer is the new,
+ * dangerous case and must be opted into explicitly with `statusRecognised: false`, never arrived
+ * at by forgetting a field.
+ */
+function makeQuery(
+  result: { paid: boolean; statusRecognised?: boolean; status?: string } | Error,
+) {
   const calls: unknown[] = []
   const fn = async (args: unknown) => {
     calls.push(args)
     if (result instanceof Error) throw result
-    return result as never
+    return {
+      statusRecognised: true,
+      status: result.paid ? 'paid' : 'failed',
+      ...result,
+    } as never
   }
   return { fn, calls }
 }

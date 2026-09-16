@@ -57,6 +57,36 @@ export async function POST(
       body?.cancellationReason != null ? String(body.cancellationReason).trim() : ''
     const noGatewayAttempt = body?.noGatewayAttempt === true
 
+    /**
+     * ============================================================================================
+     * THE RAW GATEWAY RESULT CODE — DIAGNOSTIC ONLY (D-4)
+     * ============================================================================================
+     *
+     * The code WiseCashier returned in its `result` extra, e.g. "N002". The terminal shows it to
+     * staff in the failure message and, until now, threw it away: an ambiguous outcome reports a
+     * reference of `UNCONFIRMED-<epoch>`, which carries no code. Measured on staging, all 21 `sale`
+     * rows in payment_events have gateway_result_code NULL, so the one value that would let anyone
+     * count how often N002 happens was unrecoverable.
+     *
+     * IT MUST NEVER INFLUENCE PAYMENT CORRECTNESS, and it is deliberately not passed to
+     * handleTerminalPaymentFailed. This is a device-asserted string. The moment a device assertion
+     * can steer paid/not-paid it becomes a second `noGatewayAttempt` — a field a wrong or hostile
+     * client could use to skip Finatic verification. `noGatewayAttempt` is only safe because it
+     * requires an exact second value to agree with it; this field is given no such power because it
+     * needs none. It is written to the audit trail and read by humans.
+     *
+     * OPTIONAL, AND ABSENT IS NORMAL. Every terminal build before this change sends nothing, and a
+     * fielded APK may outlive several worker deploys. Absent must therefore mean "not reported",
+     * never "empty string" — hence null rather than ''. Nothing branches on it either way.
+     *
+     * NOT PARSED OUT OF THE REFERENCE. The code travels in its own field; encoding it into
+     * `reference` would mix an identifier with a diagnostic and is explicitly not done.
+     */
+    const gatewayResult =
+      body?.gatewayResult != null && String(body.gatewayResult).trim()
+        ? String(body.gatewayResult).trim().slice(0, 32)
+        : null
+
     const amount = Number(body?.amount)
     /**
      * VALIDATED AGAINST THE SETTLEMENT ALLOWLIST, which it never was.
@@ -246,6 +276,8 @@ export async function POST(
             // reason, or the match it performs is against a string we invented.
             ...(cancellationReason ? { cancellationReason } : {}),
             noGatewayAttempt,
+            // D-4: recorded in the audit trail, never consulted. See the note where it is parsed.
+            gatewayResult,
           },
           { stagingFinaticStub: body?.__stagingFinaticStub },
         )

@@ -14,6 +14,12 @@ import {
 } from '@/lib/payments/query-finatic-order-paid'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import { stagingFinaticQueryStub } from '@/lib/payments/staging-finatic-stub'
+/**
+ * The audit action the other three cancel paths already write when a Finatic answer is not one we
+ * know how to read. Imported from its canonical definition rather than restated, so the three
+ * existing consumers and this one can never drift apart.
+ */
+import { VERIFICATION_SKIPPED_ACTION } from '@/lib/orders/auto-cancel-stale-pos-orders'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -45,6 +51,16 @@ export type HandleTerminalPaymentFailedParams = {
    * before the reader contacted the gateway. See TERMINAL_USER_CANCELLED_REASON.
    */
   noGatewayAttempt?: boolean
+  /**
+   * The raw WiseCashier `result` code the device reported, e.g. "N002" (D-4).
+   *
+   * DIAGNOSTIC ONLY. It is written into the audit metadata of whichever outcome this call reaches
+   * and is read by nothing: there is no branch anywhere in this function on its value, and adding
+   * one would turn a device-asserted string into a control over whether money is verified. Absent
+   * on every terminal build before this change, which is why it is optional and why null means
+   * "not reported" rather than "none".
+   */
+  gatewayResult?: string | null
 }
 
 /**
@@ -69,6 +85,25 @@ export type HandleTerminalPaymentFailedParams = {
  * wrongly is cancelling an order the customer was actually charged for.
  */
 export const TERMINAL_USER_CANCELLED_REASON = 'terminal_cancelled_by_user_pre_gateway'
+
+/**
+ * What a cancellation's audit row may claim about HOW the money state was established.
+ *
+ * Exported so tests assert against the vocabulary rather than restating string literals, and so a
+ * future consumer that groups on `evidence_basis` has the complete set in one place. Additive:
+ * `no_attempt_recorded` (D-2) joins the two values that already existed, and no non-test consumer
+ * reads the field today.
+ */
+export const CANCEL_EVIDENCE_BASES = [
+  /** The terminal asserted an operator abort (K026) before the gateway was contacted. */
+  'terminal_asserted',
+  /** Finatic was queried for this reference and answered, recognisably, not-paid. */
+  'gateway_verified',
+  /** No merchant order number exists, so no gateway attempt was ever recorded to ask about. */
+  'no_attempt_recorded',
+] as const
+
+export type CancelEvidenceBasis = (typeof CANCEL_EVIDENCE_BASES)[number]
 
 export type HandleTerminalPaymentFailedResult =
   | {
@@ -103,9 +138,15 @@ export type HandleTerminalPaymentFailedOptions = {
  * Shared Finatic-before-cancel for terminal payment-failed and status=cancelled
  * when a charge may already have been initiated (paycloud_merchant_order_no set).
  *
- *  - No paycloud_merchant_order_no → cancel immediately (nothing to verify).
+ *  - No paycloud_merchant_order_no → cancel immediately (nothing to verify), recorded with
+ *    evidence_basis 'no_attempt_recorded' and charge_status_known FALSE — the gateway was never
+ *    asked, and the row must not claim otherwise (D-2).
  *  - Finatic confirms paid → correct to paid via markOrderPaidConfirmed (false-failure).
- *  - Finatic confirms not paid → cancel with the caller-supplied reason.
+ *  - Finatic confirms not paid AND the status is one we recognise → cancel with the
+ *    caller-supplied reason.
+ *  - Finatic answers with a status we do NOT recognise → leave payment_status pending and write a
+ *    payment.verification_skipped audit. An unrecognised answer is not a "not paid" answer, and
+ *    unknown never authorises a cancel (D-1).
  *  - Finatic unreachable/errors/missing credentials → leave payment_status pending
  *    and write payment.verification_uncertain audit (cron may still resolve later).
  */
@@ -233,6 +274,7 @@ export async function handleTerminalPaymentFailed(
               finaticTransactionId: finatic.transactionId,
               businessOrderNo: merchantOrderNo,
               reference: params.reference || null,
+              gatewayResult: params.gatewayResult ?? null,
               terminalId,
               requestedCancellationReason: cancellationReason,
               outcome: 'left_pending_finatic_uncertain',
@@ -280,7 +322,89 @@ export async function handleTerminalPaymentFailed(
           tabId: claim.claimed ? claim.tabId : null,
         }
       }
-      // Finatic explicitly not paid — fall through to cancel.
+
+      /**
+       * ==========================================================================================
+       * AN UNRECOGNISED STATUS NEVER AUTHORISES A CANCEL (D-1)
+       * ==========================================================================================
+       *
+       * `paid` is a boolean, so EVERY value the gateway could return that is not a recognised
+       * success collapses into "not paid" — including a status nobody has ever seen. Without this
+       * branch the line below cancelled the order, and cancelling means writing
+       * payment_status='cancelled' on a card that may well have cleared.
+       *
+       * THIS IS NOT A NEW RULING. It was made on 2026-08-22 and is already implemented by the
+       * three other paths that cancel on a Finatic answer:
+       *
+       *   lib/orders/auto-cancel-stale-pos-orders.ts   `else if (!finaticResult.statusRecognised)`
+       *   lib/orders/override-cancel.ts                `refuse('gateway_status_unrecognised')`
+       *   lib/orders/clear-held-for-review.ts          `if (!answer.statusRecognised)`
+       *
+       * `queryFinaticOrderPaid` states the contract in the opposite direction and names this
+       * caller's obligation explicitly: "A caller that CANCELS on not-paid must check this first."
+       * This handler — the one every terminal payment failure goes through — was the one that did
+       * not. The fix applies the existing ruling here; it invents nothing.
+       *
+       * NOBODY HAS THE ENUM. Measured 2026-08-21 across 43 live order.query calls spanning three
+       * restaurants and four weeks, exactly two `trans_status` values have ever been observed: 2
+       * (paid) and 1 (failed). No vendor documentation of the field exists. A 3 would have
+       * cancelled a real customer's order.
+       *
+       * IT TAKES AN OUTCOME THAT ALREADY EXISTS. `left_pending_finatic_uncertain` already means
+       * "this order's money state is not established" — nothing written, visible in the audit
+       * trail, resolvable by a human. Both production callers already handle it, so no caller
+       * changes and no response shape changes.
+       *
+       * SAME ASYMMETRY AS THE E04111 RULING (2026-08-05): an E04111 THROWS and is skipped safely
+       * by the catch below; an unrecognised status returned *successfully* did not skip, and that
+       * is the gap this closes. Both now leave the order pending.
+       *
+       * RECORDED, NOT MERELY SKIPPED. If Finatic ever returns a third value the owner must find
+       * out from the database rather than from a cancelled customer order, so the audit row names
+       * the value verbatim.
+       */
+      if (!finatic.statusRecognised) {
+        const reason =
+          `Finatic returned a status this system does not recognise (${finatic.status}) for ` +
+          `${merchantOrderNo}. An unrecognised answer is not a "not paid" answer, so the order is ` +
+          'not cancelled and not corrected to paid.'
+        console.error(`[handleTerminalPaymentFailed] order ${params.orderId}: ${reason}`)
+
+        const { error: unknownAuditError } = await supabase.from('audit_logs').insert({
+          restaurant_id: params.restaurantId,
+          action: VERIFICATION_SKIPPED_ACTION,
+          entity_type: 'order',
+          entity_id: params.orderId,
+          metadata: {
+            reason,
+            source: 'terminal_payment_failed',
+            // Verbatim, so the unknown value is recoverable from the row alone.
+            finaticStatus: finatic.status,
+            statusRecognised: false,
+            finaticPaid: finatic.paid,
+            finaticAmount: finatic.amount,
+            finaticTransactionId: finatic.transactionId,
+            expectedAmount: params.orderTotal,
+            terminalReportedAmount: params.amount ?? null,
+            businessOrderNo: merchantOrderNo,
+            reference: params.reference || null,
+            gatewayResult: params.gatewayResult ?? null,
+            terminalId,
+            requestedCancellationReason: cancellationReason,
+            outcome: 'left_pending_finatic_uncertain',
+          },
+        })
+        if (unknownAuditError) {
+          console.error(
+            '[handleTerminalPaymentFailed] unrecognised-status audit failed:',
+            unknownAuditError,
+          )
+        }
+
+        return { outcome: 'left_pending_finatic_uncertain', reason }
+      }
+
+      // Finatic recognisably not paid — fall through to cancel.
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       console.error(
@@ -317,6 +441,7 @@ export async function handleTerminalPaymentFailed(
           businessOrderNo: merchantOrderNo,
           reference: params.reference || null,
           amount: params.amount ?? null,
+          gatewayResult: params.gatewayResult ?? null,
           terminalId,
           requestedCancellationReason: cancellationReason,
           outcome: 'left_pending_finatic_uncertain',
@@ -354,6 +479,16 @@ export async function handleTerminalPaymentFailed(
     return { outcome: 'cancel_conflict' }
   }
 
+  /**
+   * Decided once, read three times below, so the basis, the known-flag and the prose sentence can
+   * never disagree with each other — which is how the wrong pair got written in the first place.
+   */
+  const cancelEvidenceBasis: CancelEvidenceBasis = skipVerification
+    ? 'terminal_asserted'
+    : merchantOrderNo
+      ? 'gateway_verified'
+      : 'no_attempt_recorded'
+
   const { error: auditError } = await supabase.from('audit_logs').insert({
     restaurant_id: params.restaurantId,
     action: auditAction,
@@ -362,22 +497,49 @@ export async function handleTerminalPaymentFailed(
     metadata: {
       reference: params.reference || null,
       amount: params.amount ?? null,
+      gatewayResult: params.gatewayResult ?? null,
       terminalId,
       cancellation_reason: cancellationReason,
       // Was a merchant_order_no present AND actually verified? The bypass makes those two
       // different questions, so this must no longer be inferred from the reference alone.
       finaticVerifiedBeforeCancel: Boolean(merchantOrderNo) && !skipVerification,
       businessOrderNo: merchantOrderNo || null,
-      // WHICH KIND OF EVIDENCE this cancellation rests on. A reader that says "the operator
-      // cancelled" is not the same claim as a gateway that says "no payment exists", and the
-      // record must not blur them.
-      evidence_basis: skipVerification ? 'terminal_asserted' : 'gateway_verified',
-      charge_status_known: true,
-      verification_method: skipVerification
-        ? 'NONE — terminal reported an operator abort (WiseCashier gateway code K026) before the ' +
-          'reader contacted the gateway. No payment order can exist, so Finatic was deliberately ' +
-          'not queried. This is the terminal\'s assertion, not gateway confirmation.'
-        : 'Finatic order.query returned not-paid for this reference before cancelling',
+      /**
+       * WHICH KIND OF EVIDENCE this cancellation rests on. A reader that says "the operator
+       * cancelled" is not the same claim as a gateway that says "no payment exists", and the
+       * record must not blur them.
+       *
+       * THERE ARE THREE KINDS, NOT TWO (D-2). This was a binary ternary on `skipVerification`, so
+       * the third case — no merchant order number was ever minted, therefore Finatic was never
+       * asked — fell to the `else` and was recorded as `gateway_verified`, `charge_status_known:
+       * true`, and a verification_method sentence describing a query that never ran. Three fields
+       * describing a gateway confirmation that did not happen.
+       *
+       * It is reached from the payment route only: the status route guards with
+       * `if (merchantOrderNo)` before calling this at all. 18 of 24 cancelled orders sampled on
+       * staging carry no reference, so it is the common case, not an edge one.
+       *
+       * THE CANCEL ITSELF IS UNCHANGED AND IS STILL CORRECT — no reference generally does mean no
+       * charge. What changes is only what the row claims about how we know.
+       */
+      evidence_basis: cancelEvidenceBasis,
+      /**
+       * FALSE for the no-reference case. Nothing was asked and nothing answered, so the charge
+       * status is precisely what is NOT known. No non-test consumer reads this field today
+       * (verified by grep across .ts/.tsx/.sql/.mjs before changing it), so narrowing it from a
+       * hardcoded `true` cannot break a caller.
+       */
+      charge_status_known: cancelEvidenceBasis !== 'no_attempt_recorded',
+      verification_method:
+        cancelEvidenceBasis === 'terminal_asserted'
+          ? 'NONE — terminal reported an operator abort (WiseCashier gateway code K026) before the ' +
+            'reader contacted the gateway. No payment order can exist, so Finatic was deliberately ' +
+            'not queried. This is the terminal\'s assertion, not gateway confirmation.'
+          : cancelEvidenceBasis === 'no_attempt_recorded'
+            ? 'NONE — this order carries no merchant order number, so no gateway attempt was ever ' +
+              'recorded and Finatic could not be queried. The cancellation rests on the absence of ' +
+              'a reference, not on a gateway answer.'
+            : 'Finatic order.query returned not-paid for this reference before cancelling',
     },
   })
   if (auditError) {
