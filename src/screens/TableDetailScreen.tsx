@@ -684,6 +684,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
           amount,
           paymentMethod: 'card',
           businessOrderNo: paymentResult.businessOrderNo,
+          // D-4. Diagnostic only — see completePayment's note. The server records it and branches
+          // on nothing.
+          ...(paymentResult.gatewayResult
+            ? {gatewayResult: paymentResult.gatewayResult}
+            : {}),
         });
         /**
          * #327 / #326. Same classification as PaymentScreen, and the same two defects fixed:

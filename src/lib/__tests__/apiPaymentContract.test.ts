@@ -168,3 +168,63 @@ describe('#327 — completePayment surfaces the outcome, not just canClose', () 
     expect(err?.status).toBe(409);
   });
 });
+
+/**
+ * D-4 — the raw gateway result code reaches the wire.
+ *
+ * Same shape as the two defects this file was written for: a value the device HAD, computed
+ * correctly, and never sent. `PaymentResult.gatewayResult` has carried "N002" since the native
+ * boundary extracted it; the failure report dropped it, because an ambiguous outcome reports a
+ * reference of `UNCONFIRMED-<epoch>` and nothing else describes what went wrong. All 21 `sale`
+ * rows in staging payment_events have gateway_result_code NULL as a result.
+ *
+ * Asserted against the ACTUAL request body, for the reason the file header gives: a field held
+ * perfectly and dropped before fetch is worth nothing, and neither the compiler nor a unit test on
+ * the caller can see the difference.
+ */
+describe('D-4 — the gateway result code reaches the wire', () => {
+  it('sends gatewayResult in the failure-report body', async () => {
+    const calls = await withApi(
+      {status: 200, body: {success: true, canClose: false, outcome: 'cancelled'}},
+      async (api, seen) => {
+        await api.completePayment('order-1', 'tok', {
+          status: 'failed',
+          reference: 'UNCONFIRMED-1787946108776',
+          amount: 34,
+          paymentMethod: 'card',
+          gatewayResult: 'N002',
+        });
+        return seen;
+      },
+    );
+
+    expect(calls).toHaveLength(1);
+    const body = JSON.parse(String(calls[0].init.body)) as Record<string, unknown>;
+    expect(body.gatewayResult).toBe('N002');
+    // It travels as its OWN field. The reference still identifies the attempt and must not be
+    // made to carry a diagnostic — DECLINED-<code>-<epoch> already blurs the two and is not
+    // extended here.
+    expect(body.reference).toBe('UNCONFIRMED-1787946108776');
+    expect(String(body.reference)).not.toContain('N002');
+  });
+
+  it('omits the field entirely when the device has no code', async () => {
+    // An older APK, or any failure that never reached the gateway. Absent must mean "not
+    // reported" on the wire, so the server can tell it apart from an empty answer.
+    const calls = await withApi(
+      {status: 200, body: {success: true, canClose: false, outcome: 'cancelled'}},
+      async (api, seen) => {
+        await api.completePayment('order-1', 'tok', {
+          status: 'failed',
+          reference: 'UNCONFIRMED-1',
+          amount: 34,
+          paymentMethod: 'card',
+        });
+        return seen;
+      },
+    );
+
+    const body = JSON.parse(String(calls[0].init.body)) as Record<string, unknown>;
+    expect('gatewayResult' in body).toBe(false);
+  });
+});

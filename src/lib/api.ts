@@ -1031,6 +1031,23 @@ export async function completePayment(
      * Finatic verify, because no payment order can exist. Never set for an ambiguous outcome.
      */
     noGatewayAttempt?: boolean;
+    /**
+     * The raw WiseCashier `result` code, e.g. "N002" (D-4).
+     *
+     * DIAGNOSTIC ONLY, IN BOTH DIRECTIONS. The server writes it to audit_logs.metadata and
+     * branches on nothing; this end must never treat it as a reason to send or withhold any other
+     * field. It exists because the code shown to staff in the failure message was previously
+     * discarded at this boundary -- an ambiguous outcome reports a reference of
+     * `UNCONFIRMED-<epoch>`, which carries no code -- so nothing could count how often N002
+     * happens or which venues see it.
+     *
+     * NOT ENCODED INTO `reference`. The reference identifies the attempt; this describes it. The
+     * DECLINED-<code>-<epoch> form already mixes the two and is deliberately not extended.
+     *
+     * Optional: an older worker ignores an unknown body field, so a terminal on this build works
+     * against any deployed server.
+     */
+    gatewayResult?: string;
   },
 ): Promise<CompletePaymentResult> {
   // INSTRUMENTATION (vc84). Record what actually goes on the wire, before it goes.
@@ -1050,6 +1067,9 @@ export async function completePayment(
     cancellationReason: payload.cancellationReason ?? '(not set)',
     noGatewayAttempt:
       payload.noGatewayAttempt === undefined ? '(not set)' : payload.noGatewayAttempt,
+    // D-4. Recorded including when absent, so the wiretap distinguishes "the device had no code"
+    // from "the device had one and dropped it on the way to the wire".
+    gatewayResult: payload.gatewayResult ?? '(not set)',
   });
 
   let response: Response;
@@ -1228,16 +1248,53 @@ export async function prepareTerminalPayment(
     orderId?: string;
     merchantOrderNo?: string;
     created?: boolean;
+    chargeCents?: unknown;
+    tipCents?: unknown;
   };
   const merchantOrderNo = String(data.merchantOrderNo ?? '').trim();
   if (!merchantOrderNo) {
     throw new Error('prepare-payment did not return merchantOrderNo');
   }
 
+  /**
+   * ================================================================================================
+   * chargeCents AND tipCents ARE READ HERE, AND WERE NOT (D-5)
+   * ================================================================================================
+   *
+   * The server has always sent both. The return TYPE above has always declared both. The parse
+   * cast named three fields and the returned object literal listed the same three, so
+   * `prepared.chargeCents` was `undefined` on every call and payment.ts's
+   *
+   *     if (typeof prepared.chargeCents === 'number' && prepared.chargeCents > 0)
+   *
+   * could never be true. The server-authoritative figure -- order total minus what has already
+   * been settled, plus the gratuity -- never reached the reader, so the device always charged the
+   * caller's own number.
+   *
+   * WHAT THAT COST. TableDetailScreen passes the BILL deliberately and lets the tip travel
+   * separately, precisely so the two are never double-counted; its own comment says the failure it
+   * is avoiding is "the customer was charged the bill while payment_tips recorded a gratuity nobody
+   * collected". That is exactly what happened, because the mechanism meant to prevent it was this
+   * hop. A part-paid order is wrong the same way: prepare-payment charges the remainder.
+   *
+   * NO ARITHMETIC IS DONE HERE, and none may be. The server decides the figure; this function's
+   * whole job is to carry it without editing it. Two sides computing a charge independently is how
+   * they come to disagree, and every gateway gate compares against the server's number.
+   *
+   * NON-FINITE AND NON-POSITIVE VALUES ARE DROPPED rather than passed on. An older worker sends no
+   * chargeCents at all -- the field is genuinely absent -- and a terminal talking to one must keep
+   * behaving exactly as it did, with the caller's amount standing. Coercing a missing field to 0
+   * and charging that is the one outcome worse than charging the old number.
+   */
+  const chargeCents = Number(data.chargeCents);
+  const tipCents = Number(data.tipCents);
+
   return {
     orderId: String(data.orderId ?? orderId),
     merchantOrderNo,
     created: Boolean(data.created),
+    ...(Number.isFinite(chargeCents) && chargeCents > 0 ? {chargeCents} : {}),
+    ...(Number.isFinite(tipCents) && tipCents >= 0 ? {tipCents} : {}),
   };
 }
 

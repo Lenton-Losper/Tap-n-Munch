@@ -197,6 +197,22 @@ export const DECLINED_PAYMENT_REF_PREFIX = 'DECLINED-';
 export const TERMINAL_USER_CANCELLED_REASON = 'terminal_cancelled_by_user_pre_gateway';
 
 /**
+ * The ONLY native error codes that mean "the gateway looked at a card and refused it" (D-6).
+ *
+ * An allowlist, not a denylist, and that is the whole point. `confirmed_failure` used to be the
+ * DEFAULT for any error this module did not recognise, so a code nobody had classified told a
+ * waiter the card had been declined. Membership here has to be earned.
+ *
+ * PAYMENT_DECLINED is raised by MainActivity for exactly one reason: the gateway result was a
+ * member of WiseCashierCodes.KNOWN_DECLINE_CODES, which per its own comment holds only codes
+ * "confirmed to mean a clean card decline with NO charge" against real gateway behaviour.
+ *
+ * Adding to this list asserts that a code cannot have taken money. Do not add one without the
+ * same standard of evidence KNOWN_DECLINE_CODES demands.
+ */
+export const CONFIRMED_DECLINE_CODES: readonly string[] = ['PAYMENT_DECLINED'];
+
+/**
  * Pulls the raw gateway code back out of a native payment-failure message, e.g.
  * "Battery too low to trade. Please charge your device first. (gateway result=K029)" ->
  * "K029". Native (MainActivity.kt) always appends this exact trailing
@@ -822,9 +838,29 @@ export async function processPaymentIntent(
         ? String((error as {code?: string}).code ?? '')
         : '';
 
-    // Native embeds the raw gateway code as "gateway result=XYZ)" in both the ambiguous
-    // and PAYMENT_DECLINED messages — pull it out so it can ride along in the audit ref.
-    const gatewayResult = extractGatewayResult(message);
+    /**
+     * THE RAW GATEWAY CODE, structured first, prose second (D-4).
+     *
+     * Native now attaches it as `userInfo.gatewayResult` on the rejection, which is the honest
+     * contract: a code is data, not a substring of a sentence. The message suffix remains and is
+     * still read here, and that redundancy is deliberate rather than untidy —
+     *
+     *   - a JS bundle can outlive the APK it shipped with, so an older native build sends no
+     *     userInfo at all and only the suffix exists;
+     *   - whether userInfo survives to the JS error object on this RN version has not yet been
+     *     confirmed on a P5, and a fix that silently extracts nothing is worse than no fix.
+     *
+     * So the structured value WINS WHERE PRESENT and the regex is the floor. Both are read from
+     * the same native `result` extra, so they cannot disagree about the value — only about
+     * whether it arrived.
+     */
+    const structuredGatewayResult =
+      error && typeof error === 'object' && 'userInfo' in error
+        ? String(
+            (error as {userInfo?: {gatewayResult?: unknown}}).userInfo?.gatewayResult ?? '',
+          ).trim()
+        : '';
+    const gatewayResult = structuredGatewayResult || extractGatewayResult(message);
 
     // Native rejects a known decline code (see MainActivity's KNOWN_DECLINE_CODES) as
     // PAYMENT_DECLINED — that's a confirmed no-charge, safe to report without a Finatic
@@ -870,6 +906,33 @@ export async function processPaymentIntent(
       'INTENT_ERROR',
       'MISSING_MERCHANT_ORDER_NO',
       'INVALID_MERCHANT_ORDER_NO',
+      /**
+       * ------------------------------------------------------------------------------------------
+       * SERVER-ORIGIN REFUSALS ARE PRE-READER TOO (D-6)
+       * ------------------------------------------------------------------------------------------
+       *
+       * Every code below is raised by POST /api/terminal/orders/{id}/prepare-payment, which runs
+       * BEFORE launchPayment. prepareTerminalPayment throws an ApiRequestError carrying the
+       * server's `code`, and because that code is truthy it cleared the `if (!code)` guard above,
+       * missed this list, and inherited the decline default. A waiter retrying a payment was told
+       * the card had been declined by a reader that never opened -- the Digi Cofee failure of
+       * 2026-09-07, which the four native codes above were added to fix. The fix enumerated only
+       * native codes; these come from the other side of the wire and were left behind.
+       *
+       * ORDER_CANCELLED is the one that compounds: it is the exact refusal a retry hits after an
+       * order has been wrongly cancelled, so the two defects chain -- one cancels the paid order,
+       * the other tells the waiter a card was refused.
+       */
+      // The order is already cancelled — ensureTerminalMerchantOrderNo, 400.
+      'ORDER_CANCELLED',
+      // The order is already paid — ensureTerminalMerchantOrderNo, 400.
+      'ALREADY_PAID',
+      // Every item has already been settled, so no reader may be launched — 409.
+      'NOTHING_LEFT_TO_CHARGE',
+      // The route could not read what had already been collected and failed closed — 503.
+      'SETTLED_TOTAL_UNREADABLE',
+      // The charge expectation could not be stored, so the route refused before charging — 503.
+      'EXPECTATION_NOT_RECORDED',
     ];
     if (NEVER_REACHED_THE_READER.includes(code)) {
       return {
@@ -894,19 +957,39 @@ export async function processPaymentIntent(
       };
     }
 
-    const ambiguous =
-      code === 'PAYMENT_AMBIGUOUS' ||
-      code === 'PAYMENT_FAILED' ||
-      /unconfirmed|ambiguous|no transaction id|not a confirmed success|cancelled or returned/i.test(
-        message,
-      );
+    /**
+     * ============================================================================================
+     * confirmed_failure IS NOW AN ALLOWLIST, NOT A DEFAULT (D-6)
+     * ============================================================================================
+     *
+     * This used to read `ambiguous ? 'ambiguous' : 'confirmed_failure'`, so EVERY code the list
+     * above had not heard of inherited `confirmed_failure` -- a claim that the gateway looked at a
+     * card and refused it. The comment on NEVER_REACHED_THE_READER already names this as the
+     * deeper fault: "its name claims a determination nobody made".
+     *
+     * Only ONE code in the system means "the gateway confirmed no charge": PAYMENT_DECLINED, which
+     * native raises solely for a member of KNOWN_DECLINE_CODES -- codes confirmed against real
+     * gateway behaviour. Nothing else has ever earned that verdict, so nothing else gets it.
+     *
+     * EVERYTHING UNKNOWN IS AMBIGUOUS, AND THAT IS THE SAFE DIRECTION. Ambiguous means "ask
+     * Finatic before telling anyone this failed", which is the correct handling for an outcome we
+     * cannot read. A new native code, a new server code, or a code from a worker newer than this
+     * bundle now goes to verification instead of asserting a decline at the till.
+     *
+     * THE MESSAGE REGEX IS GONE, and its removal changes no outcome. It existed to rescue
+     * ambiguous-sounding text from the decline default; with the default inverted there is nothing
+     * left to rescue -- anything it used to match is ambiguous now by construction. Removing it
+     * also retires the last place where PROSE could reclassify a payment, which is the rule the
+     * K026 handling and STAFF_FAILURE_MESSAGES already follow: match on the code, never the text.
+     */
+    const confirmedDecline = CONFIRMED_DECLINE_CODES.includes(code);
 
     return {
       success: false,
-      outcomeKind: ambiguous ? 'ambiguous' : 'confirmed_failure',
-      error: ambiguous
-        ? message || 'Payment outcome unconfirmed by device'
-        : message,
+      outcomeKind: confirmedDecline ? 'confirmed_failure' : 'ambiguous',
+      error: confirmedDecline
+        ? message
+        : message || 'Payment outcome unconfirmed by device',
       gatewayResult,
     };
   }

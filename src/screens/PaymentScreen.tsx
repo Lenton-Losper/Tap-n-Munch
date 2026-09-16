@@ -661,6 +661,12 @@ export default function PaymentScreen({route, navigation}: Props) {
           amount: total,
           paymentMethod: 'card',
           businessOrderNo: result.businessOrderNo,
+          /**
+           * D-4. The raw gateway code, carried to the server as its own field so the audit trail
+           * records WHICH code produced this failure. Sent for every failure that has one, cancel
+           * or not, and it buys nothing: the server writes it and branches on nothing.
+           */
+          ...(result.gatewayResult ? {gatewayResult: result.gatewayResult} : {}),
           ...(userCancelled
             ? {
                 cancellationReason: TERMINAL_USER_CANCELLED_REASON,

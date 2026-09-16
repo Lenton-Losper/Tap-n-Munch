@@ -34,6 +34,23 @@ class MainActivity : ReactActivity() {
     private val STAFF_FAILURE_MESSAGES = WiseCashierCodes.STAFF_FAILURE_MESSAGES
   }
 
+  /**
+   * The raw gateway code, carried as STRUCTURED data on the rejection (D-4).
+   *
+   * THE MESSAGE SUFFIX STAYS AND IS STILL THE PRIMARY SOURCE. `src/lib/payment.ts` recovers the
+   * code with extractGatewayResult(), a regex over "(gateway result=XYZ)", and that path is
+   * exercised by a passing test today. This map is the structurally correct way to send the same
+   * value -- prose is not a contract -- but whether `userInfo` survives to the JS error object on
+   * this React Native version and architecture has NOT been confirmed on a device. So it is added
+   * ALONGSIDE the proven mechanism, never in place of it: if userInfo arrives, payment.ts prefers
+   * it; if it does not, nothing changes. Removing the suffix before a P5 confirms userInfo would
+   * be shipping a fix that silently does nothing.
+   *
+   * Diagnostic only. Nothing in the app or the server decides anything from this value.
+   */
+  private fun gatewayUserInfo(resultExtra: String?): com.facebook.react.bridge.WritableMap =
+    Arguments.createMap().apply { putString("gatewayResult", resultExtra ?: "") }
+
   override fun getMainComponentName(): String = "FlashTapTerminal"
 
   override fun createReactActivityDelegate(): ReactActivityDelegate =
@@ -145,6 +162,7 @@ class MainActivity : ReactActivity() {
           promise.reject(
             "PAYMENT_DECLINED",
             "Card declined by gateway (gateway result=$resultExtra)",
+            gatewayUserInfo(resultExtra),
           )
         } else {
           // #182: STAFF_FAILURE_MESSAGES is keyed on resultExtra (the code), never on
@@ -158,6 +176,7 @@ class MainActivity : ReactActivity() {
             } else {
               "Payment result was not a confirmed success (gateway result=$resultExtra)"
             },
+            gatewayUserInfo(resultExtra),
           )
         }
       } else if (resultCode == Activity.RESULT_CANCELED) {
