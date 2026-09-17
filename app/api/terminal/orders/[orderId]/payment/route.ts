@@ -68,12 +68,17 @@ export async function POST(
      * rows in payment_events have gateway_result_code NULL, so the one value that would let anyone
      * count how often N002 happens was unrecoverable.
      *
-     * IT MUST NEVER INFLUENCE PAYMENT CORRECTNESS, and it is deliberately not passed to
-     * handleTerminalPaymentFailed. This is a device-asserted string. The moment a device assertion
-     * can steer paid/not-paid it becomes a second `noGatewayAttempt` — a field a wrong or hostile
-     * client could use to skip Finatic verification. `noGatewayAttempt` is only safe because it
-     * requires an exact second value to agree with it; this field is given no such power because it
-     * needs none. It is written to the audit trail and read by humans.
+     * IT MUST NEVER INFLUENCE PAYMENT CORRECTNESS. It IS passed to handleTerminalPaymentFailed —
+     * that is how it reaches the audit trail — but nothing there, or anywhere else, branches on its
+     * value. It is DIAGNOSTIC AND RECONCILIATION DATA ONLY: written into the audit metadata of
+     * whichever outcome the call reaches, read by humans and by whoever later counts how often a
+     * given code occurs. It must never decide paid vs not-paid, and must never authorise, block or
+     * alter a cancellation.
+     *
+     * This is a device-asserted string. The moment a device assertion can steer paid/not-paid it
+     * becomes a second `noGatewayAttempt` — a field a wrong or hostile client could use to skip
+     * Finatic verification. `noGatewayAttempt` is only safe because it requires an exact second
+     * value to agree with it; this field is given no such power because it needs none.
      *
      * OPTIONAL, AND ABSENT IS NORMAL. Every terminal build before this change sends nothing, and a
      * fielded APK may outlive several worker deploys. Absent must therefore mean "not reported",
