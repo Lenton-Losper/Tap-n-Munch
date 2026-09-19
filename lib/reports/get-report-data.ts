@@ -11,10 +11,36 @@ import {
 } from '@/lib/reports/format-report-datetime'
 import { owesMoney } from '@/lib/payments/payment-integrity'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+/**
+ * F8. WHICH TIMESTAMP A REPORT WINDOWS ON. 'placed' is the default and is what shipped; the
+ * cash-up asks for 'paid', because "what did we take this shift" is a different question from
+ * "what did we sell today" and an order placed at 23:50 and paid at 00:10 answers them
+ * differently. See lib/reports/revenue-timing.ts.
+ */
+import {
+  crossesDateBoundary,
+  dateColumnForBasis,
+  normalizeReportDateBasis,
+  type ReportDateBasis,
+} from '@/lib/reports/revenue-timing'
 
 export interface ReportOrder {
   order_number: number
   placed_at: string
+  /**
+   * WHEN THE MONEY ARRIVED. Null for an order that has not been paid.
+   *
+   * Exposed because a report that prints only `placed_at` cannot show an operator WHY a shift's
+   * takings and its orders disagree. It is a column, not a filter -- what the report windows on is
+   * `dateBasis`.
+   */
+  paid_at: string | null
+  /**
+   * True when the money arrived on a different calendar day, in the VENUE'S timezone, from the day
+   * the order was placed. This is the midnight boundary made visible instead of left to be
+   * reconstructed from two nights' figures.
+   */
+  crosses_date_boundary: boolean
   table_number: number | null
   customer_name: string | null
   items: string
@@ -40,6 +66,8 @@ export interface ReportData {
     endDate: string
     tableNumber?: number
     status?: string
+    /** Which timestamp the window was applied to. Recorded so a report states its own basis. */
+    dateBasis: ReportDateBasis
   }
   summary: {
     totalRevenue: number
@@ -67,6 +95,15 @@ export interface GetReportDataParams {
   endDate: string      // YYYY-MM-DD
   tableNumber?: number
   status?: string
+  /**
+   * F8. 'placed' (the default, and what every existing caller gets) windows on when the order was
+   * placed. 'paid' windows on when the money arrived, which is what a CASH-UP means and what the
+   * cash-up route asks for.
+   *
+   * Defaulted rather than required, deliberately: an omitted basis must keep every existing report
+   * byte-identical, not quietly change what it measures.
+   */
+  dateBasis?: ReportDateBasis
 }
 
 /**
@@ -124,14 +161,31 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
    * what the report claims to show and is the field the exported Status column prints, so the rows
    * and the filter now agree by construction rather than by coincidence.
    */
+  /**
+   * F8 — THE WINDOW COLUMN.
+   *
+   * 'placed' is the default and reproduces exactly what shipped. 'paid' windows on `paid_at`,
+   * which is what a cash-up means: an order placed at 23:50 and paid at 00:10 belongs to the
+   * second shift's drawer, and windowing it on `placed_at` leaves the first shift short by that
+   * amount and the second over by it, every night.
+   *
+   * A paid-basis window EXCLUDES unpaid orders outright -- they have no `paid_at`, so the
+   * half-open comparison never matches them. That is correct for a cash-up (nothing was taken) and
+   * would be wrong for a sales report, which is why there are two bases rather than a new default.
+   */
+  const dateBasis = normalizeReportDateBasis(params.dateBasis)
+  const windowColumn = dateColumnForBasis(dateBasis)
+
   let query = supabase
     .from('orders')
-    .select('id, order_number, placed_at, table_number, customer_name, status, payment_method, payment_channel, payment_status, total, items')
+    // paid_at is SELECTED, not merely filtered on: without it the boundary flag below is computed
+    // from an absent value and reads false for every row -- a fix that ships inert.
+    .select('id, order_number, placed_at, paid_at, table_number, customer_name, status, payment_method, payment_channel, payment_status, total, items')
     .eq('restaurant_id', params.restaurantId)
     .eq('status', REPORTABLE_STATUS)
-    .gte('placed_at', startIso)
-    .lt('placed_at', endIsoExclusive)
-    .order('placed_at', { ascending: false })
+    .gte(windowColumn, startIso)
+    .lt(windowColumn, endIsoExclusive)
+    .order(windowColumn, { ascending: false })
 
   if (params.tableNumber) {
     query = query.eq('table_number', params.tableNumber)
@@ -176,6 +230,11 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
     return {
       order_number: o.order_number,
       placed_at: o.placed_at,
+      paid_at: o.paid_at ?? null,
+      // The venue's own timezone, not UTC: "did this cross midnight" is a question about the
+      // operator's night, and Windhoek is UTC+2 -- a UTC comparison would mis-answer it for every
+      // transaction between 22:00 and midnight local.
+      crosses_date_boundary: crossesDateBoundary(o, timezone),
       table_number: o.table_number ?? null,
       customer_name: o.customer_name ?? null,
       items: itemsSummary,
@@ -280,6 +339,23 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
    * moment a cancelled payment sits on a live order. Stated rather than dressed up as a fix for
    * something observed.
    */
+  /**
+   * ============================================================================================
+   * F8 — THIS QUERY STAYS ON `placed_at`, AND THAT IS NOT AN OVERSIGHT
+   * ============================================================================================
+   *
+   * `dateBasis` deliberately does NOT apply here, because this count is of orders that have NOT
+   * been paid. An unpaid order has no `paid_at`, so on a paid-basis window it matches nothing --
+   * `unresolvedOrders` would read 0 on every cash-up, for every venue, forever.
+   *
+   * That would be the worst possible failure for this particular figure: it exists to tell a
+   * manager closing up that money is still outstanding, and it would silently report that none is.
+   * "The report is windowed on payment time" is true of the TAKINGS; "which orders from tonight
+   * are still owed" is a question about the SERVICE, and its clock is when the order was placed.
+   *
+   * So the two halves of this function window on different columns ON PURPOSE. Asserted in
+   * __tests__/report-midnight-boundary.test.ts so a later tidy-up cannot "fix" the inconsistency.
+   */
   const unresolvedRows = await fetchAllRows<{ id: string; payment_status: unknown }>(
     supabase
       .from('orders')
@@ -304,6 +380,9 @@ export async function getReportData(params: GetReportDataParams): Promise<Report
       endDate: params.endDate,
       tableNumber: params.tableNumber,
       status: params.status,
+      // A report states which timestamp it windowed on. Two reports over the same dates on
+      // different bases are legitimately different numbers, and nothing else says which is which.
+      dateBasis,
     },
     summary: {
       totalRevenue,

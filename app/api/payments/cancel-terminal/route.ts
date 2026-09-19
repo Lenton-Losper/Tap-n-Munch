@@ -100,6 +100,30 @@ export async function POST(req: Request) {
         // The card attempt is now resolved, so the in-flight window is over. This is the route
         // the settle endpoint's CARD_PAYMENT_IN_FLIGHT message sends staff to.
         terminal_pushed_at: null,
+        /**
+         * F18. THE RECORDED EXPECTATION GOES WITH THE ATTEMPT THAT CREATED IT.
+         *
+         * `pending_charge_cents` describes an ATTEMPT -- what this reader was asked to charge --
+         * and this statement is where that attempt is declared over. Measured 2026-09-19: 435
+         * unpaid orders still carry one, 263 of them cancelled.
+         *
+         * SAFE HERE SPECIFICALLY, AND NOT IN GENERAL. Clearing an expectation is only safe when
+         * nothing can still need it, and the line above already clears
+         * `paycloud_merchant_order_no` -- so even if this attempt HAD been charged, no reference
+         * survives for a gateway gate to correlate it by. Nothing downstream of this write can
+         * consult the expectation, so leaving it behind would be stale data and nothing else.
+         *
+         * IT IS DELIBERATELY NOT DONE ON ORDER CANCELLATION, which is the other obvious place.
+         * An order auto-cancelled on E04111 evidence can still be recovered by a later webhook,
+         * and that recovery compares the gateway's figure against this expectation. Clearing it
+         * there would fall back to the order total and refuse a TIPPED payment that actually
+         * succeeded -- the exact failure lib/payments/expected-charge.ts exists to prevent. Those
+         * rows are REPORTED, not swept; see docs/payment-hardening-remediation.md.
+         */
+        pending_charge_cents: null,
+        pending_tip_cents: 0,
+        pending_tip_staff_user_id: null,
+        pending_settlement_id: null,
       })
       .eq('id', String(orderId))
 

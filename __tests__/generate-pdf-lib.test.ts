@@ -18,6 +18,10 @@ function sampleReport(orderCount: number): ReportData {
     status: 'completed',
     paymentStatus: null,
     refundedAmount: 0,
+    // F8. Paid a few minutes after being placed, on the same day, so this fixture exercises the
+    // ordinary case rather than the boundary one (which has its own suite).
+    paid_at: `2026-07-04T${String(10 + (i % 10)).padStart(2, '0')}:45:00.000Z`,
+    crosses_date_boundary: false,
   }))
 
   return {
@@ -27,7 +31,9 @@ function sampleReport(orderCount: number): ReportData {
       logo_url: null,
       timezone: 'Africa/Windhoek',
     },
-    filters: { startDate: '2026-07-01', endDate: '2026-07-04' },
+    // F8. A report states which timestamp it was windowed on. 'placed' is the default and is what
+    // this sales-shaped fixture means; the cash-up asks for 'paid'.
+    filters: { startDate: '2026-07-01', endDate: '2026-07-04', dateBasis: 'placed' as const },
     summary: {
       totalRevenue: orders.reduce((sum, o) => sum + o.total, 0),
       totalOrders: orders.length,

@@ -164,10 +164,32 @@ export async function POST(req: Request) {
 
     const range = resolveDateRangePreset(preset.id, { timeZone: timezone })
 
+    /**
+     * ============================================================================================
+     * F8 — A CASH-UP IS WINDOWED ON WHEN THE MONEY ARRIVED
+     * ============================================================================================
+     *
+     * This asked for the default `placed` basis, so the report answered "what was ORDERED in this
+     * window" while the piece of paper it produces is counted against a drawer.
+     *
+     * The failure is nightly, and self-cancelling in the way that hides it best: an order placed at
+     * 23:50 and paid at 00:10 lands in the FIRST shift's report and the SECOND shift's till, so one
+     * comes up short by that amount and the next comes up over by it. Neither operator can see why
+     * from their own sheet, and the two errors net to zero across the day -- which is precisely why
+     * checking the daily total never finds it.
+     *
+     * The paid basis also drops unpaid orders from the window entirely, and that is correct here:
+     * nothing was taken, so nothing belongs in the drawer. `summary.unresolvedOrders` is what
+     * surfaces those, computed from the same set.
+     *
+     * THE GRATUITIES BELOW ALREADY USE THIS BASIS -- they are read by `recorded_at`, which is when
+     * the tip was taken. Until now the two halves of one sheet were windowed on different clocks.
+     */
     const report = await getReportData({
       restaurantId: terminal.restaurantId,
       startDate: range.startDate,
       endDate: range.endDate,
+      dateBasis: 'paid',
     })
 
     /**
