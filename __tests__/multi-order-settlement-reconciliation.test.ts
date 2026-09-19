@@ -62,19 +62,35 @@ function db(rows: Row[], opts: { readFails?: boolean } = {}) {
           if (col === 'restaurant_id') state.restaurantId = val
           return b
         },
+        /**
+         * `.range()` added 2026-09-19: the helper now paginates through `fetchAllRows`, because an
+         * unranged PostgREST read truncates at 1,000 rows and reports no error — which on THIS
+         * path would expand a settlement to FEWER orders than were charged, the same class of
+         * defect the module exists to prevent.
+         *
+         * The fake HONOURS the range rather than ignoring it, so a paginating caller is genuinely
+         * exercised. A stub that returned everything for any range would let a broken loop pass.
+         */
+        range: (from: number, to: number) =>
+          Promise.resolve(
+            opts.readFails
+              ? { data: null, error: { message: 'read failed' } }
+              : { data: matching().slice(from, to + 1), error: null },
+          ),
         then: (resolve: (v: unknown) => unknown) => {
           if (opts.readFails) {
             return Promise.resolve({ data: null, error: { message: 'read failed' } }).then(resolve)
           }
-          const data = rows.filter(
-            (r) =>
-              String(r.pending_settlement_id ?? '') === String(state.settlementId ?? '') &&
-              (state.restaurantId === undefined ||
-                String(r.restaurant_id ?? REST) === state.restaurantId),
-          )
-          return Promise.resolve({ data, error: null }).then(resolve)
+          return Promise.resolve({ data: matching(), error: null }).then(resolve)
         },
       }
+      const matching = () =>
+        rows.filter(
+          (r) =>
+            String(r.pending_settlement_id ?? '') === String(state.settlementId ?? '') &&
+            (state.restaurantId === undefined ||
+              String(r.restaurant_id ?? REST) === state.restaurantId),
+        )
       return b
     },
   } as never

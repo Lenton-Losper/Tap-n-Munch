@@ -67,6 +67,12 @@
  * one phase earlier: here it is the LOADING phase reading as empty, not the disconnected phase.
  */
 
+/**
+ * The single test for "does this row have an order number at all". Imported rather than restated
+ * so this file and every other render site cannot drift — see orderIdentifier below.
+ */
+import { hasAllocatedOrderNumber } from '@/lib/orders/order-identity'
+
 export const STATION_COPY = {
   kitchen: {
     pageTitle: 'Kitchen',
@@ -457,8 +463,24 @@ export function orderIdentifier(
    * writer leaves behind when it has nothing to record. "Order #0" is exactly as uncallable as
    * "No table" and looks more authoritative, which makes it worse.
    */
-  const order = orderNumber == null ? '' : String(orderNumber).trim()
-  if (order !== '' && order !== '0') return `${STATION_COPY.orderNumberPrefix}${order}`
+  /**
+   * ROUTED THROUGH `hasAllocatedOrderNumber` rather than re-tested here.
+   *
+   * The previous form -- `orderNumber == null ? '' : String(orderNumber).trim()` followed by
+   * `order !== '' && order !== '0'` -- was already CORRECT: it excluded 0 on the next line, which
+   * is exactly what the comment above demands. What it was not was SHARED, and
+   * `scripts/check-order-number-guard.ts` fails the build on the `== null` comparison precisely
+   * because that shape is one careless edit away from admitting 0 again.
+   * `lib/orders/order-identity.ts` says the same thing from the other side: "the test lives in
+   * hasAllocatedOrderNumber so this function and the render sites cannot disagree".
+   *
+   * Behaviour is unchanged for every value that was previously rendered, and strictly tighter for
+   * ones that were never legal: the helper also rejects negatives and non-numeric strings, which
+   * the bare string comparison happily printed as an order number.
+   */
+  if (hasAllocatedOrderNumber({ order_number: orderNumber })) {
+    return `${STATION_COPY.orderNumberPrefix}${String(orderNumber).trim()}`
+  }
   // Neither: keep the established wording rather than inventing a third phrase.
   return STATION_COPY[station].tableLabel('')
 }

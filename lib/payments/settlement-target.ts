@@ -42,6 +42,9 @@
  */
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { EXPECTED_CHARGE_COLUMNS, expectedChargeForOrders } from '@/lib/payments/expected-charge'
+// Paginates a PostgREST read. Unranged, PostgREST truncates at 1,000 rows and reports no error --
+// on this path that would mean settling fewer orders than were charged.
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import type { PaymentIntent } from '@/lib/payments/payment-intents'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
@@ -246,11 +249,34 @@ export async function resolveSettlementTarget(
     }
   }
 
-  const { data, error } = await supabase
-    .from('orders')
-    .select(TARGET_ORDER_COLUMNS)
-    .in('pending_settlement_id', settlementIds)
-    .eq('restaurant_id', restaurantId)
+  /**
+   * PAGINATED, AND THAT IS A MONEY CONCERN HERE RATHER THAN A STYLE ONE.
+   *
+   * PostgREST caps an unranged read at 1,000 rows and returns the truncated page with no error.
+   * For this query that would mean a settlement target SHORTER THAN THE SET THAT WAS CHARGED --
+   * which is precisely the Riviera failure this module exists to make unrepresentable, arrived at
+   * from a different direction. The caller would then verify the gateway amount against a partial
+   * expectation and either refuse a real payment or, worse, pay a subset.
+   *
+   * Caught by scripts/check-orders-read-bounded.ts, whose message says exactly this.
+   *
+   * A settlement of >1,000 orders is not realistic today; a silent truncation on the money path
+   * is not a risk worth carrying on that basis.
+   */
+  let data: TargetOrderRow[] | null = null
+  let error: { message: string } | null = null
+  try {
+    data = await fetchAllRows<TargetOrderRow>(
+      supabase
+        .from('orders')
+        .select(TARGET_ORDER_COLUMNS)
+        .in('pending_settlement_id', settlementIds)
+        .eq('restaurant_id', restaurantId) as never,
+      { label: 'resolveSettlementTarget expansion' },
+    )
+  } catch (e) {
+    error = { message: e instanceof Error ? e.message : String(e) }
+  }
 
   if (error) {
     /**
@@ -273,7 +299,7 @@ export async function resolveSettlementTarget(
 
   const expanded = new Map<string, TargetOrderRow>()
   for (const row of leads) expanded.set(String(row.id), row)
-  for (const row of (data ?? []) as unknown as TargetOrderRow[]) {
+  for (const row of data ?? []) {
     expanded.set(String(row.id), row)
   }
 

@@ -70,7 +70,16 @@ export async function GET(req: Request) {
       .from('orders')
       .select(
         'id, order_number, restaurant_id, payment_status, payment_method, total, paid_at, ' +
-          'placed_at, paycloud_merchant_order_no, pending_charge_cents',
+          'placed_at, paycloud_merchant_order_no, pending_charge_cents, ' +
+          /**
+           * `firebase_restaurant_id` is REQUIRED by the stress-fixture predicate, not decoration.
+           * Without it `excludeStressFixtures` calls every row real, and production's `orders` is
+           * 37% load-test debris (1,314 of 3,522 on 2026-08-27) -- so this report would have
+           * counted that debris as genuine findings and quoted a critical total up to 37% too
+           * high. Caught by scripts/check-orders-fixture-excluded.ts, whose message says exactly
+           * this.
+           */
+          'firebase_restaurant_id',
       )
       .gte('placed_at', since)
       .order('placed_at', { ascending: false })

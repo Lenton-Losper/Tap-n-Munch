@@ -30,6 +30,8 @@
  */
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { EXPECTED_CHARGE_COLUMNS, type ChargeExpectationRow } from '@/lib/payments/expected-charge'
+// Paginates the read below; unranged it truncates at 1,000 rows with no error.
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -69,11 +71,31 @@ export async function settlementSetFor(
     return { orders: [leadOrder], basis: 'lead_order_only', settlementId: null }
   }
 
-  const { data, error } = await supabase
-    .from('orders')
-    .select(SETTLEMENT_SET_COLUMNS)
-    .eq('pending_settlement_id', settlementId)
-    .eq('restaurant_id', restaurantId)
+  /**
+   * PAGINATED. Unranged, PostgREST truncates at 1,000 rows and reports no error, so a large
+   * settlement would silently expand to a SHORTER set than was charged -- the same class of defect
+   * this module exists to address, arrived at from the other side.
+   *
+   * NOTE: this module is SUPERSEDED by lib/payments/settlement-target.ts, which is what the
+   * webhook and verify-payment use as of 2026-09-19. It survives only because
+   * __tests__/multi-order-settlement-reconciliation.test.ts still exercises it. Fixed rather than
+   * deleted, so the bounded-read gate is clear without churning that suite inside a release
+   * change; it should go when that test is retired.
+   */
+  let data: SettlementOrderRow[] | null = null
+  let error: { message: string } | null = null
+  try {
+    data = await fetchAllRows<SettlementOrderRow>(
+      supabase
+        .from('orders')
+        .select(SETTLEMENT_SET_COLUMNS)
+        .eq('pending_settlement_id', settlementId)
+        .eq('restaurant_id', restaurantId) as never,
+      { label: 'settlementSetFor' },
+    )
+  } catch (e) {
+    error = { message: e instanceof Error ? e.message : String(e) }
+  }
 
   if (error) {
     /**
@@ -88,7 +110,7 @@ export async function settlementSetFor(
     return { orders: [leadOrder], basis: 'lead_order_only', settlementId }
   }
 
-  const rows = (data ?? []) as SettlementOrderRow[]
+  const rows = data ?? []
   if (rows.length === 0) {
     return { orders: [leadOrder], basis: 'lead_order_only', settlementId }
   }
