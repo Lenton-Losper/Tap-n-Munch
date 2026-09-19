@@ -10,6 +10,10 @@ class PaymentPackage : ReactPackage {
     listOf(
       PaymentModule(reactContext),
       RuntimeConfigModule(reactContext),
+      // F19. The reader's own serial, so a payment can be traced to a physical device and not
+      // only to a registration row. Registered unconditionally: a device that cannot supply one
+      // resolves to null rather than failing to load.
+      DeviceIdentityModule(reactContext),
       PrinterModule(reactContext),
       // SDK4 is the transport that actually resolves on our P5 units. SDK6 stays registered
       // only through the verification window; delete it once SDK4 has printed on a real

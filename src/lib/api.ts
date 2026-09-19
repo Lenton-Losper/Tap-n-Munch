@@ -6,6 +6,8 @@
  */
 import {APP_VERSION, FLASHTAP_API_URL} from '../constants';
 import {recordWiretapEvent} from './wiretap';
+// F19. The reader's own serial, sent at activation so a registration names a physical device.
+import {getDeviceIdentity} from './deviceIdentity';
 import {TabLinesPayload} from './tabLines';
 import {
   getRefreshToken,
@@ -317,10 +319,44 @@ export async function activateTerminal(
   );
   console.log('[activate] code being sent:', code);
 
+  /**
+   * ================================================================================================
+   * F19 — THE DEVICE NAMES ITSELF AT ACTIVATION
+   * ================================================================================================
+   *
+   * `app/api/terminals/activate/route.ts` has always read `sn` and `device_id` off this body and
+   * written them to `restaurant_terminals`. This call never sent either, so on production 270 of
+   * 274 registrations carry `sn = null` and a `device_serial` of `ft-<the row's own uuid>` -- an
+   * identifier for the ROW rather than for the reader. A payment could be traced to a terminal_id,
+   * and a terminal_id to nothing physical.
+   *
+   * ACTIVATION STILL SUCCEEDS WITHOUT ONE. `getDeviceIdentity()` resolves to `serial: null` on
+   * anything that cannot supply one -- a station tablet, an unbound SDK, an older shell -- and the
+   * fields are then OMITTED rather than sent as null, so the server's existing `if (terminalSn)`
+   * guard behaves exactly as it does today. Nothing here can stop a till being set up.
+   *
+   * NO SERVER CHANGE WAS NEEDED, which is why this ships as a terminal-only build against an
+   * endpoint that already accepted these fields.
+   */
+  const identity = await getDeviceIdentity();
+  console.log('[activate] device identity:', {
+    serial: identity.serial,
+    source: identity.serialSource,
+    reason: identity.reason,
+  });
+
   const response = await fetch(`${FLASHTAP_API_URL}/api/terminals/activate`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({code}),
+    body: JSON.stringify({
+      code,
+      // Omitted entirely when unknown. An explicit null would still be falsy to the server's
+      // guard, but an absent key is the honest shape for "this device did not say".
+      ...(identity.serial ? {sn: identity.serial} : {}),
+      // The server's own device_id column, which it fills from device_id then sn. ANDROID_ID is a
+      // stable-enough per-install handle for that, and is deliberately NOT written to `sn`.
+      ...(identity.androidId ? {device_id: identity.androidId} : {}),
+    }),
   });
 
   const data = (await response.json()) as ActivationResponse & ApiErrorBody;
