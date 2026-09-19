@@ -5,6 +5,8 @@ import { parseTipCents } from '@/lib/payments/tips'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { ensureTerminalMerchantOrderNo } from '@/lib/payments/terminal-merchant-order'
+// F4. The whole-order charge now records an intent too, on the device's own reference.
+import { ensureOrdersIntent } from '@/lib/payments/payment-intents'
 import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 /**
  * Imported from finatic-credentials-error, NOT from finatic-restaurant-credentials, even though
@@ -262,7 +264,9 @@ export async function POST(
        */
       const { data: orderRows, error: orderReadError } = await supabase
         .from('orders')
-        .select('id, total, pending_settlement_id')
+        // tab_id is selected so the payment intent can name the tab it belongs to. A tab-less
+        // order (a POS walk-up) yields null, which the column permits.
+        .select('id, total, tab_id, pending_settlement_id')
         .in('id', settlementOrderIds)
         .eq('restaurant_id', terminal.restaurantId)
 
@@ -444,12 +448,47 @@ export async function POST(
         )
       }
 
+      /**
+       * ============================================================================================
+       * ONE PAYMENT-INTENT MECHANISM (F4)
+       * ============================================================================================
+       *
+       * The split path has recorded WHAT IS BEING CHARGED, as a row, since 2026-09-06. The
+       * whole-order path recorded only per-order columns, which group the orders but never state
+       * what the reader was asked for as a single figure -- so nothing downstream could distinguish
+       * a gateway amount that matches the tab AS IT NOW STANDS from one that matches what the
+       * customer actually agreed to pay. That is the stale-snapshot case, and it is the one
+       * `pending_settlement_id` structurally cannot answer.
+       *
+       * The intent is keyed on `merchantOrderNo` -- the reference the device already sends -- so
+       * nothing changes on the wire and no terminal build is required. `settle_order_payment` then
+       * refuses when the intent's amount and the gateway's disagree, and when the set being settled
+       * is not the set the intent named.
+       *
+       * BEST-EFFORT, AND DELIBERATELY SO. A null return leaves every existing mechanism intact: the
+       * expectation columns are already written above, the expansion still works, and the
+       * gateway-amount gate still runs. This must never be able to stop a till taking a payment.
+       */
+      const intent = await ensureOrdersIntent(supabase, {
+        restaurantId: terminal.restaurantId,
+        terminalId: terminal.terminalId,
+        tabId: leadRow?.tab_id ? String(leadRow.tab_id) : null,
+        merchantOrderNo,
+        // What the READER is asked for: the items still owed, plus any gratuity. The same figure
+        // returned to the device below, so the amount sent and the amount verified are one number.
+        amountCents: chargeCents,
+        orderIds: settlementOrderIds,
+        tipCents,
+        tipStaffUserId: tipCents > 0 ? tipStaffUserId : null,
+      })
+
       console.log('[terminal/prepare-payment]', {
         orderId,
         restaurantId: terminal.restaurantId,
         terminalId: terminal.terminalId,
         merchantOrderNo,
         created,
+        intentId: intent?.id ?? null,
       })
 
       return NextResponse.json({

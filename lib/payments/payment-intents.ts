@@ -175,6 +175,144 @@ export async function createPaymentIntent(
   throw new Error('createPaymentIntent: could not mint a unique merchant_order_no in 5 attempts')
 }
 
+/**
+ * ==================================================================================================
+ * THE WHOLE-ORDER PATH, ON THE SAME MECHANISM (F4)
+ * ==================================================================================================
+ *
+ * The module header above records the 2026-09-06 ruling that two reference mechanisms coexisting
+ * was the correct trade, and why: a defect in the new split path must not be able to reach the path
+ * every venue already used. That ruling is SUPERSEDED here, deliberately, and the reason it was
+ * right at the time is the reason it is wrong now.
+ *
+ * It was right while the split path was new and the whole-order path was working. The whole-order
+ * path was NOT working: it produced Riviera settlement 4158ff51 on 2026-09-18, which charged N$720
+ * across orders #154 and #155 and paid only #155. Keeping the two apart no longer protects a sound
+ * mechanism from a risky one -- it keeps a second, weaker definition of "what is being paid for"
+ * alive alongside the strong one.
+ *
+ * WHAT AN INTENT ADDS THAT `pending_settlement_id` CANNOT. The settlement id groups rows; it does
+ * not record what was ASKED of the reader. A settlement expanded from it can be compared with the
+ * gateway's figure, but nothing can say whether that figure is what the customer agreed to pay --
+ * which is exactly the stale-snapshot case. An intent carries `amount_cents`, written before the
+ * reader was launched, and `settle_order_payment` refuses when the two disagree.
+ *
+ * ==================================================================================================
+ * NOTHING IS REMOVED, AND THE DEPLOYMENT ORDER DEPENDS ON THAT
+ * ==================================================================================================
+ *
+ * `orders.paycloud_merchant_order_no`, `pending_charge_cents` and `pending_settlement_id` are all
+ * still written and still read. An intent is ADDITIVE:
+ *
+ *   a worker that predates this  ignores `resolved.intent` for scope 'orders' and expands through
+ *                                pending_settlement_id, exactly as it does today
+ *   a terminal that predates it  sends the same businessOrderNo it always did -- the intent is
+ *                                keyed on that value, so the device has nothing new to learn
+ *
+ * So this ships before, after or without a terminal build, and rolling it back is a code revert
+ * with no data migration. See docs/payment-hardening-remediation.md.
+ */
+export async function ensureOrdersIntent(
+  supabase: Supabase,
+  params: {
+    restaurantId: string
+    terminalId: string | null
+    tabId: string | null
+    /** The reference the device will send. Minted by ensureTerminalMerchantOrderNo, never rotated. */
+    merchantOrderNo: string
+    amountCents: number
+    orderIds: string[]
+    tipCents?: number
+    tipStaffUserId?: string | null
+  },
+): Promise<PaymentIntent | null> {
+  const mo = String(params.merchantOrderNo ?? '').trim()
+  if (!mo || params.orderIds.length === 0) return null
+
+  const amountCents = Math.round(Number(params.amountCents))
+  if (!Number.isFinite(amountCents) || amountCents <= 0) return null
+
+  /**
+   * FIND FIRST. `ensureTerminalMerchantOrderNo` is idempotent by design -- a repeated prepare for
+   * the same live attempt gets the same reference back with created:false -- so this function runs
+   * again with the same merchant_order_no, which is UNIQUE. A second insert would be a 23505.
+   */
+  const existing = await findIntentByMerchantOrderNo(supabase, mo)
+  if (existing) {
+    /**
+     * A RESOLVED INTENT IS NEITHER REUSED NOR REWRITTEN.
+     *
+     * If the reference has already been confirmed, failed or declared uncertain, this attempt is
+     * not the one that intent describes. Returning null drops the caller back to the
+     * `pending_settlement_id` basis -- today's behaviour -- rather than mutating the record of a
+     * charge that has already happened.
+     */
+    if (existing.status !== 'launched') return null
+
+    // The figure may legitimately move between two prepares for one attempt: a line is voided, a
+    // gratuity is added. The intent must describe THIS attempt, so it is updated -- and only while
+    // it is still unresolved and unconsumed.
+    const { data, error } = await supabase
+      .from('terminal_payment_intents')
+      .update({
+        amount_cents: amountCents,
+        order_ids: params.orderIds,
+        tip_cents: Math.max(0, Math.round(Number(params.tipCents ?? 0))),
+        tip_staff_user_id: params.tipStaffUserId ?? null,
+      })
+      .eq('id', existing.id)
+      .eq('status', 'launched')
+      .is('consumed_at', null)
+      .select(SELECT)
+      .maybeSingle()
+
+    if (error || !data) {
+      console.error('[ensureOrdersIntent] could not refresh the intent', {
+        merchantOrderNo: mo,
+        error: error?.message,
+      })
+      return null
+    }
+    return toIntent(data as IntentRow)
+  }
+
+  const { data, error } = await supabase
+    .from('terminal_payment_intents')
+    .insert({
+      restaurant_id: params.restaurantId,
+      terminal_id: params.terminalId,
+      tab_id: params.tabId,
+      // THE DEVICE'S OWN REFERENCE, not a freshly minted one. A split charge mints its own because
+      // two attempts on one order are two references; a whole-order charge already HAS a reference,
+      // and minting a second would give the webhook two rows to correlate one payment against.
+      merchant_order_no: mo,
+      amount_cents: amountCents,
+      scope: 'orders',
+      order_ids: params.orderIds,
+      allocation_ids: null,
+      tip_cents: Math.max(0, Math.round(Number(params.tipCents ?? 0))),
+      tip_staff_user_id: params.tipStaffUserId ?? null,
+      status: 'launched',
+    })
+    .select(SELECT)
+    .maybeSingle()
+
+  if (error) {
+    /**
+     * NEVER FATAL. Everything downstream still works without an intent: the target is expanded
+     * through `pending_settlement_id` and the gateway amount is still checked against it. Refusing
+     * to prepare a payment because a STRENGTHENING record could not be written would turn an
+     * improvement into an outage at the till.
+     */
+    console.error('[ensureOrdersIntent] could not record the intent', {
+      merchantOrderNo: mo,
+      error: error.message,
+    })
+    return null
+  }
+  return data ? toIntent(data as IntentRow) : null
+}
+
 /** The webhook's lookup. Returns null for a reference that is not an intent — every OLD one. */
 export async function findIntentByMerchantOrderNo(
   supabase: Supabase,

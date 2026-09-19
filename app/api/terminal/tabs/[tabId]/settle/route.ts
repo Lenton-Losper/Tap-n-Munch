@@ -4,6 +4,7 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { generatePaymentReference } from '@/lib/payment-reference'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import { parseTipCents, recordTip } from '@/lib/payments/tips'
+import { recordGatewaySaleEvent } from '@/lib/payments/record-gateway-sale-event'
 import { chargeableCentsFor, settledCentsByOrder } from '@/lib/payments/settled-cents'
 import {
   amountsMatch,
@@ -696,6 +697,62 @@ export async function POST(
     }
 
     /**
+     * ================================================================================================
+     * THE LEDGER ROW, WRITTEN HERE RATHER THAN HOPED FOR (F2)
+     * ================================================================================================
+     *
+     * Until now the only writer of a `payment_events` sale row for this settlement was the DEVICE,
+     * afterwards, and it does not wait for the answer. Terminal 9426f990,
+     * `src/screens/TableDetailScreen.tsx`:
+     *
+     *     if (businessOrderNo && transactionId) {
+     *       recordSaleEvent({...}, token).then(r => { if (!r.ok) console.warn(...) })
+     *     } else {
+     *       console.warn('[TableDetail] Skipping recordSaleEvent - missing businessOrderNo or voucherNo')
+     *     }
+     *
+     * Not awaited, never retried, and skipped outright when either value is absent. Measured on
+     * production 2026-09-19: 1,630 paid card orders worth N$110,027 have no sale row.
+     *
+     * THE SAME TABLE AND THE SAME KEY THE DEVICE USES, so this is one ledger and not two -- when the
+     * device's call does arrive it takes the existing 23505 branch in the sale route, finds this
+     * row, and returns it.
+     *
+     * GATEWAY METHODS ONLY. `payment_events` is keyed on a gateway reference and is what a Finatic
+     * reconciliation joins against; cash and PayToday have no such transaction, and a sale row for
+     * them would be a row that can never be matched. Those remain recorded in `payments`, which is
+     * exactly the role F10 concludes that table still has.
+     *
+     * NOT AWAITED FOR ITS SUCCESS -- the settlement has already happened. The outcome is carried
+     * into the audit metadata and the response, the same contract `payment_record_written` has.
+     */
+    let saleEventOutcome: string | null = null
+    if (usesGateway) {
+      const sale = await recordGatewaySaleEvent(supabase, {
+        restaurantId: terminal.restaurantId,
+        orderIds: claimedIds,
+        // The gateway's own reference. Absent means there is nothing to key a ledger row on, and
+        // inventing one would produce a row that matches no Finatic transaction (see F17).
+        businessOrderNo: businessOrderNo || null,
+        transactionId: voucherNo || gatewayReference || null,
+        // THE SERVER'S FIGURE. `amount` is the client's and is only ever a cross-check.
+        amount: expectedAmount,
+        terminalId: terminal.terminalId,
+        source: 'terminal/tabs/settle',
+      })
+      saleEventOutcome = sale.outcome
+      if (sale.outcome === 'failed' || sale.outcome === 'skipped_no_reference') {
+        console.error('[terminal/tabs/settle] payment ledger row NOT written', {
+          tabId,
+          order_ids: claimedIds,
+          business_order_no: businessOrderNo || null,
+          outcome: sale.outcome,
+          error: sale.error,
+        })
+      }
+    }
+
+    /**
      * THE GRATUITY, recorded against the payment that carried it.
      *
      * AFTER the money, never before: the customer has been charged, and `recordTip` is built not
@@ -783,6 +840,10 @@ export async function POST(
         // Whether a payments row exists for this settlement. The audit trail is the only durable
         // record when it does not, so it must say so rather than imply a payment row by silence.
         payment_record_written: !paymentInsertError,
+        // F2. Whether the authoritative LEDGER row exists for this settlement. Recorded rather
+        // than inferred: a card sale with no payment_events row is precisely the silent gap that
+        // left 1,630 paid orders unreconcilable against Finatic.
+        ...(usesGateway ? { sale_event: saleEventOutcome } : {}),
         /**
          * The gratuity, if one was keyed. Present ONLY when there was one, so an absent key means
          * "no tip" and never "a tip we lost". `tip_recorded` carries the outcome verbatim --
@@ -877,6 +938,17 @@ export async function POST(
       // The settlement still succeeded, so this is not an error status -- it is a reconciliation
       // flag, and the only thing at the call site that can tell the difference.
       payment_record_written: !paymentInsertError,
+      /**
+       * F2. 'recorded' | 'already_recorded' | 'skipped_no_reference' | 'failed'. Either of the
+       * first two means the ledger row exists; anything else means this card sale has none and
+       * needs reconciling. Absent for cash and PayToday, which have no gateway transaction a
+       * ledger row could ever be matched to.
+       *
+       * ADDITIVE for a fielded build: the terminal still calls recordSaleEvent afterwards and
+       * still gets a 200 back, because that call now finds this row through its existing
+       * idempotency branch instead of inserting one.
+       */
+      ...(usesGateway ? { sale_event: saleEventOutcome } : {}),
       // Same contract as payment_record_written: absent means no gratuity was keyed, and a value
       // other than 'recorded' means one was taken and needs reconciling. The terminal can print
       // the receipt either way -- the settlement succeeded.
