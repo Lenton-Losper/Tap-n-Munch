@@ -185,9 +185,9 @@ describe('the cases the brief names as hazards', () => {
 })
 
 describe('the cash-up asks for the paid basis, and the sales report does not', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
 
   const read = (rel: string) =>

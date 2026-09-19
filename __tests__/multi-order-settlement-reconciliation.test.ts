@@ -276,9 +276,9 @@ describe('G. REPEATED PREPARATION — the identity is stable', () => {
    * Asserted against source -- the route cannot be imported under ts-jest (jose is ESM-only) -- and
    * the question is static: does it read the existing id before minting?
    */
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
   const CODE = readFileSync(
     join(process.cwd(), 'app/api/terminal/orders/[orderId]/prepare-payment/route.ts'),
@@ -319,9 +319,9 @@ describe('G. REPEATED PREPARATION — the identity is stable', () => {
 })
 
 describe('BOTH GATES EXPAND — asserted at the call sites', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
 
   /**

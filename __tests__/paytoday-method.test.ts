@@ -138,9 +138,9 @@ describe('v1 SCOPE IS ENFORCED, NOT DOCUMENTED', () => {
      * Asserted against the migration SOURCE, because that is what the database enforces. If someone
      * widens those constraints, this fails and the route-level refusals must be revisited with it.
      */
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { readFileSync } = require('fs')
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { join } = require('path')
 
     const alloc = readFileSync(
@@ -163,9 +163,9 @@ describe('v1 SCOPE IS ENFORCED, NOT DOCUMENTED', () => {
      * here would silently open v2 scope, and the loud failures above are the only thing currently
      * stopping a split PayToday from being recorded.
      */
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { readFileSync } = require('fs')
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { join } = require('path')
     const sql = readFileSync(
       join(process.cwd(), 'supabase/migrations/20260909160000_paytoday_payment_method.sql'),
@@ -201,9 +201,9 @@ describe('THE POS PAYMENT LEG VALIDATES ITS METHOD', () => {
    * Asserted against the SOURCE because the handler cannot be imported under ts-jest (jose is
    * ESM-only), and because the question is static: does this route consult the allowlist at all?
    */
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
   const ROUTE = join(process.cwd(), 'app/api/terminal/orders/[orderId]/payment/route.ts')
   const CODE = readFileSync(ROUTE, 'utf8')

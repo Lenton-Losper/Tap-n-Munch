@@ -201,9 +201,9 @@ describe('the server writes the payment ledger row', () => {
 })
 
 describe('the settle route writes the ledger row itself', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
 
   const source = () =>

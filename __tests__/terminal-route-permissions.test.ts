@@ -159,7 +159,7 @@ describe('the checker can actually see', () => {
     ].join('\n')
 
     const tmp = join(process.cwd(), '__tests__', '.tmp-comment-probe.ts')
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { writeFileSync, unlinkSync } = require('fs')
     writeFileSync(tmp, commentOnly, 'utf8')
     try {

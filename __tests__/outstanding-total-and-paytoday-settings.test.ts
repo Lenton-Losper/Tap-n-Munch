@@ -96,9 +96,9 @@ describe('THE ROUTE ACTUALLY USES IT, AND LOADS WHAT IT NEEDS', () => {
    * because the handler cannot be imported under ts-jest (jose is ESM-only), and because the
    * question is static: does the route subtract settled items at all?
    */
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
   const CODE = readFileSync(join(process.cwd(), 'app/api/terminal/tables/route.ts'), 'utf8')
   const statements = CODE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
@@ -128,9 +128,9 @@ describe('PAYTODAY IS CONFIGURABLE IN SETTINGS, AND OFF BY DEFAULT', () => {
    * it would need a DOM and a fetch harness to answer a question that is textual — is there a
    * PayToday control, is it bound to the same list, and is the kiosk section untouched?
    */
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
   const UI = readFileSync(join(process.cwd(), 'components/settings/settings-payment-tab.tsx'), 'utf8')
   const API = readFileSync(

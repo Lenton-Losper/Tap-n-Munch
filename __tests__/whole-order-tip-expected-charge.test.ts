@@ -176,9 +176,9 @@ describe('THE COLUMNS ARE SELECTED, NOT MERELY WRITTEN', () => {
    * exactly what an unselected column looks like. So a gate that forgot to SELECT it would behave
    * as though no gratuity had ever been charged, silently, and every test above would still pass.
    */
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
 
 /**
@@ -227,9 +227,9 @@ describe('NO GATE COMPARES AGAINST order.total ANY MORE', () => {
    * after the customer has paid -- and the five arithmetic suites above would all still pass,
    * because they test the helper rather than the call sites.
    */
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
 
   it.each([

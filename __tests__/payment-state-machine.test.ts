@@ -186,9 +186,9 @@ describe('transitionsInto', () => {
      * SQL function cannot import a TypeScript module. Two copies of one rule is the shape that
      * drifts, so this asserts they are the same set by reading the migration.
      */
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { readFileSync } = require('fs')
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { join } = require('path')
     const sql = readFileSync(
       join(process.cwd(), 'supabase/migrations/20260919090000_settle_order_payment_atomic.sql'),
@@ -258,9 +258,9 @@ describe('the companion invariants — what must agree with payment_status', () 
 })
 
 describe('the database constraint admits exactly the nine', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { readFileSync } = require('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const { join } = require('path')
 
   it('the migration lists every declared status and no others', () => {
