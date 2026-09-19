@@ -38,6 +38,15 @@ let tabFilters: Filters
 /** Columns the route asked PostgREST for, per table. */
 let selects: Record<string, string>
 let tabRows: Array<Record<string, unknown>>
+/**
+ * F7. The tab's ORDERS, which are now where the served total comes from. Shaped the way
+ * TAB_TOTAL_ORDER_COLUMNS selects them: no id, because this route is AGGREGATE_NO_IDS.
+ */
+let orderRows: Array<Record<string, unknown>>
+/** Set to force the orders read to fail, for the fail-safe assertion. */
+let orderReadError: { message: string } | null
+/** Filters applied to the `orders` query, so the tab scoping can be asserted. */
+let orderFilters: Filters
 /** null models "no active restaurant_tables row for this number" — the table_number branch. */
 let tableRow: { id: string } | null
 
@@ -57,6 +66,18 @@ function makeClient() {
           const builder: Record<string, unknown> = {
             eq: (col: string, val: unknown) => {
               if (table === 'tabs') tabFilters.push(['eq', col, val])
+              if (table === 'orders') orderFilters.push(['eq', col, val])
+              // The orders read is awaited directly off .eq(), so it resolves here.
+              if (table === 'orders') {
+                return Object.assign(
+                  Promise.resolve(
+                    orderReadError
+                      ? { data: null, error: orderReadError }
+                      : { data: orderRows, error: null },
+                  ),
+                  builder,
+                )
+              }
               return builder
             },
             in: (col: string, val: unknown) => {
@@ -83,8 +104,16 @@ jest.mock('@/lib/supabase/server', () => ({
 
 beforeEach(() => {
   tabFilters = []
+  orderFilters = []
   selects = {}
+  orderReadError = null
   tableRow = { id: TABLE_ID }
+  // Two orders totalling 184.50, so the derived figure and the (now irrelevant) stored column
+  // agree by default. Every F7 test below makes them disagree on purpose.
+  orderRows = [
+    { total: 100.5, payment_status: 'pending', tab_settlement_for_tab_id: null },
+    { total: 84, payment_status: 'paid', tab_settlement_for_tab_id: null },
+  ]
   tabRows = [
     {
       id: TAB_ID,
@@ -193,6 +222,10 @@ describe('GET /api/tabs/active — count, not members (#262)', () => {
     // `pin_required !== false` (not `Boolean(...)`) is deliberate and matches the landing
     // page: a null column must read as PIN-required, never as PIN-less.
     tabRows = [{ id: TAB_ID, status: 'ready_to_pay', total: null, pin_required: null, members: null }]
+    // F7: the served total no longer comes from the column at all, so it is a tab with NO ORDERS
+    // that produces 0 here. `total: null` is left on the row above precisely to show it is not
+    // what this assertion turns on any more.
+    orderRows = []
     const { body } = await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)
 
     expect(body.tab).toEqual({
@@ -201,6 +234,105 @@ describe('GET /api/tabs/active — count, not members (#262)', () => {
       total: 0,
       pin_required: true,
       member_count: 0,
+    })
+  })
+
+  /**
+   * ================================================================================================
+   * F7 — THE SERVED TOTAL IS DERIVED, AND `tabs.total` CANNOT MOVE IT
+   * ================================================================================================
+   *
+   * THE OLD FAILURE MODE, reproduced below. `tabs.total` has five writers using two incompatible
+   * definitions — thirteen production rows stored gross-ordered, six stored still-outstanding,
+   * decided by whichever writer touched the row last — and seven money-changing events skip the
+   * column entirely (order cancel, terminal order creation, refund, terminal payment failure,
+   * request decline, table close, terminal status change).
+   *
+   * So a customer scanning the QR saw one of two different quantities, or a figure frozen before
+   * the last three things that happened to their bill. These pin that the column can now hold
+   * ANYTHING without the customer-facing figure moving.
+   */
+  describe('F7: the customer-facing total ignores the stale tabs.total column', () => {
+    it('serves the DERIVED figure when the stored column disagrees', async () => {
+      // The regression, in one line: the column says 999.99, the orders say 184.50.
+      tabRows = [{ id: TAB_ID, status: 'open', total: 999.99, pin_required: true, members: MEMBERS }]
+      const { body } = await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)
+
+      expect(body.tab.total).toBe(184.5)
+      expect(body.tab.total).not.toBe(999.99)
+    })
+
+    it('is UNCHANGED by any value the stored column takes', async () => {
+      /**
+       * The strong form. Before F7 each of these produced a different customer-facing figure while
+       * the actual bill was identical — which is what "stale competing source of truth" means in
+       * practice.
+       */
+      for (const stale of [0, null, 1, 184.49, 999999, -50]) {
+        tabRows = [
+          { id: TAB_ID, status: 'open', total: stale, pin_required: true, members: MEMBERS },
+        ]
+        const { body } = await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)
+        expect(body.tab.total).toBe(184.5)
+      }
+    })
+
+    it('follows the ORDERS when they change and the column does not', async () => {
+      // The other direction: a money-changing event the column never hears about.
+      tabRows = [{ id: TAB_ID, status: 'open', total: 184.5, pin_required: true, members: MEMBERS }]
+      orderRows = [
+        { total: 100.5, payment_status: 'pending', tab_settlement_for_tab_id: null },
+        { total: 84, payment_status: 'paid', tab_settlement_for_tab_id: null },
+        { total: 42, payment_status: 'pending', tab_settlement_for_tab_id: null },
+      ]
+      const { body } = await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)
+
+      expect(body.tab.total).toBe(226.5)
+    })
+
+    it('reads the orders scoped to THIS tab', async () => {
+      await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)
+      expect(orderFilters).toEqual([['eq', 'tab_id', TAB_ID]])
+    })
+
+    it('selects NO id column — this is what keeps the route AGGREGATE_NO_IDS', async () => {
+      /**
+       * The security half. The route was NO_ORDER_READ in the guest-route manifest and is now
+       * AGGREGATE_NO_IDS; the whole basis for that reclassification is that no order id can leave.
+       * Asserted on the columns actually requested, not on the class label.
+       */
+      await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)
+      const columns = selects.orders.split(',').map((c) => c.trim())
+      expect(columns.length).toBeGreaterThan(1)
+      expect(columns.filter((c) => /(^|[^a-z_])id$/.test(c))).toEqual([])
+
+      const wire = JSON.stringify(
+        (await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)).body,
+      )
+      // The tab id is returned by contract; no ORDER id may be.
+      expect(wire).not.toContain('order')
+    })
+
+    it('serves 0 rather than the stale column when the orders cannot be read', async () => {
+      // Fails toward "unknown", never back to the number that is wrong by construction.
+      tabRows = [{ id: TAB_ID, status: 'open', total: 999.99, pin_required: true, members: MEMBERS }]
+      orderReadError = { message: 'orders unavailable' }
+      const { status, body } = await call(
+        `restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`,
+      )
+
+      expect(status).toBe(200)
+      expect(body.tab.total).toBe(0)
+      expect(body.tab.total).not.toBe(999.99)
+    })
+
+    it('still returns exactly the five contracted keys', async () => {
+      // The route's own docblock says "do not widen it — the anon grant is being narrowed to
+      // match". Deriving the figure must not become an excuse to add fields.
+      const { body } = await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)
+      expect(Object.keys(body.tab).sort()).toEqual(
+        ['id', 'member_count', 'pin_required', 'status', 'total'].sort(),
+      )
     })
   })
 

@@ -71,7 +71,24 @@ const MANIFEST: Record<string, Class> = {
    * statement is how this manifest first got them wrong.
    */
   'tabs/[tabId]/view/route.ts': 'AGGREGATE_NO_IDS',
-  'tabs/active/route.ts': 'NO_ORDER_READ',
+  /**
+   * RECLASSIFIED 2026-09-19 (F7): NO_ORDER_READ -> AGGREGATE_NO_IDS, deliberately.
+   *
+   * The landing page renders this route's `total` as "Total so far", and it was
+   * `Number(tabs.total)` — a column with five writers using two incompatible definitions which,
+   * measured on production 2026-08-15, agreed on ONE of 20 tabs carrying orders. The number a
+   * customer saw was one of two different quantities, chosen by whichever writer touched the row
+   * last.
+   *
+   * Deriving it means reading orders, which is what moves the class. It is NOT a weakening of
+   * #305: the route reads through `TAB_TOTAL_ORDER_COLUMNS`, which carries no `id` and is held
+   * id-free by the assertion further down this file, and the only thing that leaves the function
+   * is a NUMBER. The response keeps exactly the five keys it already had.
+   *
+   * This is the class the manifest already defines for this shape, and the one
+   * `tabs/[tabId]/view` has used to sum a bill since it was written.
+   */
+  'tabs/active/route.ts': 'AGGREGATE_NO_IDS',
 
   'guest/orders/[orderId]/edit/route.ts': 'SINGLE_ORDER_MUTATION',
   'guest/orders/[orderId]/receipt/email/route.ts': 'SINGLE_ORDER_MUTATION',
@@ -201,6 +218,46 @@ describe('guest-reachable routes do not hand order ids to sessions that do not o
     // Correctness of the filter is the chain probe's job, not this file's.
     expect(source).toMatch(OWNERSHIP_MECHANISM)
   })
+
+  it.each(Object.entries(MANIFEST).filter(([, c]) => c === 'AGGREGATE_NO_IDS'))(
+    '%s reads orders ONLY through the id-free shared column constants',
+    (key) => {
+      /**
+       * ADDED 2026-09-19 with the tabs/active reclassification, and it closes a real hole in this
+       * file rather than accommodating the new entry.
+       *
+       * AGGREGATE_NO_IDS was asserted only INDIRECTLY: the test below proves the shared constants
+       * carry no id, but nothing proved a route in this class actually USES them. A route could be
+       * classified AGGREGATE_NO_IDS, select `'id, total'` inline, and every assertion here would
+       * pass — which is precisely the "classified one way, behaves another" drift the manifest
+       * exists to stop.
+       *
+       * So: a route in this class must reference one of the shared constants, and must not carry
+       * an inline `.select(...)` that names an id column of its own.
+       */
+      const file = files.find((f) => keyOf(f) === key)
+      if (!file) return
+      const source = codeOnly(readFileSync(file, 'utf8'))
+
+      expect(source).toMatch(/TAB_TOTAL_ORDER_COLUMNS|TAB_PENDING_REQUEST_COLUMNS/)
+
+      /**
+       * Scoped to ORDER reads, not to every select in the file. These routes legitimately select
+       * `id` from `tabs` and `restaurant_tables` -- a tab id is what the landing page joins on and
+       * is already returned. The class is about ORDER ids.
+       *
+       * Each `from('orders')` / `from('order_requests')` is followed by its own chain, so the
+       * window after it is where an inline select would be.
+       */
+      for (const match of source.matchAll(/from\(\s*['"](orders|order_requests)['"]\s*\)/g)) {
+        const window = source.slice(match.index ?? 0, (match.index ?? 0) + 300)
+        const inline = window.match(/\.select\(\s*['"]([^'"]*)['"]\s*\)/)
+        if (!inline) continue // selects through a constant, which the test below holds id-free
+        const named = inline[1].split(',').map((c) => c.trim())
+        expect(named.filter((c) => /(^|[^a-z_])id$/.test(c))).toEqual([])
+      }
+    },
+  )
 
   it('never lets an id into the shared order-column constants the tab view sums with', () => {
     // The direct form of the property, and the one with real teeth: AGGREGATE_NO_IDS holds only

@@ -21,13 +21,38 @@ CREATE TABLE public.users (
   email text
 );
 
+/**
+ * The two tables `close_table_session()` touches besides `tabs`. Present so the REAL function --
+ * extracted from the baseline migration by run-db-tests.mjs, never copied -- can run unmodified
+ * against this fixture. Only the columns it reads or writes are here.
+ */
+CREATE TABLE public.restaurant_tables (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  restaurant_id uuid REFERENCES public.restaurants(id) ON DELETE CASCADE,
+  table_number integer,
+  active boolean DEFAULT true,
+  status text,
+  current_session_version integer NOT NULL DEFAULT 1
+);
+
+CREATE TABLE public.customer_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tab_id uuid,
+  active boolean DEFAULT true,
+  expires_at timestamptz
+);
+
 CREATE TABLE public.tabs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   restaurant_id uuid REFERENCES public.restaurants(id) ON DELETE CASCADE,
-  table_id uuid,
+  table_id uuid REFERENCES public.restaurant_tables(id) ON DELETE SET NULL,
   status text,
   total numeric,
   settled_at timestamptz,
+  -- Written by close_table_session(). Missing here first time round, which the extracted-not-copied
+  -- function surfaced immediately -- a transcription would have quietly dropped the column and the
+  -- race test would have passed against a function that was not production's.
+  settled_type text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

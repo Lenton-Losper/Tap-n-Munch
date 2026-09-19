@@ -135,6 +135,10 @@ DECLARE
   v_status          text;
   v_order_id        uuid;
   v_tab_id          uuid;
+  /** The tab this settlement belongs to, locked before any order is. */
+  v_settle_tab_id   uuid;
+  /** True when that tab had already been closed out. Recorded, never used to refuse. */
+  v_tab_was_closed  boolean := false;
   v_tab_ids         uuid[] := ARRAY[]::uuid[];
   v_tip_tab_id      uuid;
   v_method          text;
@@ -173,7 +177,10 @@ BEGIN
 
   -- ---- 1./2. the intent, locked; refuse a second application -------------------------------
   IF p_intent_id IS NOT NULL THEN
-    SELECT id, restaurant_id, status, consumed_at, amount_cents, scope, order_ids, settled_order_ids
+    -- tab_id is SELECTED because the tab lock below reads it. An unselected column reads as
+    -- "no field" in plpgsql, not as NULL, so omitting it is an error and not a silent NULL.
+    SELECT id, restaurant_id, status, consumed_at, amount_cents, scope, order_ids, settled_order_ids,
+           tab_id
       INTO v_intent
       FROM public.terminal_payment_intents
      WHERE id = p_intent_id
@@ -229,6 +236,66 @@ BEGIN
         'requested_order_ids', to_jsonb(p_order_ids),
         'claimed_order_ids', '[]'::jsonb);
     END IF;
+  END IF;
+
+  -- ---- 2b. THE TAB, LOCKED BEFORE THE ORDERS -----------------------------------------------
+  --
+  -- ==========================================================================================
+  -- THE PAYMENT / TAB-CLOSE RACE
+  -- ==========================================================================================
+  --
+  -- `close_table_session(p_table_id, p_restaurant_id)` settles every active tab on a table with a
+  -- bare `UPDATE tabs SET status='settled', settled_at=now()`. It never touches `orders` and it
+  -- takes no lock this function was taking, so the two lock sets were DISJOINT: a waiter closing
+  -- the table and a card settlement landing could interleave freely, and whichever committed last
+  -- decided the state with nothing recording that the other had happened.
+  --
+  -- Locking the tab row here makes the two serialise. `close_table_session`'s UPDATE blocks on
+  -- this lock until the settlement commits, and vice versa.
+  --
+  -- ==========================================================================================
+  -- A CLOSED TAB DOES NOT REFUSE THE SETTLEMENT, AND THAT IS DELIBERATE
+  -- ==========================================================================================
+  --
+  -- By the time this runs the card HAS been charged. Refusing would leave a real charge with no
+  -- settlement recorded against it -- the orphan this whole area exists to prevent -- and would be
+  -- a payment SILENTLY LOST, which the brief names as the outcome to avoid. So the settlement
+  -- still applies, and `tab_was_closed` is carried into the audit row and the return value so it
+  -- is never silent. A walkout-closed tab that turns out to have been paid is exactly the case
+  -- reconciliation needs to see.
+  --
+  -- Cancelled ORDERS are a different question and are already refused below: `cancelled -> paid`
+  -- needs the caller's E04111 allow-list, so a written-off order cannot be revived by this path.
+  --
+  -- LOCK ORDER IS TAB, THEN ORDERS, ALWAYS. `close_table_session` takes tabs -> customer_sessions
+  -- -> restaurant_tables and never touches orders, so there is no cycle. Taking the tab lock after
+  -- the orders would create one the moment any other writer took them in the documented order.
+  -- NESTED, not `AND`-ed: plpgsql does not guarantee short-circuit evaluation, so a single
+  -- condition touching v_intent.tab_id raises "record is not assigned yet" on every no-intent call.
+  IF p_intent_id IS NOT NULL THEN
+    v_settle_tab_id := v_intent.tab_id;
+  END IF;
+
+  IF v_settle_tab_id IS NULL THEN
+    -- No intent, so the tab is whichever one these orders sit on. A plain read is correct here:
+    -- it only decides WHICH row to lock, and an order does not move between tabs.
+    SELECT o.tab_id INTO v_settle_tab_id
+      FROM public.orders o
+     WHERE o.id = ANY (p_order_ids)
+       AND o.restaurant_id = p_restaurant_id
+       AND o.tab_id IS NOT NULL
+     LIMIT 1;
+  END IF;
+
+  IF v_settle_tab_id IS NOT NULL THEN
+    SELECT (t.status = 'settled' OR t.settled_at IS NOT NULL)
+      INTO v_tab_was_closed
+      FROM public.tabs t
+     WHERE t.id = v_settle_tab_id
+     FOR UPDATE;
+    -- A tab that cannot be found is not a reason to refuse money; NULL stays NULL and the
+    -- settlement proceeds exactly as it would for a tab-less POS order.
+    v_tab_was_closed := COALESCE(v_tab_was_closed, false);
   END IF;
 
   -- ---- 3. THE TARGET SET, LOCKED AND MATERIALISED ------------------------------------------
@@ -450,6 +517,10 @@ BEGIN
       'applied_order_ids', to_jsonb(v_claimed),
       'recovered_from_cancelled', to_jsonb(v_recovered),
       'ledger_row_written', v_ledger_rows > 0,
+      -- The payment/tab-close race, made visible. A settlement that landed on a tab somebody had
+      -- already closed is correct to apply and important to be able to find afterwards.
+      'tab_was_closed', v_tab_was_closed,
+      'tab_id', v_settle_tab_id,
       'terminal_id', p_terminal_id));
 
   -- ---- the tab totals ----------------------------------------------------------------------
@@ -494,7 +565,8 @@ BEGIN
     'expected_amount_cents', v_recomputed,
     'gateway_amount_cents', p_gateway_amount_cents,
     'payment_method', v_method,
-    'ledger_row_written', v_ledger_rows > 0);
+    'ledger_row_written', v_ledger_rows > 0,
+    'tab_was_closed', v_tab_was_closed);
 END;
 $$;
 

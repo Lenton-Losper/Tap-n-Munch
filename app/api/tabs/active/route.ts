@@ -2,6 +2,17 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { ACTIVE_TAB_STATUSES, isActiveTabStatus } from '@/lib/tab-status'
+/**
+ * F7. The figure is DERIVED from the orders, never read off `tabs.total`.
+ *
+ * `TAB_TOTAL_ORDER_COLUMNS` selects NO `id`, which is what keeps this route inside the
+ * AGGREGATE_NO_IDS class in the guest-route manifest — see the note at the query below.
+ */
+import {
+  computeTabGrossOrdered,
+  TAB_TOTAL_ORDER_COLUMNS,
+  type TabOrderRow,
+} from '@/lib/tabs/tab-outstanding'
 
 export const dynamic = 'force-dynamic'
 
@@ -90,13 +101,74 @@ export async function GET(req: Request) {
       return NextResponse.json({ tab: null })
     }
 
+    /**
+     * ============================================================================================
+     * F7 — THE FIGURE IS DERIVED, NOT READ OFF `tabs.total`
+     * ============================================================================================
+     *
+     * This was `Number(row.total)` — the stored column — and it is the last customer-facing reader
+     * of it. The landing page renders it as "Total so far: N$x".
+     *
+     * `tabs.total` has not been authoritative since the 2026-08-15 ruling recorded on
+     * lib/tabs/tab-outstanding.ts. It had five writers using TWO INCOMPATIBLE DEFINITIONS, and
+     * measured on production that day: of 20 tabs carrying orders, the two definitions agreed on
+     * ONE. Thirteen rows stored gross-ordered, six stored still-outstanding, decided by whichever
+     * writer last touched the row — and seven money-changing events skip the column entirely
+     * (order cancel, terminal order creation, refund, terminal payment failure, request decline,
+     * table close, terminal status change). So the number a customer saw was one of two different
+     * quantities, chosen by accident.
+     *
+     * ============================================================================================
+     * WHY THIS IS AGGREGATE_NO_IDS AND NOT A WEAKENING OF #305
+     * ============================================================================================
+     *
+     * This route was classified NO_ORDER_READ in the guest-route manifest, and reading orders here
+     * moves it — deliberately, and into a class the manifest already defines for exactly this
+     * shape: "reads order rows but selects no `id` column, so no order id can leave however the
+     * caller is authorised. The tab view sums a bill this way."
+     *
+     * The property #305 is about is that no guest-reachable route hands an order id to a session
+     * that does not own it. `TAB_TOTAL_ORDER_COLUMNS` selects `total, payment_status,
+     * tab_settlement_for_tab_id` and no id, and the only thing that leaves this function is a
+     * NUMBER. That constant is enforced id-free by its own assertion in
+     * guest-routes-do-not-leak-foreign-order-ids, which is a stronger guarantee than a grep for
+     * `from('orders')`.
+     *
+     * NOTHING NEW IS EXPOSED. The response keeps EXACTLY the five keys this route's contract names
+     * — the docblock above says "do not widen it", and it is not widened. Only the provenance of
+     * `total` changes, and the aggregate was already being served to this caller.
+     *
+     * WHICH FIGURE. `computeTabGrossOrdered`, not `computeTabOutstanding`: the label says "Total so
+     * far" — what has been ordered — and those are different questions. Putting outstanding behind
+     * that label would be the same lie pointing the other way.
+     *
+     * A FAILED READ SERVES 0, matching what this route already did for a tab with no stored total,
+     * rather than falling back to the stale column. The alternative is to keep serving a number
+     * that is neither definition reliably, which is the defect.
+     */
+    const { data: tabOrders, error: tabOrdersError } = await supabase
+      .from('orders')
+      .select(TAB_TOTAL_ORDER_COLUMNS)
+      .eq('tab_id', String(row.id))
+
+    if (tabOrdersError) {
+      console.error('[TABS] active tab: could not derive the tab total', {
+        tabId: String(row.id),
+        error: tabOrdersError.message,
+      })
+    }
+
+    const derivedTotal = tabOrdersError
+      ? 0
+      : computeTabGrossOrdered((tabOrders ?? []) as TabOrderRow[])
+
     // Same normalisations the landing page used to apply to the raw row, so its rendered
     // state is unchanged by the move.
     return NextResponse.json({
       tab: {
         id: String(row.id),
         status: String(row.status || 'open'),
-        total: Number(row.total) || 0,
+        total: derivedTotal,
         pin_required: row.pin_required !== false,
         member_count: Array.isArray(row.members) ? row.members.length : 0,
       },

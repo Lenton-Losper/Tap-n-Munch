@@ -146,6 +146,57 @@ const MUTATIONS = {
     apply: (sql) =>
       sql.replace('     WHERE id = p_intent_id\n     FOR UPDATE;', '     WHERE id = p_intent_id;'),
   },
+  M10: {
+    what: 'an already-settled order can be settled again (the tab-close replay protection)',
+    /**
+     * THE PROTECTION THAT ACTUALLY CARRIES THIS RACE, established by measurement rather than by
+     * assumption.
+     *
+     * The first version of M10 removed the tab-row `FOR UPDATE` and the close-race probe STAYED
+     * GREEN. That was the harness being right: the money invariants across a payment/tab-close
+     * race are not held up by the tab lock at all. `close_table_session` never touches `orders`,
+     * and the settlement's own per-order `FOR UPDATE` plus this already-paid guard are what make
+     * double settlement unreachable. (The explicit tab lock is kept for lock-ORDER hygiene and a
+     * well-defined `tab_was_closed` read; it is documented as such and is not claimed to be
+     * load-bearing, because a mutation could not make it fail.)
+     *
+     * So the mutation targets the guard that IS load-bearing: remove the already-paid CONTINUE and
+     * a replay after the close re-claims orders that were settled, writing a second audit row for
+     * one payment. Round 4 of the close-race probe catches it.
+     */
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/close-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql
+        .replace(
+          `    IF v_status = 'paid' THEN
+      -- Already paid by whoever won the race. Not an error and not a re-write; reported so the
+      -- caller can tell a duplicate from a conflict.
+      CONTINUE;
+    END IF;`,
+          `    IF false THEN
+      CONTINUE;
+    END IF;`,
+        )
+        /**
+         * BOTH replay protections, together, and that is the finding rather than a convenience.
+         *
+         * Removing the already-paid CONTINUE alone leaves the probe GREEN, because the
+         * illegal-transition check immediately below refuses `paid -> paid` and the settlement
+         * comes back `ok: false` with nothing claimed. Two independent guards cover this race, so
+         * a mutation has to lift both before anything observable changes.
+         *
+         * That redundancy is real defence in depth and is the honest reason an earlier, narrower
+         * mutation could not be made to fail.
+         */
+        .replace(
+          `    IF v_status NOT IN (
+         'unpaid', 'pending', 'terminal_pending', 'cash_pending', 'failed',
+         'amount_mismatch_hold', 'verification_unavailable_hold', 'cancelled') THEN`,
+          `    IF false THEN`,
+        ),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -194,10 +245,32 @@ function readRepo(rel) {
   return readFileSync(join(REPO, rel), 'utf8')
 }
 
+/**
+ * `close_table_session` EXTRACTED FROM THE BASELINE, never copied.
+ *
+ * The settlement/tab-close race test needs the real function, and a transcription of it into the
+ * fixture would drift the moment somebody changed the original -- which is exactly the kind of
+ * silent divergence these tests exist to catch elsewhere. Slicing it out of
+ * `00000000000000_baseline.sql` means the test always runs whatever production has.
+ *
+ * Applying the WHOLE baseline is not an option: it is 3,000+ lines of unrelated schema that the
+ * fixture deliberately does not reproduce.
+ */
+function closeTableSessionDefinition() {
+  const baseline = readRepo('supabase/migrations/00000000000000_baseline.sql')
+  const start = baseline.indexOf('CREATE OR REPLACE FUNCTION "public"."close_table_session"')
+  if (start < 0) throw new Error('close_table_session not found in the baseline migration')
+  // The body is dollar-quoted; the definition ends at the first `$$;` after it.
+  const end = baseline.indexOf('$$;', start)
+  if (end < 0) throw new Error('close_table_session body is not terminated')
+  return baseline.slice(start, end + 3)
+}
+
 function buildDatabase(mutation) {
   psql(`DROP DATABASE IF EXISTS ${DB};`, { db: 'postgres' })
   psql(`CREATE DATABASE ${DB};`, { db: 'postgres' })
   psql(readRepo('supabase/tests/fixture-schema.sql'))
+  psql(closeTableSessionDefinition())
 
   for (const rel of MIGRATIONS) {
     let sql = readRepo(rel)
@@ -237,9 +310,9 @@ function runSuite() {
  * The concurrency probe runs in TWO sessions, which a single psql pipe cannot express, so it lives
  * in a shell script beside this file. Returns true when it passed.
  */
-function runConcurrencyProbe() {
+function runConcurrencyProbe(script = 'supabase/tests/concurrency.test.sh') {
   try {
-    const out = execFileSync('bash', [join(REPO, 'supabase/tests/concurrency.test.sh')], {
+    const out = execFileSync('bash', [join(REPO, script)], {
       encoding: 'utf8',
       env: { ...process.env, CONTAINER, DB },
       maxBuffer: 16 * 1024 * 1024,
@@ -287,6 +360,15 @@ if (!baseRace.passed) {
 }
 console.log('  concurrency probe: two sessions, exactly one settlement')
 
+// Settlement vs close_table_session, in two sessions, both orderings.
+const baseClose = runConcurrencyProbe('supabase/tests/close-race.test.sh')
+if (!baseClose.passed) {
+  console.error('FAIL: the settlement/tab-close race probe did not pass on unmutated code.')
+  console.error(baseClose.out.split('\n').slice(-24).join('\n'))
+  process.exit(1)
+}
+console.log('  close-race probe: settlement and tab close serialise, money recorded once')
+
 if (!which) process.exit(0)
 
 // ---- mutations -----------------------------------------------------------------------------
@@ -316,7 +398,9 @@ for (const name of names) {
    * green under it, so asserting on that suite would report a false pass.
    */
   if (mutation.concurrencyOnly) {
-    const race = runConcurrencyProbe()
+    const race = runConcurrencyProbe(
+      mutation.concurrencyScript ?? 'supabase/tests/concurrency.test.sh',
+    )
     if (race.passed) {
       console.error(`  FAIL: the concurrency probe stayed GREEN under mutation ${name}.`)
       bad += 1
