@@ -43,6 +43,20 @@
  * stops depending on a fire-and-forget call for its only record of the money.
  *
  * ==================================================================================================
+ * GATEWAY METHODS ONLY, AND WHAT THAT LEAVES FOR CASH
+ * ==================================================================================================
+ *
+ * `payment_events` is keyed on a gateway reference and is what a Finatic reconciliation joins
+ * against. Cash and PayToday have no such transaction, so a sale row for them would be a row that
+ * can never be matched to anything -- worse than an absence, because it looks reconciled.
+ *
+ * BE CLEAR ABOUT WHAT THAT MEANS: cash settlements have NO ledger row at all, and the legacy
+ * `payments` table is not one either. Measured 2026-09-19: `payments` holds 14 rows against 5,389
+ * paid orders, so it records 0.26% of settlements and 551 cash-paid orders are represented by one
+ * of them. A durable record of cash collection is a GAP this sprint does not close -- it is
+ * recorded in docs/payment-hardening-remediation.md rather than papered over here.
+ *
+ * ==================================================================================================
  * IT NEVER THROWS
  * ==================================================================================================
  *

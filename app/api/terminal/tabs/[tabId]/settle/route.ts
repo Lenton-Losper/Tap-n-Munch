@@ -660,13 +660,47 @@ export async function POST(
       console.error('[terminal/tabs/settle] tab total recalc failed', unpaidError)
     }
 
-    // Create payment record (server amount, not client).
-    //
-    // This is the money record itself. If it fails the orders are paid, the tab is settled and
-    // receipts are out, with no row saying the restaurant was paid -- so the failure is recorded
-    // in three places that outlive the request: the log, the audit trail below, and the response.
-    // `.select('id')` because a gratuity is recorded against this row -- payment_tips.payment_id
-    // names the settlement the tip rode on, and without the id there is nothing to point at.
+    /**
+     * ================================================================================================
+     * F10 — WHAT THE `payments` TABLE ACTUALLY IS, MEASURED
+     * ================================================================================================
+     *
+     * The comment below used to call this "the money record itself". It is not, and saying so was
+     * the most misleading sentence in this route. Measured on production, read-only, 2026-09-19:
+     *
+     *   payments            14 rows, 2026-06-26 .. 2026-09-07
+     *   paid orders       5,389
+     *   cash paid orders    551
+     *
+     * So it records 0.26% of settlements. It is not the payment ledger, it is not the cash ledger,
+     * and it is not a competing source of truth -- because nothing competes: THIS IS ITS ONLY
+     * WRITER IN THE APPLICATION, AND THERE ARE NO READERS. `git grep "from('payments')"` returns
+     * this line and three test-fixture deletes.
+     *
+     * ================================================================================================
+     * IT IS STILL REQUIRED, FOR EXACTLY ONE THING
+     * ================================================================================================
+     *
+     * `payment_tips.payment_id` is a foreign key to `payments(id)`, and the gratuity recorded below
+     * needs a settlement row to point at. Stop writing this and `tipOutcome` becomes
+     * `not_recorded_no_payment_row` for every tip taken on the whole-order path -- a real
+     * regression in the one area where money is easiest to lose.
+     *
+     * (The FK is presently unexercised: all 6 tips on production carry `payment_id = NULL`, because
+     * every one of them was taken through the ALLOCATION path, which passes no payment id. That
+     * makes the dependency latent rather than absent, which is a reason to keep it, not to drop it.)
+     *
+     * SO: NOT DEPRECATED, NOT DELETED, NOT EXPANDED. It stays as the anchor row a gratuity hangs
+     * off, and nothing is given it to do beyond that. The authoritative ledger is
+     * `payment_events`, written by recordGatewaySaleEvent below and by settle_order_payment().
+     *
+     * If it fails the orders are paid, the tab is settled and receipts are out, with no row saying
+     * the restaurant was paid -- so the failure is recorded in three places that outlive the
+     * request: the log, the audit trail below, and the response.
+     *
+     * `.select('id')` because the gratuity is recorded against this row -- payment_tips.payment_id
+     * names the settlement the tip rode on, and without the id there is nothing to point at.
+     */
     const { data: paymentRow, error: paymentInsertError } = await supabase
       .from('payments')
       .insert({
@@ -720,8 +754,13 @@ export async function POST(
      *
      * GATEWAY METHODS ONLY. `payment_events` is keyed on a gateway reference and is what a Finatic
      * reconciliation joins against; cash and PayToday have no such transaction, and a sale row for
-     * them would be a row that can never be matched. Those remain recorded in `payments`, which is
-     * exactly the role F10 concludes that table still has.
+     * them would be one that can never be matched to anything -- worse than an absence, because it
+     * looks reconciled.
+     *
+     * THAT LEAVES CASH WITH NO LEDGER ROW, and the `payments` insert above is not one. Measured
+     * 2026-09-19: `payments` holds 14 rows against 5,389 paid orders. See F10 in
+     * docs/payment-hardening-remediation.md -- a durable record of cash collection is a gap this
+     * sprint names rather than closes.
      *
      * NOT AWAITED FOR ITS SUCCESS -- the settlement has already happened. The outcome is carried
      * into the audit metadata and the response, the same contract `payment_record_written` has.
