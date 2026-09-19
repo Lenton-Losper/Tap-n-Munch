@@ -140,7 +140,11 @@ export async function POST(
         // pending_charge_cents / pending_tip_cents are SELECTED, not merely written. Without them
         // expectedChargeFor falls back to the order total on every row and the fix below ships
         // INERT -- the failure mode this project has shipped before.
-        'id, tab_id, restaurant_id, status, total, payment_status, paycloud_merchant_order_no, payment_reference, pending_charge_cents, pending_tip_cents',
+        // The new columns go BEFORE payment_reference, not after. `refused-second-payment-trail`
+        // asserts this select with /'id, tab_id[^']*payment_reference'/ -- an anchor that requires
+        // payment_reference to be last. Appending past it broke a test about a different thing
+        // entirely, which is a worse outcome than choosing an order.
+        'id, tab_id, restaurant_id, status, total, payment_status, paycloud_merchant_order_no, pending_charge_cents, pending_tip_cents, payment_reference',
       )
       .eq('id', orderId)
       .eq('restaurant_id', terminal.restaurantId)
