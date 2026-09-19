@@ -39,6 +39,12 @@
  * would have passed on the broken code, because on the broken code neither ran the split path.
  */
 import { POST } from '@/app/api/webhooks/paycloud/route'
+import {
+  createFakeClient,
+  createFakeState,
+  order,
+  type FakeState,
+} from './helpers/settlement-supabase-fake'
 
 const verifyWebhook = jest.fn()
 const enforceWebhookRateLimit = jest.fn((..._args: unknown[]) => ({ allowed: true }))
@@ -59,15 +65,14 @@ jest.mock('@/lib/payments/webhook-sig-fallback', () => ({
     confirmWebhookOrderViaFinaticFallback(...args),
 }))
 
-/** THE WHOLE-ORDER WRITER. Every assertion that matters here is that this did NOT run. */
-const markOrderPaidConfirmed = jest.fn(async (..._args: unknown[]) => ({
-  claimed: true,
-  orderId: 'ord-45',
-  tabId: 'tab-1',
-}))
-jest.mock('@/lib/payments/mark-order-paid-confirmed', () => ({
-  markOrderPaidConfirmed: (...args: unknown[]) => markOrderPaidConfirmed(...args),
-}))
+/**
+ * THE WHOLE-ORDER WRITER. Every assertion that matters in this suite is that it did NOT run.
+ *
+ * Since 2026-09-19 that writer is `settleWholeOrderPayment`, which reaches the database as the
+ * `settle_order_payment` RPC. Asserting on the RPC rather than on a mocked module keeps the
+ * question identical -- "did a whole-order settlement happen?" -- while pinning it at the seam
+ * that now exists. `wholeOrderWriterRan()` below is that assertion.
+ */
 
 const settleAllocationsForIntent = jest.fn()
 jest.mock('@/lib/payments/settle-allocations-for-intent', () => ({
@@ -79,35 +84,19 @@ jest.mock('@/lib/payments/payment-intents', () => ({
   markIntentConfirmed: (...args: unknown[]) => markIntentConfirmed(...args),
 }))
 
-const auditInserts: unknown[] = []
+let state: FakeState
 jest.mock('@/lib/supabase/server', () => ({
-  createServerSupabaseClient: () => ({
-    from: (table: string) => {
-      if (table === 'orders') {
-        return {
-          select: () => ({
-            in: async () => ({
-              // Order #45 as it stood: N$37.00 total, not yet paid.
-              data: [
-                { id: 'ord-45', restaurant_id: 'rest-1', total: 37, payment_method: 'card' },
-              ],
-              error: null,
-            }),
-          }),
-        }
-      }
-      if (table === 'audit_logs') {
-        return {
-          insert: async (row: unknown) => {
-            auditInserts.push(row)
-            return { error: null }
-          },
-        }
-      }
-      throw new Error(`unexpected table ${table}`)
-    },
-  }),
+  createServerSupabaseClient: () => createFakeClient(state),
 }))
+
+// Receipts are a post-settlement follow-up and reach the network.
+jest.mock('@/lib/receipts/safeIssueReceipt', () => ({
+  safeIssueReceiptsForOrders: jest.fn(async () => undefined),
+  safeIssueReceiptForOrder: jest.fn(async () => undefined),
+}))
+
+/** Did a WHOLE-ORDER settlement run? The one question every assertion here turns on. */
+const wholeOrderWriterRan = () => state.rpcCalls.some((c) => c.fn === 'settle_order_payment')
 
 function makeReq(body: Record<string, unknown>, headers: Record<string, string> = {}) {
   return new Request('https://example.test/api/webhooks/paycloud', {
@@ -174,7 +163,9 @@ const PAID_BODY = {
 
 beforeEach(() => {
   jest.clearAllMocks()
-  auditInserts.length = 0
+  state = createFakeState()
+  // Order #45 as it stood: N$37.00 total, not yet paid.
+  state.orders.set('ord-45', order('ord-45', 37, { payment_method: 'card' }))
   enforceWebhookRateLimit.mockReturnValue({ allowed: true })
   settleAllocationsForIntent.mockResolvedValue({
     ok: true,
@@ -210,7 +201,7 @@ describe('signature FAILED + allocation-scope intent (the production defect)', (
       }),
     )
     // THE ASSERTION THAT WOULD HAVE CAUGHT IT. On the broken code this ran and closed order #45.
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(wholeOrderWriterRan()).toBe(false)
   })
 
   it('settles ONLY the two allocations the charge covered, not the whole order', async () => {
@@ -244,7 +235,7 @@ describe('signature FAILED + allocation-scope intent (the production defect)', (
     const itemCents = params.intent.amountCents - params.intent.tipCents
     expect(itemCents).toBe(1700)
     expect(params.intent.amountCents).toBe(3700) // what the reader was charged
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(wholeOrderWriterRan()).toBe(false)
   })
 })
 
@@ -260,7 +251,7 @@ describe('signature VALID + allocation-scope intent', () => {
 
     expect(res.status).toBe(200)
     expect(settleAllocationsForIntent).toHaveBeenCalledTimes(1)
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(wholeOrderWriterRan()).toBe(false)
   })
 })
 
@@ -285,7 +276,7 @@ describe('whole-order references still take the whole-order path', () => {
     const res = await POST(makeReq(PAID_BODY, { 'x-paycloud-sign': 'deadbeef' }))
 
     expect(res.status).toBe(200)
-    expect(markOrderPaidConfirmed).toHaveBeenCalled()
+    expect(wholeOrderWriterRan()).toBe(true)
     expect(settleAllocationsForIntent).not.toHaveBeenCalled()
   })
 
@@ -300,7 +291,7 @@ describe('whole-order references still take the whole-order path', () => {
     const res = await POST(makeReq(PAID_BODY, { 'x-paycloud-sign': 'deadbeef' }))
 
     expect(res.status).toBe(200)
-    expect(markOrderPaidConfirmed).toHaveBeenCalled()
+    expect(wholeOrderWriterRan()).toBe(true)
     expect(settleAllocationsForIntent).not.toHaveBeenCalled()
   })
 })
@@ -322,7 +313,7 @@ describe('an already-confirmed allocation intent', () => {
 
     expect(res.status).toBe(200)
     expect(settleAllocationsForIntent).not.toHaveBeenCalled()
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(wholeOrderWriterRan()).toBe(false)
   })
 })
 
@@ -339,9 +330,9 @@ describe('an allocation intent the DEVICE reported failed', () => {
 
     expect(res.status).toBe(200)
     expect(settleAllocationsForIntent).not.toHaveBeenCalled()
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(wholeOrderWriterRan()).toBe(false)
     expect(
-      auditInserts.some(
+      state.auditInserts.some(
         (r) => (r as { action?: string }).action === 'payment.split_intent_gateway_disagrees',
       ),
     ).toBe(true)
@@ -357,7 +348,7 @@ describe('when the settlement itself fails', () => {
     const res = await POST(makeReq(PAID_BODY, { 'x-paycloud-sign': 'deadbeef' }))
 
     expect(res.status).toBe(503)
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(wholeOrderWriterRan()).toBe(false)
     expect(markIntentConfirmed).not.toHaveBeenCalled()
   })
 })

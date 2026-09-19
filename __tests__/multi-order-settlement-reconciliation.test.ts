@@ -324,29 +324,57 @@ describe('BOTH GATES EXPAND — asserted at the call sites', () => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { join } = require('path')
 
+  /**
+   * REPOINTED 2026-09-19. These assert on SOURCE TEXT, so they are only ever as good as the symbol
+   * they name -- and `settlementSetFor` no longer exists on either gate. Left as it was, the first
+   * two would have failed honestly but the third would have gone GREEN VACUOUSLY: `indexOf` of a
+   * missing symbol is -1, so it sliced the first 1,499 characters of the file and asserted that a
+   * region which never contained `payment_events` still does not.
+   *
+   * Both gates now expand through `resolveSettlementTarget`, which returns the ONE object that is
+   * both summed and written (lib/payments/settlement-target.ts). The property being pinned is
+   * unchanged: the expansion happens before the expectation is summed, and it keys off
+   * `pending_settlement_id` rather than off `payment_events`.
+   */
   it.each([
     ['verify-payment', 'app/api/terminal/orders/[orderId]/verify-payment/route.ts'],
     ['paycloud webhook', 'app/api/webhooks/paycloud/route.ts'],
-  ])('%s expands before summing, and selects the column', (_name, rel) => {
+  ])('%s expands through the shared settlement target', (_name, rel) => {
     const code = readFileSync(join(process.cwd(), rel), 'utf8')
     const statements = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-    expect(statements).toMatch(/settlementSetFor\(/)
-    expect(statements).toMatch(/expectedChargeForOrders\(/)
-    // SELECTED, not merely written: an unselected column reads as NULL and silently disables the
-    // expansion, which is exactly what "no expansion" looks like.
-    expect(statements).toMatch(/pending_settlement_id/)
+    // Either the resolver directly, or the writer that wraps it -- both routes must reach the
+    // shared target rather than assembling an order list of their own.
+    expect(statements).toMatch(/resolveSettlementTarget\(|settleWholeOrderPayment\(/)
+    // And neither may still hold a second, independently-summed collection.
+    expect(statements).not.toMatch(/settlementSetFor\(/)
+    expect(statements).not.toMatch(/expectedChargeForOrders\(/)
   })
 
-  it('the webhook does NOT depend on payment_events for the settlement set', () => {
+  it('the settlement target selects pending_settlement_id, not merely writes it', () => {
+    // SELECTED, not merely written: an unselected column reads as NULL and silently disables the
+    // expansion, which is indistinguishable from "there was nothing to expand".
+    const code = readFileSync(
+      join(process.cwd(), 'lib/payments/settlement-target.ts'),
+      'utf8',
+    )
+    const statements = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(statements).toMatch(/TARGET_ORDER_COLUMNS[\s\S]{0,400}pending_settlement_id/)
+  })
+
+  it('the settlement set does NOT depend on payment_events', () => {
     /**
      * recordSaleEvent runs AFTER settleTab, so a webhook arriving first finds no event. An identity
      * the webhook cannot rely on is not an identity.
+     *
+     * Asserted over the WHOLE resolver rather than a window around a symbol: a window anchored on
+     * a name is exactly what went vacuously green when that name was removed.
      */
-    const code = readFileSync(join(process.cwd(), 'app/api/webhooks/paycloud/route.ts'), 'utf8')
-    const near = code.slice(
-      Math.max(0, code.indexOf('settlementSetFor') - 1500),
-      code.indexOf('settlementSetFor') + 1500,
+    const code = readFileSync(
+      join(process.cwd(), 'lib/payments/settlement-target.ts'),
+      'utf8',
     )
-    expect(near).not.toMatch(/payment_events/)
+    const statements = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(statements).toMatch(/from\('orders'\)/)
+    expect(statements).not.toMatch(/payment_events/)
   })
 })

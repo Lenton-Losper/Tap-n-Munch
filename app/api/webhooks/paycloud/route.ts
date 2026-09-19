@@ -8,16 +8,16 @@ import {
 import { markIntentConfirmed } from '@/lib/payments/payment-intents'
 import { settleAllocationsForIntent } from '@/lib/payments/settle-allocations-for-intent'
 import { confirmWebhookOrderViaFinaticFallback } from '@/lib/payments/webhook-sig-fallback'
-import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
-import {
-  claimableStatusesForRecovery,
-  isCancelledOnE04111Evidence,
-  recordRecoveredAfterAutoCancel,
-} from '@/lib/payments/e04111-recovery'
-import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
-import { expectedChargeForOrders } from '@/lib/payments/expected-charge'
-import { settlementSetFor } from '@/lib/payments/settlement-set'
-import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
+/**
+ * THE ONE WHOLE-ORDER WRITER.
+ *
+ * It replaces the local `markOrdersPaidConfirmedByIds`, which held the verified set and a
+ * narrower applied set at the same time -- the Riviera defect. Everything that writer imported
+ * piecemeal (the expectation, the settlement expansion, the amount comparison, the per-order
+ * claim, the E04111 recovery) now lives behind this one function, so this route can no longer
+ * assemble a second version of any of them.
+ */
+import { settleWholeOrderPayment } from '@/lib/payments/settle-whole-order-payment'
 
 function webhookAck() {
   return new Response('success', {
@@ -78,6 +78,27 @@ function extractWebhookGatewayAmount(payload: Record<string, unknown>): number |
   return Number.isFinite(n) ? n : null
 }
 
+/**
+ * THE GATEWAY'S OWN TRANSACTION ID, for the ledger row (F2).
+ *
+ * `payment_events.transaction_id` is what reconciliation joins a FlashTap payment to a Finatic
+ * one by, and it carries the per-venue uniqueness that enforces "one gateway transaction = one
+ * internal payment record". The signature-valid leg had no reason to read it before, because
+ * nothing on this path wrote a ledger row at all.
+ *
+ * Field precedence matches what the fallback leg already gets back from
+ * `queryFinaticOrderPaid`, so one concept is not read under two different names.
+ */
+function extractWebhookTransactionId(payload: Record<string, unknown>): string | null {
+  const raw =
+    payload.transaction_id ??
+    payload.trans_no ??
+    payload.trade_no ??
+    payload.payment_trans_no
+  const s = typeof raw === 'string' ? raw.trim() : typeof raw === 'number' ? String(raw) : ''
+  return s || null
+}
+
 function isPaidTransStatus(transStatus: unknown): boolean {
   if (transStatus === 2 || transStatus === '2') return true
   const s = String(transStatus ?? '').toLowerCase()
@@ -96,264 +117,110 @@ function logWebhookPath(path: WebhookPath, detail: Record<string, unknown> = {})
   console.log('[PayCloud webhook] path=', path, detail)
 }
 
-type MarkPaidOutcome = {
-  updateError: Error | null
-  claimedIds: string[]
-  /** Orders the claim UPDATE could not apply, with why. */
-  unclaimed: Array<{ orderId: string; reason: 'already_paid' | 'claim_conflict' }>
+type GatewaySettlementOutcome = {
+  /** A transient failure. The caller must NOT ACK -- Finatic has to retry. */
+  retryable: boolean
   /**
-   * #223. True when the gateway's amount did not agree with the covered orders' total, or was
-   * absent. Nothing was marked paid and nothing was cancelled; both figures were recorded on
-   * every affected order for a human to resolve.
+   * The settlement was refused for a reason a retry cannot change (the gateway will report the
+   * same figure again). Recorded on every affected order already; a human resolves it.
    */
-  amountMismatch: boolean
+  permanentRefusal: boolean
+  applied: boolean
+  claimedIds: string[]
+  detail?: unknown
 }
 
 /**
- * Routes webhook-confirmed payments through the same markOrderPaidConfirmed() every
- * other "this order is now confirmed paid" caller uses (terminal callback, verify-payment,
- * auto-cancel cron), instead of a shallow payment_status-only update. That shallow update
- * used to leave status stuck at 'pending' forever: once payment_status left the
- * CLAIMABLE_PAYMENT_STATUSES set, no other caller could ever complete the order (see
- * mark-order-paid-confirmed.ts).
+ * ==================================================================================================
+ * APPLY A GATEWAY-CONFIRMED WHOLE-ORDER PAYMENT.
+ * ==================================================================================================
  *
- * The claim result is now PROPAGATED rather than discarded. 'already_paid' is benign --
- * another caller (e.g. a live terminal callback) won the race. 'claim_conflict' is not:
- * it means Finatic confirmed a real payment that we then failed to apply, and the caller
- * must not ACK 200, or Finatic stops retrying and the payment is lost silently.
+ * WHAT THIS REPLACED, AND WHY THE REPLACEMENT IS NOT A ONE-LINE FIX.
  *
- * Cancelled orders: an order auto-cancelled by the E04111 rule sits outside
- * CLAIMABLE_PAYMENT_STATUSES, so the claim would match zero rows and discard the payment.
- * claimableStatusesForRecovery widens the transition for exactly those orders.
+ * `markOrdersPaidConfirmedByIds` held two arrays and used the wrong one twice:
  *
- * #223. GATEWAY leg: `gatewayAmount` must agree with the SUM of the covered orders' totals
- * before anything is written, at GATEWAY_AMOUNT_TOLERANCE_CENTS (zero) with ABSENT treated as
- * unverified, not agreeing -- same rule as the other three gateway legs named on
- * GATEWAY_AMOUNT_TOLERANCE_CENTS's own docblock. Compared ONCE against the sum, not per order:
- * a webhook event can name several orders at once (a tab settle), and the gateway's single
- * figure is for all of them together. REFUSED here, not quarantined -- quarantine is #223's
- * cron leg only, because refusing there would let the same sweep cancel a card that had
- * already been charged. This route has no such follow-up sweep, so refusing (leaving the
- * orders exactly as they were, both figures recorded) is the safe default.
+ *   settlementRows   the expanded settlement  -- what the amount was VERIFIED against
+ *   orderRows        the resolver's lead rows -- what the write loop and the
+ *                    `singleOrderSettlement` audit flag actually used
+ *
+ * Riviera, 2026-09-18: a N$720 charge over orders #154 and #155 verified against both and applied
+ * to #155 alone, leaving #154 unpaid and recording `gatewayAmount: 720` against the N$500 order.
+ * It is the only multi-order settlement production has ever had.
+ *
+ * Substituting `settlementRows` into the loop would have fixed that instance and left two arrays
+ * in scope, either of which type-checks in either position. So there is now ONE object --
+ * `SettlementTarget` -- and the amount check and the writes both come off it;
+ * `settle_order_payment` then locks those same rows, re-derives the expectation and writes them in
+ * a single transaction, so a partial application is not reachable even on a mid-flight failure.
+ *
+ * THE METHOD IS THE GATEWAY'S (F3). This path is reached only when a card gateway has confirmed a
+ * charge, so the method is `card` -- stated, not derived from `row.payment_method`, which is what
+ * left real card payments recorded as cash.
+ *
+ * THE LEDGER ROW IS WRITTEN HERE (F2), inside that transaction, rather than by the device's
+ * fire-and-forget `recordSaleEvent` afterwards. 1,630 paid card orders worth N$110,027 have no
+ * `payment_events` row because the device was the only writer.
  */
-async function markOrdersPaidConfirmedByIds(
+async function applyGatewayConfirmedOrders(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   orderIds: string[],
   params: {
     reference: string
     source: string
     extraAuditMetadata?: Record<string, unknown>
-    /** #223. The gateway-confirmed amount for this event, covering ALL orderIds combined. null means the gateway gave no amount at all. */
+    /** The gateway-confirmed amount for this event, covering ALL orderIds combined. */
     gatewayAmount: number | null
+    transactionId?: string | null
+    intent?: ResolvedReference['intent']
   },
-): Promise<MarkPaidOutcome> {
-  const outcome: MarkPaidOutcome = {
-    updateError: null,
+): Promise<GatewaySettlementOutcome> {
+  if (!orderIds.length) {
+    return { retryable: false, permanentRefusal: false, applied: false, claimedIds: [] }
+  }
+
+  const settled = await settleWholeOrderPayment(supabase, {
+    // The webhook holds a bare gateway reference and no venue; it is derived from the orders, and
+    // a target set spanning two venues is refused rather than narrowed.
+    restaurantId: null,
+    leadOrderIds: orderIds,
+    intent: params.intent ?? null,
+    merchantOrderNo: params.reference,
+    transactionId: params.transactionId ?? null,
+    gatewayAmount: params.gatewayAmount,
+    paymentMethod: 'card',
+    source: params.source,
+    // The closed enum recordPaymentAmountMismatch keys on. Both webhook legs are one category
+    // there by design -- a mismatch means the same thing whichever way the signature went.
+    mismatchSource: 'paycloud_webhook',
+    extraAuditMetadata: params.extraAuditMetadata,
+  })
+
+  if (settled.ok) {
+    return {
+      retryable: false,
+      permanentRefusal: false,
+      applied: settled.applied,
+      claimedIds: settled.claimedOrderIds,
+    }
+  }
+
+  /**
+   * WHICH REFUSALS ARE WORTH RETRYING.
+   *
+   * `amount_mismatch` and `illegal_transition` will produce the identical answer on every future
+   * delivery, so 503-ing forever only buries the event in Finatic's retry queue; both are already
+   * recorded against every affected order for a human. Everything else -- an unreadable target, a
+   * failed RPC, a tab that moved mid-flight -- is transient, and ACKing those would discard a real
+   * payment with a success log.
+   */
+  const permanent = settled.reason === 'amount_mismatch' || settled.reason === 'illegal_transition'
+  return {
+    retryable: !permanent,
+    permanentRefusal: permanent,
+    applied: false,
     claimedIds: [],
-    unclaimed: [],
-    amountMismatch: false,
+    detail: settled.detail ?? settled.reason,
   }
-  if (!orderIds.length) return outcome
-
-  const { data: rows, error: loadError } = await supabase
-    .from('orders')
-    // pending_charge_cents / pending_tip_cents must be SELECTED or expectedChargeForOrders falls
-    // back to order totals for every row and this reads as though no gratuity was ever charged.
-    .select(
-      'id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at, pending_charge_cents, pending_tip_cents, pending_settlement_id',
-    )
-    .in('id', orderIds)
-
-  if (loadError) {
-    outcome.updateError = new Error(loadError.message)
-    return outcome
-  }
-
-  const orderRows = rows ?? []
-  /**
-   * SUMMED FROM WHAT EACH ORDER'S CHARGE WAS ASKED TO BE, not from the order totals. Identical for
-   * untipped charges; correct rather than refusing once a gratuity is included.
-   * See lib/payments/expected-charge.ts.
-   */
-  /**
-   * EXPANDED TO THE WHOLE SETTLEMENT FIRST.
-   *
-   * The resolver's leg 1 matches paycloud_merchant_order_no, which lives on the LEAD ROW only, so
-   * a multi-order charge resolved to one order and this compared the whole gateway amount against
-   * that order's expectation.
-   *
-   * NOT payment_events.order_ids, which already carries the full set: recordSaleEvent runs AFTER
-   * settleTab, so a webhook arriving first finds no event. An identity the webhook cannot rely on
-   * is not an identity.
-   *
-   * A NULL settlement id -- every order on production today -- expands to nothing and this is the
-   * rows it already had.
-   */
-  const expanded = new Map<string, (typeof orderRows)[number]>()
-  for (const row of orderRows) {
-    expanded.set(String(row.id), row)
-    const set = await settlementSetFor(supabase, row, String(row.restaurant_id))
-    for (const sibling of set.orders) {
-      const id = String((sibling as { id?: unknown }).id ?? '')
-      if (id) expanded.set(id, sibling as (typeof orderRows)[number])
-    }
-  }
-  const settlementRows = [...expanded.values()]
-
-  const expectedAmount = expectedChargeForOrders(settlementRows).expectedAmount
-  const verified =
-    params.gatewayAmount !== null &&
-    amountsMatch(params.gatewayAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)
-
-  if (!verified) {
-    const reason =
-      params.gatewayAmount === null
-        ? `PayCloud webhook confirmed a payment for ${params.reference} but gave no amount -- ` +
-          'the amount was never verified, so it is not applied.'
-        : `PayCloud webhook confirmed ${params.gatewayAmount} for ${params.reference}, but the ` +
-          `covered order(s) total ${expectedAmount} -- not applying, and not cancelling an ` +
-          'order the gateway says was charged.'
-    console.error(`[WEBHOOK] ${reason}`)
-
-    for (const row of orderRows) {
-      const orderId = String(row.id)
-      const restaurantId = String(row.restaurant_id)
-
-      if (params.gatewayAmount !== null) {
-        await recordPaymentAmountMismatch(supabase, {
-          restaurantId,
-          orderId,
-          expectedAmount,
-          receivedAmount: params.gatewayAmount,
-          source: 'paycloud_webhook',
-          businessOrderNo: params.reference,
-          reference: params.reference,
-        })
-      }
-
-      const { error: uncertainAuditError } = await supabase.from('audit_logs').insert({
-        restaurant_id: restaurantId,
-        action: 'payment.verification_uncertain',
-        entity_type: 'order',
-        entity_id: orderId,
-        metadata: {
-          reason,
-          gatewayAmount: params.gatewayAmount,
-          expectedAmount,
-          amountVerified: false,
-          businessOrderNo: params.reference,
-          source: params.source,
-          outcome: 'left_pending_finatic_uncertain',
-        },
-      })
-      if (uncertainAuditError) {
-        console.error(
-          '[WEBHOOK] payment.verification_uncertain audit failed:',
-          uncertainAuditError,
-        )
-      }
-    }
-
-    outcome.amountMismatch = true
-    return outcome
-  }
-
-  /**
-   * #268. THE GATEWAY'S FIGURE, RECORDED ON THE SUCCESS PATH TOO.
-   *
-   * Until now `params.gatewayAmount` was used to GATE the write (the `verified` check above) and
-   * was written to the audit trail only on the FAILURE path, at `payment.verification_uncertain`.
-   * Every successful webhook therefore recorded `gatewayAmount: null` and
-   * `amountMeaning: 'order_total'` — mark-order-paid-confirmed.ts:144-145 — so the provider's own
-   * number, the one thing that made the payment auditable, survived only when it disagreed.
-   *
-   * IT CANNOT SIMPLY BE PASSED THROUGH, and that is the whole subtlety. This function's own
-   * docblock says it: a webhook event can name SEVERAL orders at once (a tab settle) and the
-   * gateway's single figure is for all of them together — which is why `verified` compares it once
-   * against the SUM. Handing that settlement-level figure to a PER-ORDER audit row would record
-   * "the gateway reported N$240 for this N$60 order" on four rows, and be wrong on all four. That
-   * is the #226 shape: an event amount is per-settle, never per-order.
-   *
-   * So the two cases are recorded differently, and honestly:
-   *
-   *   ONE order covered  -> the settlement IS this order, so `gatewayAmount` is this order's
-   *                         gateway figure and `amountMeaning` correctly becomes 'gateway_reported'.
-   *                         Exact, not approximate: GATEWAY_AMOUNT_TOLERANCE_CENTS is zero and
-   *                         `verified` is true to be here, so gatewayAmount === row.total.
-   *
-   *   MANY orders covered -> `gatewayAmount` stays null, because there is no per-order gateway
-   *                         figure and inventing one is worse than having none. The settlement's
-   *                         real numbers go into the audit metadata under names that say what they
-   *                         are, so the event remains reconstructable without any row claiming the
-   *                         figure is its own.
-   */
-  const singleOrderSettlement = orderRows.length === 1
-  const settlementAudit: Record<string, unknown> =
-    params.gatewayAmount === null
-      ? {}
-      : singleOrderSettlement
-        ? {}
-        : {
-            settlementGatewayAmount: params.gatewayAmount,
-            settlementExpectedAmount: expectedAmount,
-            settlementOrderCount: orderRows.length,
-          }
-
-  for (const row of orderRows) {
-    const orderId = String(row.id)
-    const restaurantId = String(row.restaurant_id)
-    const recoveringAutoCancelled = isCancelledOnE04111Evidence(row)
-
-    try {
-      const claim = await markOrderPaidConfirmed(supabase, {
-        orderId,
-        restaurantId,
-        reference: params.reference,
-        amount: Number(row.total) || 0,
-        gatewayAmount: singleOrderSettlement ? params.gatewayAmount : null,
-        paymentMethod: (row.payment_method as string) || 'card',
-        source: params.source,
-        extraAuditMetadata: recoveringAutoCancelled
-          ? { ...params.extraAuditMetadata, ...settlementAudit, recoveredAfterAutoCancel: true }
-          : { ...params.extraAuditMetadata, ...settlementAudit },
-        fromPaymentStatuses: claimableStatusesForRecovery(row),
-      })
-
-      if (claim.claimed) {
-        outcome.claimedIds.push(orderId)
-        if (recoveringAutoCancelled) {
-          await recordRecoveredAfterAutoCancel(supabase, {
-            restaurantId,
-            orderId,
-            reference: params.reference,
-            source: params.source,
-            previousCancellationReason: row.cancellation_reason
-              ? String(row.cancellation_reason)
-              : null,
-            previousCancelledAt: row.cancelled_at ? String(row.cancelled_at) : null,
-            amount: Number(row.total) || 0,
-            metadata: params.extraAuditMetadata,
-          })
-        }
-      } else {
-        outcome.unclaimed.push({ orderId, reason: claim.reason })
-      }
-    } catch (err) {
-      outcome.updateError = err instanceof Error ? err : new Error(String(err))
-      return outcome
-    }
-  }
-
-  return outcome
-}
-
-/**
- * A verified payment we could not apply must never be ACKed -- Finatic would stop
- * retrying and the payment would be lost with a success log. 'already_paid' is the one
- * benign case: the order reached the same end state via another caller.
- */
-function unappliedClaims(outcome: MarkPaidOutcome) {
-  return outcome.unclaimed.filter((u) => u.reason !== 'already_paid')
 }
 
 /**
@@ -365,7 +232,7 @@ function unappliedClaims(outcome: MarkPaidOutcome) {
  *
  * This logic used to live only on the signature-VALID path. The signature-FAILED fallback resolved
  * the same reference -- it already had `resolved.intent` in hand -- and then handed the order ids
- * straight to markOrdersPaidConfirmedByIds, the WHOLE-ORDER writer.
+ * straight to the WHOLE-ORDER writer (now applyGatewayConfirmedOrders).
  *
  * On 2026-09-07 that closed order #45 at Digi Cofee. A split card payment took N$17.00 of items
  * plus a N$20.00 gratuity; the gateway was charged N$37.00, which happened to equal the order
@@ -559,33 +426,34 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Order not found' }, { status: 503 })
     }
 
-    const markOutcome = await markOrdersPaidConfirmedByIds(supabase, resolved.orderIds, {
+    const settlement = await applyGatewayConfirmedOrders(supabase, resolved.orderIds, {
       reference: merchantOrderNo,
       source: 'paycloud_webhook_valid_signature',
       extraAuditMetadata: { businessOrderNo: merchantOrderNo, path },
       gatewayAmount: extractWebhookGatewayAmount(payload),
+      transactionId: extractWebhookTransactionId(payload),
+      // An orders-scope intent, when this reference was launched through one, DEFINES the target
+      // set. An allocations-scope intent never reaches here -- it forked above.
+      intent: resolved.intent,
     })
-    if (markOutcome.updateError) {
-      console.error('[WEBHOOK] mark paid failed:', markOutcome.updateError)
-      return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
-    }
-    if (markOutcome.amountMismatch) {
-      // #223. Recorded on every affected order already. ACK rather than 503 -- Finatic will
-      // keep sending the same disagreeing amount on retry, so there is nothing a retry can
-      // resolve; a human resolves it from the audit trail.
-      return webhookAck()
-    }
-    const blocked = unappliedClaims(markOutcome)
-    if (blocked.length) {
+    if (settlement.retryable) {
+      // NOT ACKed. Finatic must keep retrying: ACKing a payment we failed to record is how a real
+      // charge is discarded with a success log.
       console.error(
         '[WEBHOOK] verified payment could not be applied (returning 503 for retry):',
         merchantOrderNo,
-        blocked,
+        settlement.detail,
       )
       return NextResponse.json(
-        { error: 'Payment confirmed but not applied; retry later', unclaimed: blocked },
+        { error: 'Payment confirmed but not applied; retry later', detail: settlement.detail },
         { status: 503 },
       )
+    }
+    if (settlement.permanentRefusal) {
+      // #223. Recorded on every affected order already. ACK rather than 503 -- Finatic will keep
+      // sending the same disagreeing amount on retry, so there is nothing a retry can resolve;
+      // a human resolves it from the audit trail.
+      return webhookAck()
     }
 
     if (resolved.source === 'payment_events') {
@@ -666,7 +534,7 @@ export async function POST(req: Request) {
      * proven is that the charge covers a whole order: only the intent can answer that, and an
      * allocation-scope intent covers named items plus, separately, a gratuity.
      *
-     * Reaching markOrdersPaidConfirmedByIds with one of those is the defect that closed order #45.
+     * Reaching the whole-order writer with one of those is the defect that closed order #45.
      * After this, only whole-order references get there.
      */
     if (resolved.intent && resolved.intent.scope === 'allocations') {
@@ -683,7 +551,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Order not found' }, { status: 503 })
     }
 
-    const markOutcome = await markOrdersPaidConfirmedByIds(supabase, orderIds, {
+    /**
+     * THE SAME WRITER AS THE SIGNATURE-VALID LEG, and that is the point of it being one.
+     *
+     * [[webhook-has-two-paths-fork-both]]: a guard added to the signature-valid path was absent
+     * from this one, and that is what cost order #45. Both legs now call the same function with
+     * the same arguments, so a change to one cannot miss the other.
+     *
+     * This leg is where Riviera's N$720 actually arrived --
+     * source 'paycloud_webhook_fallback_finatic_verified' is the value in production's audit row.
+     */
+    const settlement = await applyGatewayConfirmedOrders(supabase, orderIds, {
       reference: merchantOrderNo,
       source: 'paycloud_webhook_fallback_finatic_verified',
       extraAuditMetadata: {
@@ -696,29 +574,26 @@ export async function POST(req: Request) {
         orderIds,
       },
       gatewayAmount: fallback.finatic.amount,
+      transactionId: fallback.finatic.transactionId,
+      intent: resolved.intent,
     })
-    if (markOutcome.updateError) {
-      console.error('[WEBHOOK] fallback mark paid failed:', markOutcome.updateError)
-      return NextResponse.json({ error: 'Failed to mark paid' }, { status: 503 })
-    }
-    if (markOutcome.amountMismatch) {
-      // #223. Same reasoning as the signature-valid path: recorded already, and a retry
-      // cannot change what Finatic reports for this reference.
-      return webhookAck()
-    }
-    const blocked = unappliedClaims(markOutcome)
-    if (blocked.length) {
-      // Finatic independently confirmed this payment. Failing to apply it and ACKing
-      // anyway is exactly how a real payment gets discarded with a success log.
+    if (settlement.retryable) {
+      // Finatic independently confirmed this payment. Failing to apply it and ACKing anyway is
+      // exactly how a real payment gets discarded with a success log.
       console.error(
         '[WEBHOOK] Finatic-verified payment could not be applied (returning 503 for retry):',
         merchantOrderNo,
-        blocked,
+        settlement.detail,
       )
       return NextResponse.json(
-        { error: 'Payment confirmed but not applied; retry later', unclaimed: blocked },
+        { error: 'Payment confirmed but not applied; retry later', detail: settlement.detail },
         { status: 503 },
       )
+    }
+    if (settlement.permanentRefusal) {
+      // #223. Same reasoning as the signature-valid path: recorded already, and a retry cannot
+      // change what Finatic reports for this reference.
+      return webhookAck()
     }
 
     if (resolved.source === 'payment_events') {

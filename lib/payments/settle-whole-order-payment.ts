@@ -48,13 +48,21 @@ import {
   isCancelledOnE04111Evidence,
   recordRecoveredAfterAutoCancel,
 } from '@/lib/payments/e04111-recovery'
-import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
+import {
+  recordPaymentAmountMismatch,
+  type AmountMismatchSource,
+} from '@/lib/payments/record-amount-mismatch'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
 export type SettleWholeOrderParams = {
-  restaurantId: string
+  /**
+   * The venue, when the caller knows it. A terminal-authenticated route always does; the webhook
+   * resolves a bare gateway reference and does not, so it passes null and the venue is derived
+   * from the orders themselves (a set spanning two venues is refused).
+   */
+  restaurantId: string | null
   /** The ids a gateway reference resolved to — typically the lead order alone. */
   leadOrderIds: string[]
   /** The intent the reference resolved to, when the charge was launched through one. */
@@ -77,8 +85,17 @@ export type SettleWholeOrderParams = {
    * payment as `cash` on any order that had previously been moved to `cash_pending`.
    */
   paymentMethod: 'card' | 'cash' | 'paytoday'
-  /** Caller tag for the audit trail. */
+  /** Free-text caller tag for the audit trail, e.g. 'paycloud_webhook_fallback_finatic_verified'. */
   source: string
+  /**
+   * WHICH GATEWAY LEG THIS IS, from `recordPaymentAmountMismatch`'s CLOSED set.
+   *
+   * Deliberately a second field rather than reusing `source`. That enum is narrow on purpose --
+   * its docblock enumerates exactly the four places a mismatch can occur AFTER a card has been
+   * charged, and widening it to `string` to save a parameter would quietly let any caller invent a
+   * new category that no reconciliation query knows to look for.
+   */
+  mismatchSource: AmountMismatchSource
   terminalId?: string | null
   appVersion?: string | null
   /** Extra audit metadata merged into the refusal rows. */
@@ -141,6 +158,12 @@ export async function settleWholeOrderPayment(
   }
 
   const target = resolved.target
+  /**
+   * FROM THE TARGET, not from the argument. When the caller passed null this is the venue derived
+   * from the rows; when it passed one, resolveSettlementTarget has already proved they agree.
+   * Every write below is scoped by this single value.
+   */
+  const restaurantId = target.restaurantId
 
   // ---- the amount gate, against the set that is about to be written ------------------------
   if (!gatewayAmountAgrees(target, params.gatewayAmount)) {
@@ -163,18 +186,18 @@ export async function settleWholeOrderPayment(
        */
       if (params.gatewayAmount != null) {
         await recordPaymentAmountMismatch(supabase, {
-          restaurantId: params.restaurantId,
+          restaurantId,
           orderId,
           expectedAmount: target.expectedAmount,
           receivedAmount: params.gatewayAmount,
-          source: params.source,
+          source: params.mismatchSource,
           businessOrderNo: params.merchantOrderNo,
           reference: params.merchantOrderNo,
         })
       }
 
       const { error } = await supabase.from('audit_logs').insert({
-        restaurant_id: params.restaurantId,
+        restaurant_id: restaurantId,
         action: 'payment.verification_uncertain',
         entity_type: 'order',
         entity_id: orderId,
@@ -184,8 +207,24 @@ export async function settleWholeOrderPayment(
           businessOrderNo: params.merchantOrderNo,
           source: params.source,
           outcome: 'left_pending_finatic_uncertain',
-          // F15. Settlement-level figures under settlement-level names, on every row, so a
-          // per-order row never appears to claim a per-settlement number as its own.
+          /**
+           * THE EXISTING VOCABULARY IS KEPT, DELIBERATELY.
+           *
+           * `gatewayAmount` / `expectedAmount` are the names every other writer of
+           * `payment.verification_uncertain` already uses -- the auto-cancel cron
+           * (auto-cancel-stale-pos-orders.ts:261), reconcile-orphan-payments.ts:165, and this
+           * route's predecessor -- and the E04111 resolution procedure reads them by hand.
+           * Renaming them would fragment a shared vocabulary across a table nobody can migrate,
+           * for no gain: on THIS path both figures genuinely are settlement-level, because the
+           * comparison that failed was settlement-level.
+           *
+           * What F15 forbids is a PER-ORDER figure being presented as the gateway's, which is the
+           * `gatewayAmount: 720 on a N$500 order` defect. The settlement-scoped names below say
+           * how many orders the figure covers, so a reader can tell the two apart -- which was
+           * impossible before.
+           */
+          gatewayAmount: params.gatewayAmount,
+          expectedAmount: target.expectedAmount,
           ...figures,
           ...params.extraAuditMetadata,
         },
@@ -229,7 +268,7 @@ export async function settleWholeOrderPayment(
     intent && intent.scope === 'orders' && intent.tipStaffUserId ? intent.tipStaffUserId : null
 
   const { data, error } = await supabase.rpc('settle_order_payment', {
-    p_restaurant_id: params.restaurantId,
+    p_restaurant_id: restaurantId,
     // THE TARGET'S OWN IDS. Not a list built anywhere else in this function.
     p_order_ids: [...target.orderIds],
     p_expected_amount_cents: target.expectedAmountCents,
@@ -305,7 +344,7 @@ export async function settleWholeOrderPayment(
     if (!claimed.includes(orderId)) continue
     const prev = previousCancellation.get(orderId)
     await recordRecoveredAfterAutoCancel(supabase, {
-      restaurantId: params.restaurantId,
+      restaurantId,
       orderId,
       reference: params.merchantOrderNo,
       source: params.source,

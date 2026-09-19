@@ -115,15 +115,16 @@ function buildTarget(
 
 async function loadOrders(
   supabase: Supabase,
-  restaurantId: string,
+  restaurantId: string | null,
   ids: string[],
 ): Promise<TargetOrderRow[] | null> {
   if (ids.length === 0) return []
-  const { data, error } = await supabase
-    .from('orders')
-    .select(TARGET_ORDER_COLUMNS)
-    .in('id', ids)
-    .eq('restaurant_id', restaurantId)
+  let query = supabase.from('orders').select(TARGET_ORDER_COLUMNS).in('id', ids)
+  // A known venue is always applied as a filter. When it is not known yet -- the webhook resolves
+  // a bare reference and has no restaurant in hand -- it is DERIVED below and then enforced, so a
+  // settlement can never span two venues either way.
+  if (restaurantId) query = query.eq('restaurant_id', restaurantId)
+  const { data, error } = await query
   if (error) {
     console.error('[resolveSettlementTarget] order read failed', { error: error.message })
     return null
@@ -131,9 +132,23 @@ async function loadOrders(
   return (data ?? []) as unknown as TargetOrderRow[]
 }
 
+/**
+ * Every order in a settlement belongs to ONE venue, or there is no settlement.
+ *
+ * A gateway reference resolves to order ids with no restaurant attached, so the venue is derived
+ * from the rows rather than asserted by the caller. Two venues in one target set is not a
+ * settlement to narrow down — it means the correlation is wrong — so it refuses.
+ */
+function singleRestaurantOf(rows: TargetOrderRow[]): string | null {
+  const ids = new Set(rows.map((r) => String(r.restaurant_id ?? '')))
+  if (ids.size !== 1) return null
+  const [only] = [...ids]
+  return only || null
+}
+
 export type ResolveTargetResult =
   | { ok: true; target: SettlementTarget }
-  | { ok: false; reason: 'read_failed' | 'not_found' | 'incomplete' }
+  | { ok: false; reason: 'read_failed' | 'not_found' | 'incomplete' | 'cross_restaurant' }
 
 /**
  * Resolve the immutable target set for a whole-order card charge.
@@ -158,14 +173,20 @@ export type ResolveTargetResult =
 export async function resolveSettlementTarget(
   supabase: Supabase,
   params: {
-    restaurantId: string
+    /**
+     * The venue, when the caller knows it (a terminal-authenticated route always does).
+     * `null` for a bare gateway reference: the venue is then derived from the orders themselves
+     * and a set spanning two venues is refused.
+     */
+    restaurantId: string | null
     /** The order ids a resolver found — typically the lead order alone. */
     leadOrderIds: string[]
     /** The intent the reference resolved to, when there is one. */
     intent?: PaymentIntent | null
   },
 ): Promise<ResolveTargetResult> {
-  const { restaurantId, leadOrderIds, intent } = params
+  const { leadOrderIds, intent } = params
+  let restaurantId = params.restaurantId
 
   // ---- 1. an orders-scope intent defines the target outright -------------------------------
   if (intent && intent.scope === 'orders' && intent.orderIds.length > 0) {
@@ -193,6 +214,18 @@ export async function resolveSettlementTarget(
   const leads = await loadOrders(supabase, restaurantId, leadOrderIds)
   if (leads === null) return { ok: false, reason: 'read_failed' }
   if (leads.length === 0) return { ok: false, reason: 'not_found' }
+
+  // Derived when the caller had none, and enforced either way: a target set spanning two venues
+  // means the reference correlated wrongly, which is a refusal rather than something to narrow.
+  const derived = singleRestaurantOf(leads)
+  if (!derived || (restaurantId && derived !== restaurantId)) {
+    console.error('[resolveSettlementTarget] the lead orders do not share one restaurant', {
+      leadOrderIds,
+      expected: restaurantId,
+    })
+    return { ok: false, reason: 'cross_restaurant' }
+  }
+  restaurantId = derived
 
   const settlementIds = [
     ...new Set(
@@ -245,6 +278,11 @@ export async function resolveSettlementTarget(
   }
 
   const orders = [...expanded.values()]
+  // The expansion is filtered by restaurant_id above, so this can only fail if a lead order and
+  // its own settlement siblings disagree — which would mean the grouping column is corrupt.
+  if (singleRestaurantOf(orders) !== restaurantId) {
+    return { ok: false, reason: 'cross_restaurant' }
+  }
   return {
     ok: true,
     target: buildTarget(orders, {

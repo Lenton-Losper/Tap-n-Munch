@@ -23,32 +23,30 @@ jest.mock('@/lib/payments/webhook-sig-fallback', () => ({
     confirmWebhookOrderViaFinaticFallback(...args),
 }))
 
-const markOrderPaidConfirmed = jest.fn(async (..._args: unknown[]) => ({
-  claimed: true,
-  orderId: 'ord-1',
-  tabId: null,
-}))
-jest.mock('@/lib/payments/mark-order-paid-confirmed', () => ({
-  markOrderPaidConfirmed: (...args: unknown[]) => markOrderPaidConfirmed(...args),
+/**
+ * THE WHOLE-ORDER WRITER, as of 2026-09-19. One atomic `settle_order_payment` over the whole
+ * target set replaces the per-order `markOrderPaidConfirmed` this suite used to watch. The
+ * scenario assertions below are unchanged in substance -- same reference, same amount, same
+ * source, same audit metadata -- they now read them off the settlement call.
+ */
+import {
+  createFakeClient,
+  createFakeState,
+  order,
+  type FakeState,
+} from './helpers/settlement-supabase-fake'
+
+jest.mock('@/lib/receipts/safeIssueReceipt', () => ({
+  safeIssueReceiptsForOrders: jest.fn(async () => undefined),
+  safeIssueReceiptForOrder: jest.fn(async () => undefined),
 }))
 
+let state: FakeState
 jest.mock('@/lib/supabase/server', () => ({
-  createServerSupabaseClient: () => ({
-    from: (table: string) => {
-      if (table === 'orders') {
-        return {
-          select: () => ({
-            in: async () => ({
-              data: [{ id: 'ord-1', restaurant_id: 'rest-1', total: 11.5, payment_method: 'card' }],
-              error: null,
-            }),
-          }),
-        }
-      }
-      throw new Error(`unexpected table ${table}`)
-    },
-  }),
+  createServerSupabaseClient: () => createFakeClient(state),
 }))
+
+const settlements = () => state.rpcCalls.filter((c) => c.fn === 'settle_order_payment')
 
 function makeReq(body: Record<string, unknown>, headers: Record<string, string> = {}) {
   return new Request('https://example.test/api/webhooks/paycloud', {
@@ -61,6 +59,8 @@ function makeReq(body: Record<string, unknown>, headers: Record<string, string> 
 describe('POST /api/webhooks/paycloud signature-fallback paths', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    state = createFakeState()
+    state.orders.set('ord-1', order('ord-1', 11.5, { payment_method: 'card' }))
     enforceWebhookRateLimit.mockReturnValue({ allowed: true })
     verifyWebhook.mockReturnValue({
       ok: false,
@@ -106,19 +106,22 @@ describe('POST /api/webhooks/paycloud signature-fallback paths', () => {
     )
     expect(res.status).toBe(200)
     expect(text.trim()).toBe('success')
-    expect(markOrderPaidConfirmed).toHaveBeenCalledTimes(1)
-    expect(markOrderPaidConfirmed).toHaveBeenCalledWith(
-      expect.anything(),
+    expect(settlements()).toHaveLength(1)
+    expect(settlements()[0].args).toEqual(
       expect.objectContaining({
-        orderId: 'ord-1',
-        restaurantId: 'rest-1',
-        reference: 'MO-A',
-        amount: 11.5,
-        source: 'paycloud_webhook_fallback_finatic_verified',
-        extraAuditMetadata: expect.objectContaining({
-          path: 'fallback_verified_paid',
-          finaticTransactionId: 'TXN-A',
-        }),
+        // THE WHOLE TARGET SET, not a lead order. This is the Riviera property, asserted on the
+        // exact leg that produced it in production.
+        p_order_ids: ['ord-1'],
+        p_restaurant_id: 'rest-1',
+        p_payment_reference: 'MO-A',
+        p_merchant_order_no: 'MO-A',
+        // Integer cents. N$11.50 is 1150, and the gateway's figure is the authoritative one.
+        p_gateway_amount_cents: 1150,
+        p_expected_amount_cents: 1150,
+        p_gateway_transaction_id: 'TXN-A',
+        // Established by the gateway, never carried over from the order's own payment_method.
+        p_payment_method: 'card',
+        p_source: 'paycloud_webhook_fallback_finatic_verified',
       }),
     )
     console.log('SCENARIO_A_FALLBACK_VERIFIED_PAID_OK')
@@ -156,7 +159,7 @@ describe('POST /api/webhooks/paycloud signature-fallback paths', () => {
     )
     expect(res.status).toBe(200)
     expect(text.trim()).toBe('success')
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(settlements()).toHaveLength(0)
     console.log('SCENARIO_B_FALLBACK_VERIFIED_NOT_PAID_OK')
   })
 
@@ -184,7 +187,7 @@ describe('POST /api/webhooks/paycloud signature-fallback paths', () => {
     )
     expect(res.status).toBe(503)
     expect(String(json.error || '')).toMatch(/Finatic fallback query unavailable/)
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(settlements()).toHaveLength(0)
     console.log('SCENARIO_C_FALLBACK_QUERY_FAILED_OK')
   })
 })

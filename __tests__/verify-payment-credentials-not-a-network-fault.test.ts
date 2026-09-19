@@ -63,6 +63,18 @@ jest.mock('@/lib/supabase/server', () => ({
       Object.assign(b, {
         select: () => b,
         eq: () => b,
+        /**
+         * `.in()` is how resolveSettlementTarget reads the target set (2026-09-19).
+         *
+         * Without it the route threw and EVERY case in this suite came back 502 -- which is the
+         * precise status this suite exists to distinguish the others from, so a missing builder
+         * method would read as a real regression in the thing under test.
+         *
+         * The awaited result stays `data: []`, which makes the target unresolvable and is
+         * deliberate here: the four cases below are all about what happens BEFORE any settlement,
+         * and none of them reaches a successful gateway confirmation.
+         */
+        in: () => b,
         update: () => b,
         insert: (row: Row) => {
           if (table === 'audit_logs') auditInserts.push(row)

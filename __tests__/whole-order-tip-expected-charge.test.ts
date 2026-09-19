@@ -181,13 +181,32 @@ describe('THE COLUMNS ARE SELECTED, NOT MERELY WRITTEN', () => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { join } = require('path')
 
+/**
+   * REPOINTED 2026-09-19. Both gates now read their rows through
+   * `lib/payments/settlement-target.ts`, so the column list they depend on lives there. The
+   * property is unchanged and is asserted in both halves rather than relaxed: each gate must
+   * reach the shared target, AND the shared target must select both columns.
+   *
+   * Asserting only that the route file mentions the column names would have gone green on a route
+   * that mentions them in a COMMENT while selecting nothing -- which is what this suite exists to
+   * prevent.
+   */
   it.each([
     ['verify-payment', 'app/api/terminal/orders/[orderId]/verify-payment/route.ts'],
     ['paycloud webhook', 'app/api/webhooks/paycloud/route.ts'],
-  ])('%s selects pending_charge_cents', (_name, rel) => {
+  ])('%s reads its rows through the shared settlement target', (_name, rel) => {
     const code = readFileSync(join(process.cwd(), rel), 'utf8')
-    expect(code).toMatch(/pending_charge_cents/)
-    expect(code).toMatch(/pending_tip_cents/)
+    const statements = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(statements).toMatch(/resolveSettlementTarget\(|settleWholeOrderPayment\(/)
+  })
+
+  it('and the shared settlement target SELECTS both columns', () => {
+    const code = readFileSync(join(process.cwd(), 'lib/payments/settlement-target.ts'), 'utf8')
+    const statements = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    // TARGET_ORDER_COLUMNS interpolates EXPECTED_CHARGE_COLUMNS, which names both.
+    expect(statements).toMatch(/TARGET_ORDER_COLUMNS[\s\S]{0,400}EXPECTED_CHARGE_COLUMNS/)
+    expect(EXPECTED_CHARGE_COLUMNS).toContain('pending_charge_cents')
+    expect(EXPECTED_CHARGE_COLUMNS).toContain('pending_tip_cents')
   })
 
   it('reconcile reads whole rows, so it needs no column list', () => {
@@ -220,10 +239,22 @@ describe('NO GATE COMPARES AGAINST order.total ANY MORE', () => {
   ])('%s derives its expectation from the recorded charge', (_name, rel) => {
     const code = readFileSync(join(process.cwd(), rel), 'utf8')
     const statements = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-    expect(statements).toMatch(/expectedChargeFor(Orders)?\(/)
+    // Either directly, or through the shared target / writer that does it for them. The two
+    // gateway gates delegate as of 2026-09-19; reconcile still sums in place.
+    expect(statements).toMatch(
+      /expectedChargeFor(Orders)?\(|resolveSettlementTarget\(|settleWholeOrderPayment\(/,
+    )
     // And not the old shape, in any of its three spellings.
     expect(statements).not.toMatch(/const expectedAmount = Number\(order\.total\)/)
     expect(statements).not.toMatch(/sum \+ \(Number\(row\.total\) \|\| 0\)/)
     expect(statements).not.toMatch(/s \+ \(Number\(r\.data\.total\) \|\| 0\)/)
+  })
+
+  it('the shared settlement target itself sums the RECORDED CHARGE, not order totals', () => {
+    // Where the delegation above ends up. Without this, "it delegates" would be satisfied by a
+    // target that summed order.total -- the defect, one level down.
+    const code = readFileSync(join(process.cwd(), 'lib/payments/settlement-target.ts'), 'utf8')
+    const statements = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(statements).toMatch(/expectedChargeForOrders\(/)
   })
 })

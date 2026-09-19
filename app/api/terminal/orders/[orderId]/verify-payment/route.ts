@@ -12,11 +12,17 @@ import {
   isFinaticMerchantOrderInvalidError,
   finaticErrorCode,
 } from '@/lib/payments/query-finatic-order-paid'
-import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
-import { expectedChargeForOrders } from '@/lib/payments/expected-charge'
-import { settlementSetFor } from '@/lib/payments/settlement-set'
-import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
-import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
+/**
+ * ONE WRITER, SHARED WITH THE WEBHOOK.
+ *
+ * This route used to assemble its own version of the settlement: settlementSetFor to widen the
+ * expectation, expectedChargeForOrders to sum it, amountsMatch to compare it, and then
+ * markOrderPaidConfirmed on the SINGLE orderId from the URL. The widening and the writing
+ * disagreed, which is the Riviera defect on this route.
+ */
+import { expectedChargeFor } from '@/lib/payments/expected-charge'
+import { resolveSettlementTarget } from '@/lib/payments/settlement-target'
+import { settleWholeOrderPayment } from '@/lib/payments/settle-whole-order-payment'
 
 export const dynamic = 'force-dynamic'
 
@@ -256,29 +262,36 @@ export async function POST(
     })
 
     /**
-     * WHAT THE READER WAS ASKED FOR, not what the order totals.
+     * ============================================================================================
+     * THE SAME OBJECT IS VERIFIED AND WRITTEN (F1).
+     * ============================================================================================
      *
-     * These are the same number for an untipped charge, and different the moment a gratuity is
-     * included -- at which point comparing against order.total refuses a payment that SUCCEEDED,
-     * after the customer's card has been debited. See lib/payments/expected-charge.ts.
+     * What stood here computed `expectedAmount` over `settlementSetFor(order).orders` -- the
+     * WHOLE settlement -- and then called `markOrderPaidConfirmed({ orderId })` with the single
+     * order from the URL. For a two-order settlement that verified N$720 and paid N$500, leaving
+     * the sibling unpaid: the Riviera shape, on this route as well as on the webhook.
      *
-     * Zero tolerance is unchanged. The figure being compared is corrected; the comparison is not
+     * `settleWholeOrderPayment` resolves ONE target, checks the gateway amount against it, and
+     * hands that same target to the atomic RPC, so applying to fewer orders than were verified is
+     * not expressible.
+     *
+     * WHAT THE READER WAS ASKED FOR, not what the order totals. These are the same number for an
+     * untipped charge and different the moment a gratuity is included -- at which point comparing
+     * against order.total refuses a payment that SUCCEEDED, after the card has been debited.
+     * Zero tolerance is unchanged: the figure compared is corrected, the comparison is not
      * loosened.
-     */
-    /**
-     * THE WHOLE SETTLEMENT, not the lead order alone.
      *
-     * This route is called with orderIds[0] and paycloud_merchant_order_no lives on that one row,
-     * so it saw ONE order however many were charged -- and compared the whole gateway amount
-     * against that order's expectation. For o1 = N$10, o2 = N$10 and a N$10 tip the reader is asked
-     * for N$30 and this expected N$20, refusing a payment that succeeded.
+     * ============================================================================================
+     * ONLY WHEN THERE IS A PAYMENT
+     * ============================================================================================
      *
-     * A NULL settlement id yields the lead order alone, which is exactly today's behaviour and what
-     * every order on production currently has.
+     * The expectation is resolved INSIDE the `result.paid` branch, and that placement is
+     * load-bearing. "The gateway was asked and says there is no payment" is a complete, useful
+     * answer -- #354's third state -- and it does not depend on knowing which orders a payment
+     * would have covered. Resolving first made an unreadable target turn that clean 200 into a
+     * 503, which is the very conflation (#153, #354) this route exists to keep apart.
      */
-    const settlement = await settlementSetFor(supabase, order, order.restaurant_id)
-    const charge = expectedChargeForOrders(settlement.orders)
-    const expectedAmount = charge.expectedAmount
+    let expectedAmount = expectedChargeFor(order).expectedAmount
     let applied = false
     let outcome: string | null = null
 
@@ -304,87 +317,57 @@ export async function POST(
        * payment.verification_uncertain already models on the sibling gateway leg in
        * handle-terminal-payment-failed.ts — and what the E04111 resolution procedure keys off.
        */
-      const gatewayAmount = result.amount
-      const verified =
-        gatewayAmount != null &&
-        amountsMatch(gatewayAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)
+      /**
+       * ONE CALL. It resolves the target, compares the gateway's figure against THAT SET, records
+       * payment.amount_mismatch and payment.verification_uncertain on every covered order when
+       * they disagree, and otherwise settles all of them atomically through
+       * settle_order_payment().
+       *
+       * WHAT WAS REMOVED FROM HERE, and why none of it is lost:
+       *
+       *   the amountsMatch comparison      -> gatewayAmountAgrees, against the target
+       *   recordPaymentAmountMismatch      -> inside settleWholeOrderPayment, per covered order
+       *   the verification_uncertain audit -> likewise, now carrying the settlement-level figures
+       *   markOrderPaidConfirmed(orderId)  -> the atomic RPC over the whole target set
+       *
+       * The rules are unchanged: zero tolerance, ABSENT is not agreeing, and neither refusal
+       * cancels an order the gateway says was charged. What changes is that the set the amount is
+       * checked against is provably the set that gets written.
+       */
+      const resolvedTarget = await resolveSettlementTarget(supabase, {
+        restaurantId: terminal.restaurantId,
+        leadOrderIds: [orderId],
+      })
+      // Reported only. A failure here is not fatal: settleWholeOrderPayment resolves the target
+      // itself and fails closed on its own if it cannot, so this never becomes a second opinion
+      // about what gets written.
+      if (resolvedTarget.ok) expectedAmount = resolvedTarget.target.expectedAmount
 
-      if (!verified) {
-        const reason =
-          gatewayAmount == null
-            ? `Finatic reports paid but returned no amount for ${merchantOrderNo} — the amount was ` +
-              'never verified, so the correction is not applied and the order is left claimable.'
-            : `Finatic reports paid but for ${gatewayAmount}, not the order total ${expectedAmount} — ` +
-              'not applying, and not cancelling an order the gateway says was charged.'
-        console.error(`[terminal/verify-payment] order ${orderId}: ${reason}`)
+      const settled = await settleWholeOrderPayment(supabase, {
+        restaurantId: terminal.restaurantId,
+        leadOrderIds: [orderId],
+        merchantOrderNo,
+        transactionId: result.transactionId,
+        gatewayAmount: result.amount,
+        // Finatic confirmed a card charge. Stated, never carried over from the order's own
+        // payment_method -- see F3.
+        paymentMethod: 'card',
+        source: 'terminal_verify_payment',
+        mismatchSource: 'terminal_verify_payment',
+        terminalId: terminal.terminalId,
+        extraAuditMetadata: {
+          finaticStatus: result.status,
+          finaticTransactionId: result.transactionId,
+          finaticAmount: result.amount,
+          businessOrderNo: merchantOrderNo,
+        },
+      })
 
-        /**
-         * TWO ACTIONS, DELIBERATELY, and only one of them fires on both branches (ruled).
-         *
-         *   payment.amount_mismatch        (#187) -- "we checked, and the figures disagreed"
-         *   payment.verification_uncertain (#190) -- "the payment's state is not established"
-         *
-         * They record different facts, so the mismatch row is kept rather than retired into the
-         * canonical one: dropping it would cost the ability to answer "did we check?" at all,
-         * and a duplicate row on one branch costs nothing. Reconciliation keys on
-         * verification_uncertain either way.
-         *
-         * NOT written when the amount is ABSENT. A mismatch row carrying receivedAmount: null
-         * would assert a comparison that never happened -- null is "never checked", not "checked
-         * and disagreed", and keeping those distinguishable is the whole point of the #190 split.
-         */
-        if (gatewayAmount != null) {
-          await recordPaymentAmountMismatch(supabase, {
-            restaurantId: terminal.restaurantId,
-            orderId,
-            expectedAmount,
-            receivedAmount: gatewayAmount,
-            source: 'terminal_verify_payment',
-            terminalId: terminal.terminalId,
-            businessOrderNo: merchantOrderNo,
-            reference: merchantOrderNo,
-          })
-        }
-
-        const { error: uncertainAuditError } = await supabase.from('audit_logs').insert({
-          restaurant_id: terminal.restaurantId,
-          action: 'payment.verification_uncertain',
-          entity_type: 'order',
-          entity_id: orderId,
-          metadata: {
-            reason,
-            // Both figures, so the disagreement can be settled from the audit row alone.
-            // finaticAmount null is the "never checked" case and must stay distinguishable.
-            finaticAmount: gatewayAmount,
-            expectedAmount,
-            amountVerified: false,
-            finaticStatus: result.status,
-            finaticTransactionId: result.transactionId,
-            businessOrderNo: merchantOrderNo,
-            terminalId: terminal.terminalId,
-            source: 'terminal_verify_payment',
-            outcome: 'left_pending_finatic_uncertain',
-          },
-        })
-        if (uncertainAuditError) {
-          console.error(
-            '[terminal/verify-payment] payment.verification_uncertain audit failed:',
-            uncertainAuditError,
-          )
-        }
-
+      applied = settled.ok && settled.applied
+      if (!settled.ok) {
+        // The same outcome string every build in the field already reads. A refusal here has
+        // always meant "the money's state is not established"; that is still what it means.
         outcome = 'left_pending_finatic_uncertain'
-      } else {
-        const claim = await markOrderPaidConfirmed(supabase, {
-          orderId,
-          restaurantId: terminal.restaurantId,
-          reference: merchantOrderNo,
-          voucherNo: result.transactionId || merchantOrderNo,
-          amount: expectedAmount,
-          terminalId: terminal.terminalId,
-          source: 'terminal_verify_payment',
-        })
-        applied = claim.claimed
       }
     }
 

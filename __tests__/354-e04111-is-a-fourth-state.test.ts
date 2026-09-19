@@ -40,9 +40,16 @@ jest.mock('@/lib/terminal-auth', () => ({
   validateTerminalRecord: async () => undefined,
 }))
 
-const markOrderPaidConfirmed = jest.fn(async () => ({ claimed: true, tabId: null, reason: null }))
-jest.mock('@/lib/payments/mark-order-paid-confirmed', () => ({
-  markOrderPaidConfirmed: (...a: unknown[]) => markOrderPaidConfirmed(...(a as [])),
+/**
+ * THE WHOLE-ORDER WRITER, as of 2026-09-19: one atomic `settle_order_payment` over the target
+ * set, in place of a per-order `markOrderPaidConfirmed`. The positive control below asserts on
+ * this -- "was a settlement issued?" -- which is the same question under a different name.
+ */
+const settlementCalls: Row[] = []
+
+jest.mock('@/lib/receipts/safeIssueReceipt', () => ({
+  safeIssueReceiptsForOrders: jest.fn(async () => undefined),
+  safeIssueReceiptForOrder: jest.fn(async () => undefined),
 }))
 
 /**
@@ -71,15 +78,39 @@ jest.mock('@/lib/supabase/server', () => ({
       Object.assign(b, {
         select: () => b,
         eq: () => b,
+        /**
+         * `.in()` is how resolveSettlementTarget reads the target set (2026-09-19). Without it the
+         * route threw and even the PAID control came back 502 -- which is precisely the status
+         * this suite exists to prove E04111 is NOT, so the missing builder method would have read
+         * as a real regression in the thing under test.
+         */
+        in: () => b,
         update: () => b,
         insert: (row: Row) => {
           if (table === 'audit_logs') auditInserts.push(row)
           return { error: null }
         },
         maybeSingle: async () => ({ data: table === 'orders' ? orderRow : null, error: null }),
-        then: (r: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(r),
+        // A LIST read. resolveSettlementTarget awaits the builder directly, so this is where the
+        // target set comes from; returning [] here would make the target unresolvable and the
+        // positive control would pass for the wrong reason (nothing settled, 200 anyway).
+        then: (r: (v: unknown) => unknown) =>
+          Promise.resolve({ data: table === 'orders' ? [orderRow] : [], error: null }).then(r),
       })
       return b
+    },
+    rpc: async (fn: string, args: Row) => {
+      settlementCalls.push({ fn, ...args })
+      return {
+        data: {
+          ok: true,
+          reason: 'settled',
+          applied: true,
+          claimed_order_ids: args.p_order_ids,
+          intended_order_ids: args.p_order_ids,
+        },
+        error: null,
+      }
     },
   }),
 }))
@@ -106,17 +137,26 @@ const post = async () => {
 beforeEach(() => {
   auditInserts.length = 0
   queryFinaticOrderPaid.mockReset()
-  // mockReset() strips the implementation as well as the calls, so this must be re-established or
-  // the route reads `claim.claimed` off undefined and throws into the outer catch -- surfacing as
-  // a 502 that looks like a route defect and is not. The positive control below caught exactly
-  // that, which is what a positive control is for.
-  markOrderPaidConfirmed.mockReset()
-  markOrderPaidConfirmed.mockImplementation(async () => ({ claimed: true, tabId: null, reason: null }))
+  // The settlement is now recorded rather than mocked per call, so there is no implementation to
+  // re-establish -- only the record to clear. (The note that stood here described an earlier
+  // hazard: a mockReset() that stripped markOrderPaidConfirmed's implementation made the route
+  // read `claim.claimed` off undefined and surface a 502 that looked like a route defect. The
+  // positive control below is what caught it, which is what a positive control is for.)
+  settlementCalls.length = 0
   orderRow = {
     id: ORDER_ID,
     restaurant_id: RESTAURANT_UUID,
     payment_status: 'pending',
+    payment_method: 'card',
     total: 55,
+    // SELECTED, not merely present: without it expectedChargeFor falls back to the order total
+    // and the suite would stop exercising the recorded-charge path at all.
+    pending_charge_cents: 5500,
+    pending_tip_cents: 0,
+    pending_settlement_id: null,
+    cancelled_at: null,
+    cancellation_reason: null,
+    tab_id: null,
     paycloud_merchant_order_no: MERCHANT_ORDER_NO,
   }
 })
@@ -181,7 +221,7 @@ describe('#354 E04111 is answered, not unreachable', () => {
       throw e04111Error()
     })
     await post()
-    expect(markOrderPaidConfirmed).not.toHaveBeenCalled()
+    expect(settlementCalls.filter((c) => c.fn === 'settle_order_payment')).toHaveLength(0)
   })
 
   it('a genuinely unreachable gateway STILL answers 502 — the split must not drift', async () => {
@@ -216,6 +256,6 @@ describe('#354 E04111 is answered, not unreachable', () => {
     expect(status).toBe(200)
     expect(body.paid).toBe(true)
     expect(body.isE04111).toBeUndefined()
-    expect(markOrderPaidConfirmed).toHaveBeenCalled()
+    expect(settlementCalls.filter((c) => c.fn === 'settle_order_payment')).toHaveLength(1)
   })
 })
