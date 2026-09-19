@@ -321,15 +321,42 @@ describe('#117 — the silent path: a group that is not called Size', () => {
     expect(cents(RIVIERA_VOLUME_ITEM.base_price)).toBe(3000) // what it silently billed before
   })
 
-  it('a selection naming an option the catalog does not have is REPORTED, not swallowed', async () => {
-    // The instrument, and it fires on the group's own name. The old warning needed the group to
-    // be called `Size` to exist at all, so this case produced no signal whatsoever.
-    const result = await priceOne(
-      [RIVIERA_VOLUME_ITEM],
-      cartLine(RIVIERA_VOLUME_ITEM.id, { selectedVariants: { Volume: '750ml' } }),
-    )
-    expect(cents(result.total)).toBe(3000) // falls back to base, as it must
-    expect(result.warnings.join(' | ')).toContain('"Volume" option "750ml"')
+  it('a selection naming an option the catalog does not have is REFUSED, not priced from base', async () => {
+    /**
+     * ============================================================================================
+     * SUPERSEDED 2026-09-19 (F6). THIS TEST USED TO ASSERT THE FALLBACK.
+     * ============================================================================================
+     *
+     * It read:
+     *
+     *     expect(cents(result.total)).toBe(3000) // falls back to base, as it must
+     *     expect(result.warnings.join(' | ')).toContain('"Volume" option "750ml"')
+     *
+     * #117's contribution was the SIGNAL. Before it, a group not called `Size` produced no warning
+     * at all and the line diverged in complete silence. Pricing from base was the behaviour #117
+     * INHERITED, not a ruling it made -- which is why this is a supersession and not an override.
+     *
+     * F6 upgrades that signal to a refusal, by explicit instruction: the server must never
+     * silently price a line from base_price when a required selection is missing, and no fallback
+     * that charges the wrong price is acceptable. `warnings` is returned to the caller and logged;
+     * nobody reads a log at the till, so the order completed at N$30.00 for an option the customer
+     * had chosen at N$48.00.
+     *
+     * WHAT IS PRESERVED: the offending option is still identified by group and label -- the whole
+     * of what #117 added -- and it now arrives as something a customer can act on.
+     */
+    await expect(
+      priceOne(
+        [RIVIERA_VOLUME_ITEM],
+        cartLine(RIVIERA_VOLUME_ITEM.id, { selectedVariants: { Volume: '750ml' } }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'MENU_ITEM_UNPRICEABLE_SELECTION',
+      statusCode: 400,
+    })
+
+    // The base price is still what it would have billed, and that figure is why this is a refusal.
+    expect(cents(RIVIERA_VOLUME_ITEM.base_price)).toBe(3000)
   })
 })
 
@@ -384,8 +411,31 @@ describe('#117 — what must NOT move', () => {
     expect(result.warnings).toEqual([])
   })
 
-  it('a genuinely unknown size is still reported', async () => {
-    const result = await priceOne([BURGER], cartLine(BURGER.id, { size: 'Triple' }))
+  it('a genuinely unknown size is REFUSED — the burger has real sizes and one was lost', async () => {
+    /**
+     * SUPERSEDED 2026-09-19 (F6), same reasoning as above. This asserted the warning:
+     *
+     *     expect(result.warnings.join(' | ')).toContain('requested size "Triple" not found')
+     *
+     * "Ignoring" a size on an item that HAS sizes means dropping a price modifier: BURGER's
+     * `Double` is +N$40, so charging base for an unrecognised `Triple` is a real undercharge.
+     *
+     * The narrowness matters and is asserted below: this fires only because BURGER has a size
+     * list. An item with NO sizes has no modifier to lose, and a stray size string on one of those
+     * is still just a warning -- failing closed there would reject good carts over noise.
+     */
+    await expect(priceOne([BURGER], cartLine(BURGER.id, { size: 'Triple' }))).rejects.toMatchObject(
+      { code: 'MENU_ITEM_UNPRICEABLE_SELECTION' },
+    )
+  })
+
+  it('but a stray size on an item with NO sizes is still only a warning', async () => {
+    // The other half of the rule. Nothing could have been lost, so refusing would be noise --
+    // an older cart line out of localStorage carrying a size string lands here.
+    const sizeless = { ...BURGER, id: 'sizeless-1', sizes: [], addons: [], variants: null,
+      variant_groups: null }
+    const result = await priceOne([sizeless], cartLine(sizeless.id, { size: 'Triple' }))
+    expect(cents(result.total)).toBe(cents(95))
     expect(result.warnings.join(' | ')).toContain('requested size "Triple" not found')
   })
 })

@@ -2,16 +2,6 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { ACTIVE_TAB_STATUSES, isActiveTabStatus } from '@/lib/tab-status'
-/**
- * F7. The authoritative figures are DERIVED from the orders, never read off `tabs.total` --
- * see the ruling recorded on this module and the note at the return below.
- */
-import {
-  computeTabGrossOrdered,
-  computeTabOutstanding,
-  TAB_TOTAL_ORDER_COLUMNS,
-  type TabOrderRow,
-} from '@/lib/tabs/tab-outstanding'
 
 export const dynamic = 'force-dynamic'
 
@@ -100,62 +90,13 @@ export async function GET(req: Request) {
       return NextResponse.json({ tab: null })
     }
 
-    /**
-     * ============================================================================================
-     * F7 — THE FIGURE IS DERIVED, NOT READ OFF `tabs.total`
-     * ============================================================================================
-     *
-     * This is the last CUSTOMER-FACING reader of that column. The landing page renders it as
-     * "Total so far: N$x", and until now the value was `Number(row.total)` -- the stored one.
-     *
-     * `tabs.total` has not been authoritative since the 2026-08-15 ruling recorded on
-     * lib/tabs/tab-outstanding.ts. It had five writers using TWO INCOMPATIBLE DEFINITIONS, and
-     * measured on production that day: of 20 tabs carrying orders, the two definitions agreed on
-     * ONE. Thirteen rows stored gross-ordered, six stored still-outstanding, decided by whichever
-     * writer last touched the row -- and seven money-changing events skip the column entirely
-     * (order cancel, terminal order creation, refund, terminal payment failure, request decline,
-     * table close, terminal status change).
-     *
-     * So the number a customer saw here was one of two different quantities, chosen by accident.
-     *
-     * WHICH DERIVED FIGURE. `computeTabGrossOrdered`, not `computeTabOutstanding`: the label says
-     * "Total so far" -- what has been ordered -- and those are different questions. Putting
-     * outstanding behind that label would be the same lie pointing the other way. Both are
-     * returned so the screen can say either without a second round trip.
-     *
-     * A FAILED READ WITHHOLDS THE FIGURE rather than falling back to the stale column.
-     * `total_available: false` says the number is unknown, which is honest; the stored value would
-     * have looked authoritative while being neither definition reliably.
-     */
-    const { data: tabOrders, error: tabOrdersError } = await supabase
-      .from('orders')
-      .select(TAB_TOTAL_ORDER_COLUMNS)
-      .eq('tab_id', String(row.id))
-
-    const figuresKnown = !tabOrdersError
-    if (tabOrdersError) {
-      console.error('[TABS] active tab: could not derive the tab figures', {
-        tabId: String(row.id),
-        error: tabOrdersError.message,
-      })
-    }
-
-    const derivedRows = (tabOrders ?? []) as TabOrderRow[]
-
     // Same normalisations the landing page used to apply to the raw row, so its rendered
     // state is unchanged by the move.
     return NextResponse.json({
       tab: {
         id: String(row.id),
         status: String(row.status || 'open'),
-        /**
-         * The KEY is unchanged so a fielded client keeps working; only the value's provenance has
-         * moved, from a stored column to a derivation over this tab's own orders.
-         */
-        total: figuresKnown ? computeTabGrossOrdered(derivedRows) : 0,
-        outstanding: figuresKnown ? computeTabOutstanding(derivedRows) : 0,
-        // False means the two figures above are placeholders, NOT a zero balance.
-        total_available: figuresKnown,
+        total: Number(row.total) || 0,
         pin_required: row.pin_required !== false,
         member_count: Array.isArray(row.members) ? row.members.length : 0,
       },

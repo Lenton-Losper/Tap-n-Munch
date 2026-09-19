@@ -73,6 +73,11 @@ export type UnmatchedMenuItemCode =
   | 'MENU_ITEM_MISSING_ID'
   | 'MENU_ITEM_NOT_FOUND'
   | 'MENU_ITEM_NOT_ORDERABLE'
+  /**
+   * F6. The customer chose something this server cannot price, so the line would otherwise be
+   * charged at a figure nobody quoted. See `unpriceableSelectionsFor` for exactly what counts.
+   */
+  | 'MENU_ITEM_UNPRICEABLE_SELECTION'
 
 export type UnmatchedMenuItemLine = {
   menuItemId: string
@@ -188,6 +193,116 @@ function extractAddonNames(item: Record<string, unknown>): string[] {
       return ''
     })
     .filter(Boolean)
+}
+
+/**
+ * ==================================================================================================
+ * F6 — A SELECTION THIS SERVER CANNOT PRICE IS A REFUSAL, NOT A WARNING
+ * ==================================================================================================
+ *
+ * `priceCatalogLine` had three paths that pushed a string onto `warnings` and then charged the
+ * customer anyway:
+ *
+ *   findUnpricedVariantSelections  ->  'requested "<group>" option "<label>" not found, pricing from base'
+ *   an unmatched size              ->  'requested size "<name>" not found, ignoring'
+ *   an unmatched addon             ->  'requested addon "<name>" not found, ignoring'
+ *
+ * "Pricing from base" and "ignoring" both mean: charge less than the thing the customer chose.
+ * `warnings` is returned to the caller and, on every route, logged. Nobody reads a log at the till,
+ * and the order completes at the wrong figure with a receipt that looks ordinary. The audit
+ * measured the worst identified case at N$15 per unit across 5 variant-priced items.
+ *
+ * ==================================================================================================
+ * WHAT COUNTS, AND WHAT DELIBERATELY DOES NOT
+ * ==================================================================================================
+ *
+ * The rule is narrow on purpose: refuse only where the missing match COULD have changed the price.
+ * Failing closed on everything would start rejecting orders over stray strings that cost nothing,
+ * and an ordering flow that refuses good carts gets worked around rather than fixed.
+ *
+ *   a priced VARIANT group whose chosen option does not exist   REFUSE
+ *       The group exists and carries prices, so the option had one and we do not know it. This is
+ *       the N$15 case.
+ *
+ *   a size that matches nothing, where the item HAS sizes       REFUSE
+ *       A real size list exists and the customer's choice is not in it, so a modifier was lost.
+ *
+ *   a size that matches nothing, where the item has NO sizes     warn only
+ *       There was no modifier to lose. An older cart line carrying a stray `size` string, or a
+ *       variant label mirrored into `selected_size`, both land here and both price correctly.
+ *
+ *   an addon that matches nothing                                warn only
+ *       DELIBERATELY NOT A REFUSAL, and this is the one that is not obvious.
+ *
+ *       An add-on is optional and additive. Dropping one the catalog does not have charges for
+ *       exactly what will be supplied, so the customer is not overcharged and the restaurant is
+ *       not short for anything it delivered -- the customer simply does not get the extra. That
+ *       is the safe direction on its own.
+ *
+ *       It is also the client-supplied-price attack surface: `create-order-reprices-terminal-leg`
+ *       sends `{ name: 'Free caviar', price: -9999 }` precisely to prove a client figure never
+ *       reaches the total. Dropping it already defeats that; refusing would let any client make an
+ *       order un-placeable by naming a nonexistent extra.
+ *
+ *       The undercharge F6 is about is a REPLACEMENT price we failed to apply, not an addition we
+ *       declined to make.
+ *
+ * A LABEL THE VARIANT RESOLUTION ALREADY CONSUMED IS NOT UNMATCHED. The item modal mirrors a
+ * priced variant choice into `selected_size`, so treating that as a missing size would refuse
+ * every correctly-priced sized drink -- the same false positive the warning below already
+ * suppresses, and the reason this check reuses that condition rather than restating it.
+ */
+export type UnpriceableSelection = {
+  kind: 'variant' | 'size' | 'addon'
+  /** The group name for a variant; 'size' or 'addon' otherwise. */
+  group: string
+  /** What the customer chose that could not be priced. */
+  label: string
+}
+
+export function unpriceableSelectionsFor(
+  item: Record<string, unknown>,
+  menuItem: MenuItemPricingRow,
+): UnpriceableSelection[] {
+  const out: UnpriceableSelection[] = []
+
+  const variantSelection = extractVariantSelection(item)
+  for (const unpriced of findUnpricedVariantSelections(menuItem, variantSelection)) {
+    out.push({ kind: 'variant', group: unpriced.groupName, label: unpriced.label })
+  }
+
+  const sizes = menuItem.sizes || []
+  const sizeName = extractSizeName(item)
+  if (sizeName && sizes.length > 0) {
+    const matchedSize = sizes.find((s) => s?.name === sizeName)
+    if (!matchedSize) {
+      // The variant resolution may legitimately have consumed this exact label -- see above.
+      let matchedVariant = findSelectedVariantPrice(menuItem, variantSelection)
+      if (!matchedVariant) matchedVariant = findVariantPriceByOptionLabel(menuItem, sizeName)
+      if (!(matchedVariant && matchedVariant.label === sizeName)) {
+        out.push({ kind: 'size', group: 'size', label: sizeName })
+      }
+    }
+  }
+
+  /**
+   * ADD-ONS ARE NOT CHECKED HERE. See the docblock: an unmatched add-on is dropped with a warning,
+   * which charges for exactly what will be supplied and also defeats the client-supplied-price
+   * case. Refusing would let any client make an order un-placeable by naming a nonexistent extra.
+   */
+  return out
+}
+
+/**
+ * #273's voice, for the one refusal a customer can genuinely act on by re-choosing. It names the
+ * ITEM rather than the internal group name, because "Flat White" is a thing on the menu and
+ * "price_group_2" is not.
+ */
+function copyUnpriceable(names: string[]): string {
+  const list = listNames(names)
+  return names.length === 1
+    ? `The options you chose for ${list} are no longer available. Please choose again.`
+    : `The options you chose for ${list} are no longer available. Please choose again.`
 }
 
 /**
@@ -343,6 +458,10 @@ export async function calculateOrderPricing(
   const missingId: UnmatchedMenuItemLine[] = []
   const notFound: UnmatchedMenuItemLine[] = []
   const notOrderable: UnmatchedMenuItemLine[] = []
+  // F6. Lines whose chosen options this server cannot price, and the detail for the log -- the
+  // customer sees the item names, an operator needs to know which option went missing.
+  const unpriceable: UnmatchedMenuItemLine[] = []
+  const unpriceableDetail: string[] = []
 
   for (const item of rawItems) {
     const menuItemId = extractMenuItemId(item)
@@ -362,6 +481,27 @@ export async function calculateOrderPricing(
         menuItemId,
         name: String(menuItem.name || '').trim() || cartLineName(item),
       })
+      // An item that cannot be ordered at all is not also reported as mis-priced: one refusal
+      // per line, and "no longer on the menu" is the one the customer can act on.
+      continue
+    }
+
+    /**
+     * F6. A SELECTION THIS SERVER CANNOT PRICE IS A REFUSAL.
+     *
+     * Collected in the same pass as the others so a bad cart is reported in one go, and BEFORE any
+     * pricing happens, so nothing is half-computed. See `unpriceableSelectionsFor` for the exact
+     * rule and for the cases that deliberately stay warnings.
+     */
+    const unpriceableHere = unpriceableSelectionsFor(item, menuItem)
+    if (unpriceableHere.length > 0) {
+      unpriceable.push({
+        menuItemId,
+        name: String(menuItem.name || '').trim() || cartLineName(item),
+      })
+      unpriceableDetail.push(
+        ...unpriceableHere.map((s) => `${menuItemId}: ${s.kind} "${s.group}" option "${s.label}"`),
+      )
     }
   }
 
@@ -386,6 +526,27 @@ export async function calculateOrderPricing(
       copyNotFound(notFound.map((line) => line.name)),
       'MENU_ITEM_NOT_FOUND',
       notFound,
+    )
+  }
+  /**
+   * F6, LAST of the four. It is ordered after the other three because each of those describes the
+   * ITEM being wrong, which is a bigger problem than the options on it and is what a customer
+   * should be told about first. A line that is both withdrawn and mis-priced is reported as
+   * withdrawn (see the `continue` above).
+   *
+   * FAILS CLOSED. The alternative -- what stood here -- was to price the line from base and push a
+   * string onto `warnings`, which means charging the customer less than the thing they chose and
+   * telling nobody who is in a position to notice.
+   */
+  if (unpriceable.length > 0) {
+    console.error('[calculateOrderPricing] refusing lines that cannot be priced', {
+      restaurantId,
+      detail: unpriceableDetail,
+    })
+    throw new UnmatchedMenuItemError(
+      copyUnpriceable(unpriceable.map((line) => line.name)),
+      'MENU_ITEM_UNPRICEABLE_SELECTION',
+      unpriceable,
     )
   }
 

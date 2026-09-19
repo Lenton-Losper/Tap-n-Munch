@@ -64,6 +64,8 @@ jest.mock('@/lib/payments/terminal-merchant-order', () => ({
 /** Every write the route issues, so "nothing was minted" can be asserted rather than assumed. */
 const auditInserts: Row[] = []
 const orderUpdates: Row[] = []
+/** F4. The orders-scope payment intent the route mints alongside the merchant order number. */
+const intentInserts: Row[] = []
 /** Forces the throwing shape a misconfigured or unreachable client has. */
 let mockAuditInsertThrows = false
 
@@ -82,12 +84,26 @@ jest.mock('@/lib/supabase/server', () => ({
           if (table === 'orders') orderUpdates.push(patch)
           return b
         },
-        insert: async (row: Row) => {
+        /**
+         * AWAITABLE AND CHAINABLE, because its two callers need different things: audit_logs
+         * awaits it directly, while `ensureOrdersIntent` (F4) continues
+         * `.insert(...).select(...).maybeSingle()`. Returning a bare object broke the second --
+         * the route's catch turned it into a 500 and the failure read as a route defect, which is
+         * exactly the trap the `.in()` note above records.
+         */
+        insert: (row: Row) => {
           if (table === 'audit_logs') {
             if (mockAuditInsertThrows) throw new Error('audit_logs unreachable')
             auditInserts.push(row)
           }
-          return { error: null }
+          if (table === 'terminal_payment_intents') intentInserts.push(row)
+          const inserted = {
+            select: () => inserted,
+            single: async () => ({ data: row, error: null }),
+            maybeSingle: async () => ({ data: row, error: null }),
+            then: (r: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(r),
+          }
+          return inserted
         },
         /**
          * The route now RE-READS the order total before recording what the reader will be asked to

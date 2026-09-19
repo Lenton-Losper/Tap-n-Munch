@@ -271,6 +271,19 @@ const cents = (n: number) => Math.round(n * 100)
  * `selectedVariants` map AND mirror the choice into `selected_size`, while a cart line hydrated
  * out of localStorage by an older build carries the bare size string alone.
  */
+/**
+ * A REFUSAL IS AN OUTCOME, NOT A CRASH (added 2026-09-19, F6).
+ *
+ * `calculateOrderPricing` no longer prices a missing variant option from base -- it throws
+ * `MENU_ITEM_UNPRICEABLE_SELECTION`. That refusal is exactly the divergence this file's positive
+ * control exists to detect, so the harness records it as a distinct outcome rather than letting it
+ * abort the loop.
+ *
+ * `REFUSED` is a sentinel that cannot collide with a real cent figure, so "the price moved" and
+ * "the order stopped being placeable" stay distinguishable in the assertions below.
+ */
+const REFUSED = -1
+
 async function chargedCents(
   row: Row,
   label: string,
@@ -280,8 +293,15 @@ async function chargedCents(
     shape === 'selection'
       ? { menuItemId: row.id, quantity: 1, selectedVariants: { Size: label }, size: label }
       : { menuItemId: row.id, quantity: 1, size: label }
-  const result = await calculateOrderPricing(asClient(makeClient([row])), RESTAURANT_ID, [line])
-  return { total: cents(result.total), warnings: result.warnings }
+  try {
+    const result = await calculateOrderPricing(asClient(makeClient([row])), RESTAURANT_ID, [line])
+    return { total: cents(result.total), warnings: result.warnings }
+  } catch (err) {
+    if ((err as { code?: string })?.code === 'MENU_ITEM_UNPRICEABLE_SELECTION') {
+      return { total: REFUSED, warnings: ['MENU_ITEM_UNPRICEABLE_SELECTION'] }
+    }
+    throw err
+  }
 }
 
 const SHAPES: Array<'selection' | 'bare-size'> = ['selection', 'bare-size']
