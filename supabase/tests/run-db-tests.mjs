@@ -130,6 +130,22 @@ const MUTATIONS = {
         '    IF false THEN',
       ),
   },
+  M9: {
+    what: 'the intent row is read WITHOUT FOR UPDATE (two settlements can interleave)',
+    /**
+     * Caught only by the two-session probe, which is why that probe exists. Measured: without the
+     * lock BOTH sessions return `settled` / `applied: true` and TWO `payment.settlement_applied`
+     * audit rows are written -- an auditor reads that as the customer having been charged twice.
+     *
+     * The orders and the ledger row survive even then, because the per-row claim and the
+     * ON CONFLICT are defence in depth. That is worth knowing and is NOT a reason to drop the
+     * lock: the audit trail is the record a disputed charge is settled from.
+     */
+    concurrencyOnly: true,
+    expect: [],
+    apply: (sql) =>
+      sql.replace('     WHERE id = p_intent_id\n     FOR UPDATE;', '     WHERE id = p_intent_id;'),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -217,6 +233,23 @@ function runSuite() {
   return { total, failed, failedNames }
 }
 
+/**
+ * The concurrency probe runs in TWO sessions, which a single psql pipe cannot express, so it lives
+ * in a shell script beside this file. Returns true when it passed.
+ */
+function runConcurrencyProbe() {
+  try {
+    const out = execFileSync('bash', [join(REPO, 'supabase/tests/concurrency.test.sh')], {
+      encoding: 'utf8',
+      env: { ...process.env, CONTAINER, DB },
+      maxBuffer: 16 * 1024 * 1024,
+    })
+    return { passed: out.includes('RESULT=OK'), out }
+  } catch (e) {
+    return { passed: false, out: String(e.stdout ?? '') + String(e.stderr ?? '') }
+  }
+}
+
 const arg = process.argv.find((a) => a.startsWith('--mutate='))
 const which = arg ? arg.split('=')[1] : null
 
@@ -244,6 +277,16 @@ if (base.failedNames.length > 0) {
 }
 console.log(`  all ${base.total} assertions passed`)
 
+// Two real sessions racing on one intent. The single-session suite above can only prove
+// IDEMPOTENCE; this is the only thing that exercises the FOR UPDATE.
+const baseRace = runConcurrencyProbe()
+if (!baseRace.passed) {
+  console.error('FAIL: the concurrency probe did not pass on unmutated code.')
+  console.error(baseRace.out.split('\n').slice(-14).join('\n'))
+  process.exit(1)
+}
+console.log('  concurrency probe: two sessions, exactly one settlement')
+
 if (!which) process.exit(0)
 
 // ---- mutations -----------------------------------------------------------------------------
@@ -265,6 +308,22 @@ for (const name of names) {
     // [[mutation-must-land-on-the-intended-line]] is about.
     console.error(`  FAIL: mutation ${name} did not apply -- its anchor no longer matches.`)
     bad += 1
+    continue
+  }
+
+  /**
+   * A mutation only the TWO-SESSION probe can see. The single-session suite is expected to stay
+   * green under it, so asserting on that suite would report a false pass.
+   */
+  if (mutation.concurrencyOnly) {
+    const race = runConcurrencyProbe()
+    if (race.passed) {
+      console.error(`  FAIL: the concurrency probe stayed GREEN under mutation ${name}.`)
+      bad += 1
+    } else {
+      const failed = race.out.split('\n').filter((l) => l.includes('  FAIL ')).length
+      console.log(`  RED as required (${failed} concurrency assertion(s) failed)`)
+    }
     continue
   }
 
