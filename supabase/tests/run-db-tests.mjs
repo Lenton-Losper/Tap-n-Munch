@@ -130,6 +130,26 @@ const MUTATIONS = {
         '    IF false THEN',
       ),
   },
+  M8: {
+    what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
+    expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
+    /**
+     * WHY A SECURITY MUTATION EXISTS AT ALL.
+     *
+     * "anon cannot execute this function" passes just as readily when the function does not exist,
+     * when the role does not exist, or when `has_function_privilege` was handed a signature that
+     * matches nothing -- and a typo in that signature string is easy and invisible. A refusal that
+     * cannot tell CLOSED from ABSENT is not a security check.
+     *
+     * So the grant is deliberately opened and the suite is required to notice. If it stays green
+     * here, the assertions are reading something other than the real function.
+     */
+    sqlAfterMigrations: `
+      GRANT EXECUTE ON FUNCTION public.settle_order_payment(
+        uuid, uuid[], integer, integer, text, text, text, text, uuid, text, text, integer, uuid,
+        uuid[], text) TO anon, PUBLIC;
+    `,
+  },
 }
 
 function docker(args, input) {
