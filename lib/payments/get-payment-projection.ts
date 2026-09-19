@@ -3,6 +3,14 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 export type PaymentStatus = 'paid' | 'partially_refunded' | 'refunded'
 
 export interface PaymentProjection {
+  /**
+   * THE SETTLEMENT'S amount, as the ledger recorded it -- NOT this order's share of it.
+   *
+   * The name is historical and is kept because several modules read it. What it holds is the
+   * `payment_events` sale row's `amount`, and one sale row can cover several orders.
+   * `settlementOrderCount` below says how many, which is the whole difference between reading
+   * this as "what this order cost" and reading it correctly.
+   */
   originalAmount: number
   refundedAmount: number
   remainingRefundable: number
@@ -10,6 +18,26 @@ export interface PaymentProjection {
   currency: string
   /** SALE lineage key — shared by all orders in a multi-order (tab) settlement. */
   originBusinessOrderNo: string
+  /**
+   * ================================================================================================
+   * F9 — HOW MANY ORDERS THIS GATEWAY PAYMENT COVERED
+   * ================================================================================================
+   *
+   * Order History showed `originalAmount` beside an order and let a reader take it for that
+   * order's payment. For a tab settle of four N$60 orders the sale row is N$240, so the screen said
+   * N$240 four times -- the #226 shape, and the same misreading that put `gatewayAmount: 720` on
+   * Riviera's N$500 order.
+   *
+   * Carrying the COUNT makes the two readings distinguishable without inventing a per-order figure
+   * that does not exist. A settlement's amount cannot be divided among its orders after the fact:
+   * the split it was charged against is not recorded on the sale row, and guessing it
+   * proportionally would be a fabricated number that looks authoritative.
+   *
+   * 1 means the settlement IS this order, and `originalAmount` is that order's gateway figure.
+   */
+  settlementOrderCount: number
+  /** True when this payment covered more than one order, so its amount is not this order's. */
+  coversMultipleOrders: boolean
 }
 
 function buildProjection(
@@ -17,6 +45,7 @@ function buildProjection(
   refundedAmount: number,
   currency: string,
   originBusinessOrderNo: string,
+  settlementOrderCount: number,
 ): PaymentProjection {
   const remainingRefundable = originalAmount - refundedAmount
   const paymentStatus: PaymentStatus =
@@ -33,6 +62,10 @@ function buildProjection(
     paymentStatus,
     currency: String(currency || 'NAD'),
     originBusinessOrderNo,
+    // A sale row always names at least the order it was found by; 0 would mean the row is
+    // malformed, and reporting 1 there would claim a per-order figure that is not one.
+    settlementOrderCount: Math.max(1, Math.round(settlementOrderCount) || 1),
+    coversMultipleOrders: settlementOrderCount > 1,
   }
 }
 
@@ -129,6 +162,8 @@ export async function getPaymentProjections(
     business_order_no: string
     amount: number
     currency: string
+    /** F9. How many orders this one sale row covered. */
+    orderCount: number
   }
   const saleByOrderId = new Map<string, SaleRow>()
   for (const sale of sales) {
@@ -141,6 +176,9 @@ export async function getPaymentProjections(
         business_order_no: String(sale.business_order_no),
         amount: Number(sale.amount),
         currency: String(sale.currency || 'NAD'),
+        // From the ROW's own array, not from how many of the requested ids it happened to match:
+        // asking about one order of a four-order settlement must still report four.
+        orderCount: ids.length,
       })
     }
   }
@@ -179,6 +217,7 @@ export async function getPaymentProjections(
         refundedAmount,
         sale.currency,
         sale.business_order_no,
+        sale.orderCount,
       ),
     )
   }

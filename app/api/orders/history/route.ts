@@ -135,11 +135,50 @@ async function loadOrderHistory(req: Request): Promise<Response> {
       memberName = String(member?.display_name || '').trim() || 'Guest'
     }
     const projection = pageProjections.get(String(order.id)) ?? null
+
+    /**
+     * ============================================================================================
+     * F9 — THE THREE AMOUNTS, KEPT APART
+     * ============================================================================================
+     *
+     * The projection was computed and then everything but `paymentStatus` and `refundedAmount` was
+     * discarded, so Order History could say an order was paid and never what was actually
+     * collected against it. A discrepancy between the two was invisible by construction.
+     *
+     *   order_amount        what this order came to
+     *   gateway_amount      what the gateway payment was for -- NULL when that payment covered
+     *                       several orders, because a settlement's figure is not any one order's
+     *                       and dividing it after the fact fabricates a number that looks
+     *                       authoritative. That is the #226 shape and the Riviera audit row.
+     *   settlement_amount   the settlement's own total, always present when a sale row exists
+     *
+     * `amount_discrepancy` is asserted only where it CAN be: a single-order settlement whose
+     * gateway figure does not equal the order's total. For a multi-order one the honest answer is
+     * that no per-order comparison exists, and `null` says so instead of guessing.
+     *
+     * `no_ledger_row` is the 1,630-order gap made visible per row: paid, with nothing in the
+     * ledger accounting for it.
+     */
+    const orderAmount = Number(order.total ?? 0)
+    const single = projection ? !projection.coversMultipleOrders : false
+    const gatewayAmount = projection && single ? projection.originalAmount : null
+    const amountDiscrepancy =
+      gatewayAmount === null
+        ? null
+        : Math.round(gatewayAmount * 100) !== Math.round(orderAmount * 100)
+
     return {
       ...order,
       memberName,
       paymentStatus: projection?.paymentStatus ?? null,
       refundedAmount: projection?.refundedAmount ?? 0,
+      order_amount: orderAmount,
+      gateway_amount: gatewayAmount,
+      settlement_amount: projection?.originalAmount ?? null,
+      settlement_order_count: projection?.settlementOrderCount ?? null,
+      amount_discrepancy: amountDiscrepancy,
+      no_ledger_row:
+        String(order.payment_status ?? '').toLowerCase() === 'paid' && projection === null,
     }
   })
 
