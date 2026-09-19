@@ -134,6 +134,21 @@ BEGIN
     NOT EXISTS (SELECT 1 FROM public.orders WHERE payment_method <> 'card'),
     'a gateway-confirmed card payment left an order recorded as cash');
 
+  -- ONE ROW CARRIES THE MERCHANT ORDER NUMBER (20260919092000).
+  --
+  -- `orders_paycloud_merchant_order_no_unique` is GLOBAL. Writing the reference on every claimed
+  -- order raised 23505 on the second one and rolled the whole settlement back -- a charged card
+  -- with nothing recorded, on every multi-order tab. This assertion could not fail before the
+  -- fixture schema gained that index, which is why the staging database found it first and this
+  -- file did not.
+  PERFORM public._expect('riviera/merchant_order_no_on_exactly_one_order',
+    (SELECT count(*) FROM public.orders WHERE paycloud_merchant_order_no = 'MO-RIV-1') = 1,
+    format('%s orders carry the merchant order number; the index permits one',
+           (SELECT count(*) FROM public.orders WHERE paycloud_merchant_order_no = 'MO-RIV-1')));
+  PERFORM public._expect('riviera/payment_reference_on_both_orders',
+    (SELECT count(*) FROM public.orders WHERE payment_reference = 'MO-RIV-1') = 2,
+    'payment_reference is the SHARED identifier and must reach every order in the settlement');
+
   -- F2. The ledger row is written by the SERVER, here, not by the device afterwards.
   SELECT count(*) INTO n_events FROM public.payment_events WHERE event_type = 'sale';
   PERFORM public._expect('riviera/ledger_row_written', n_events = 1,
@@ -394,6 +409,43 @@ BEGIN
     format('%s order(s) were left paid by a settlement that refused', n));
   SELECT count(*) INTO n FROM public.payment_events;
   PERFORM public._expect('illegal/no_ledger_row', n = 0, 'a refused settlement wrote a ledger row');
+
+  -- ================================================================================================
+  -- THE OTHER ORDERING, AND IT IS THE WHOLE POINT.
+  --
+  -- Above, the CANCELLED order is #154 and it sorts FIRST, so the claim loop met it before it had
+  -- written anything and the assertions passed whether or not the function was atomic. That is a
+  -- test passing on the arrangement of its fixture.
+  --
+  -- Here the LEGAL order sorts first. Before 20260919093000 the loop paid it, then refused at #155,
+  -- and RETURN left the payment in place -- reason=illegal_transition, claimed=[], one order paid,
+  -- no ledger row. Measured on staging, not reasoned about.
+  -- ================================================================================================
+  PERFORM public._seed_riviera();
+  UPDATE public.orders
+     SET payment_status = 'cancelled', status = 'cancelled',
+         cancelled_at = now(), cancellation_reason = 'staff_cancelled'
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000155';
+
+  r := public.settle_order_payment(
+    '11111111-1111-4111-8111-111111111111',
+    ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+          'aaaaaaaa-0000-4000-8000-000000000155']::uuid[],
+    72000, 72000, 'TXN-ILL2', 'MO-ILL2', 'card', 'MO-ILL2', NULL,
+    'paycloud_webhook_valid_signature', 'term-1', 0, NULL, ARRAY[]::uuid[], '2.37');
+
+  PERFORM public._expect('illegal_reversed/refused', (r->>'ok')::boolean IS FALSE, r::text);
+  PERFORM public._expect('illegal_reversed/reason', r->>'reason' = 'illegal_transition', r->>'reason');
+
+  SELECT count(*) INTO n FROM public.orders WHERE payment_status = 'paid';
+  PERFORM public._expect('illegal_reversed/no_partial_application', n = 0,
+    format('%s order(s) left paid by a refusal reached AFTER the loop had already written', n));
+  SELECT count(*) INTO n FROM public.payment_events;
+  PERFORM public._expect('illegal_reversed/no_ledger_row', n = 0,
+    'a refused settlement wrote a ledger row');
+  SELECT count(*) INTO n FROM public.audit_logs WHERE action = 'payment.settlement_applied';
+  PERFORM public._expect('illegal_reversed/no_audit_row', n = 0,
+    'an order was paid with no settlement audit row to find it by');
 END;
 $$;
 

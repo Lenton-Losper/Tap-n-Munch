@@ -100,6 +100,15 @@ CREATE UNIQUE INDEX idx_orders_idempotency_key
 CREATE UNIQUE INDEX orders_idempotency_key_unique
   ON public.orders (idempotency_key) WHERE idempotency_key IS NOT NULL;
 
+-- ADDED AFTER THE STAGING SMOKE FOUND WHAT ITS ABSENCE HID. This index has been on both real
+-- databases since 20260502120000 and was missing here, so the harness happily let
+-- settle_order_payment write `paycloud_merchant_order_no` on every claimed order. Against the real
+-- schema that raised 23505 on the second order of the very first multi-order settlement and rolled
+-- the whole thing back -- see 20260919092000. A fixture schema missing a constraint does not make
+-- the tests lenient, it makes them wrong.
+CREATE UNIQUE INDEX orders_paycloud_merchant_order_no_unique
+  ON public.orders (paycloud_merchant_order_no) WHERE paycloud_merchant_order_no IS NOT NULL;
+
 CREATE TABLE public.terminal_payment_intents (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   restaurant_id uuid NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,

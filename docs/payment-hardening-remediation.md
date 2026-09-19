@@ -296,12 +296,51 @@ statement reconciliation, which needs the acquirer's data and not ours.
 
 ## 2. Migrations
 
-Two, both idempotent, both applied via direct Postgres (CI has no DDL credentials).
+Four, all idempotent, all applied via direct Postgres (CI has no DDL credentials).
 
 | File | What it does | Locks | Reversible |
 |---|---|---|---|
 | `20260919090000_settle_order_payment_atomic.sql` | adds 5 nullable columns to `terminal_payment_intents`; creates `settle_order_payment()` | `ADD COLUMN … IF NOT EXISTS` with no default — metadata-only | yes, see §4 |
 | `20260919091000_payment_integrity_constraints.sql` | 3 unique indexes, drops 2 redundant ones, 1 CHECK added `NOT VALID` then validated | index builds (not `CONCURRENTLY` — see below); `VALIDATE` takes `SHARE UPDATE EXCLUSIVE` | yes, see §4 |
+| `20260919092000_settle_lead_merchant_order_no.sql` | `CREATE OR REPLACE` of the same function: only the LEAD order takes `paycloud_merchant_order_no` | none | yes — replace with the prior definition |
+| `20260919093000_settle_validate_before_write.sql` | `CREATE OR REPLACE` again: every transition is checked BEFORE the first write | none | yes — replace with the prior definition |
+
+### 2.1 Why 092000 and 093000 exist
+
+Both close defects in 090000 that the local Docker harness could not see and the STAGING DATABASE
+found within minutes of the first smoke run. Both are in this sprint's own code; neither has ever
+run on production.
+
+**092000 — a multi-order settlement could not commit at all.** The claim loop wrote
+`paycloud_merchant_order_no` on every order it paid. `orders_paycloud_merchant_order_no_unique` is a
+GLOBAL partial unique index (20260502120000), so the second order of any settlement raised 23505 and
+the whole transaction rolled back: card charged, nothing recorded. The index's own migration already
+stated the rule — *"table receipts share payment_reference; only the lead row holds
+paycloud_merchant_order_no"* — and the function did not honour it.
+
+The harness missed it because `supabase/tests/fixture-schema.sql` did not carry that index. It does
+now, and mutation **M11** puts the defect back and requires the suite to go red.
+
+**093000 — a refused settlement could leave an order paid.** `RETURN` in plpgsql ends the
+function, not the transaction. The claim loop checked each order's transition as it went and
+returned on the first illegal one, under a comment claiming that returning rolled back every write
+above it. It never did. Measured on staging, one legal order settled together with one cancelled
+one, ids chosen so the sort order differed:
+
+| target locked `ORDER BY id` | returned | legal order |
+|---|---|---|
+| legal order's id sorts FIRST | `illegal_transition`, `claimed=[]` | **PAID** |
+| legal order's id sorts LAST | `illegal_transition`, `claimed=[]` | untouched |
+
+So the caller was told the settlement was refused while a customer's order had been marked paid,
+with no `payment_events` row and no audit row naming it — the partial application this function
+exists to make unreachable, reached through the code meant to prevent it.
+
+`_t_illegal_transition_is_atomic` asserted exactly this and PASSED, because its two fixture ids
+happened to sort the safe way round. Both orderings are now asserted, and mutation **M12** removes
+the pre-write validation and requires the reversed-ordering assertion to fail.
+
+---
 
 **Data compatibility, each verified read-only before the constraint was written:**
 
@@ -348,19 +387,26 @@ The order matters in two places, and both are one-directional.
 2. MIGRATION 20260919090000  (the RPC + intent columns)
    Settlements start applying. Verify with a probe (§5) before moving on.
 
-3. MIGRATION 20260919091000  (the integrity constraints)
-   Safe at any point after step 1. Separated from step 2 only so a failure is attributable.
+3. MIGRATIONS 20260919092000 then 20260919093000  (the two corrections to the function)
+   MANDATORY, and immediately after step 2. Each is a CREATE OR REPLACE of the function
+   step 2 created, so 090000 alone is NOT a shippable state: on its own it cannot settle a
+   multi-order tab at all, and it can leave an order paid by a settlement it refused.
+   Applying all three back to back is the intended sequence; 090000 is separate only
+   because it is already applied on staging and rewriting an applied file hides drift.
 
-4. TERMINAL 2.38 / versionCode 139  (fix/terminal-hardware-serial)
+4. MIGRATION 20260919091000  (the integrity constraints)
+   Safe at any point after step 1. Separated only so a failure is attributable.
+
+5. TERMINAL 2.38 / versionCode 139  (fix/terminal-hardware-serial)
    INDEPENDENT of 1–3 and can go at any time, including never. It needs no server change:
    /api/terminals/activate has always accepted `sn` and `device_id`.
    It only affects terminals activated AFTER install — existing registrations are unchanged.
 
-5. restaurant_terminals_sn_unique
+6. restaurant_terminals_sn_unique
    ONLY after §1.6's duplicate is resolved. Not part of any migration file.
 ```
 
-**What does NOT need to be coordinated:** the terminal build. Nothing in web steps 1–3 requires a
+**What does NOT need to be coordinated:** the terminal build. Nothing in web steps 1–4 requires a
 terminal change, and the terminal change requires nothing on the server. They are separable
 deployments and should be done separately.
 

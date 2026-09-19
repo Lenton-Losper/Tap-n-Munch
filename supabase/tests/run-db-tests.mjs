@@ -34,12 +34,27 @@ const MIGRATIONS = [
   'supabase/migrations/20260829170000_order_line_allocations.sql',
   'supabase/migrations/20260919090000_settle_order_payment_atomic.sql',
   'supabase/migrations/20260919091000_payment_integrity_constraints.sql',
+  'supabase/migrations/20260919092000_settle_lead_merchant_order_no.sql',
+  'supabase/migrations/20260919093000_settle_validate_before_write.sql',
 ]
 
 /**
  * THE MUTATIONS. Each reintroduces one defect this sprint closed. A mutation that leaves the suite
  * GREEN means the corresponding test does not actually test what it claims to.
  */
+/**
+ * REPLACE EVERY OCCURRENCE, not the first.
+ *
+ * Since 20260919093000 the transition guards exist TWICE on purpose -- once in the 6b validation
+ * pass and once in the claim loop, which is what makes a refusal write nothing. `String.replace`
+ * with a string argument changes only the first, so a mutation meaning "remove this guard" quietly
+ * removed one of two and the suite stayed green through the surviving copy. A mutation that half
+ * lands is indistinguishable from a test that works.
+ */
+function replaceEvery(sql, from, to) {
+  return sql.split(from).join(to)
+}
+
 const MUTATIONS = {
   M1: {
     what: 'multi-order settlement reverted to lead-order-only (the Riviera defect)',
@@ -125,7 +140,8 @@ const MUTATIONS = {
     what: 'an illegal payment state transition is permitted',
     expect: ['illegal/refused', 'illegal/no_partial_application'],
     apply: (sql) =>
-      sql.replace(
+      replaceEvery(
+        sql,
         "    IF v_status = 'cancelled' AND NOT (v_order_id = ANY (v_allow)) THEN",
         '    IF false THEN',
       ),
@@ -145,6 +161,51 @@ const MUTATIONS = {
     expect: [],
     apply: (sql) =>
       sql.replace('     WHERE id = p_intent_id\n     FOR UPDATE;', '     WHERE id = p_intent_id;'),
+  },
+  /**
+   * THE DEFECT THE STAGING SMOKE FOUND, put back.
+   *
+   * This one could not exist before `fixture-schema.sql` gained
+   * `orders_paycloud_merchant_order_no_unique`. Without that index the buggy write is harmless
+   * here and the suite stays green -- which is exactly what happened, and why the real database
+   * found it first. The mutation is therefore a check on the FIXTURE as much as on the function.
+   */
+  M11: {
+    what: 'the merchant order number written on every claimed order, not just the lead one',
+    // The settlement raises 23505 on the second order, so the whole test aborts and is recorded
+    // under its own `/threw` name. A settlement that throws is a charged card with nothing saved.
+    expect: ['_t_riviera_multi_order/threw'],
+    // _t_riviera_multi_order's own 26 assertions roll back with its aborted subtransaction.
+    minAssertions: 35,
+    apply: (sql) =>
+      sql.replace(
+        `           paycloud_merchant_order_no = CASE
+             WHEN v_ref_free AND v_order_id = p_order_ids[1]
+               THEN COALESCE(paycloud_merchant_order_no, v_ref)
+             ELSE paycloud_merchant_order_no
+           END`,
+        '           paycloud_merchant_order_no = COALESCE(paycloud_merchant_order_no, v_ref)',
+      ),
+  },
+  /**
+   * THE PARTIAL APPLICATION THE STAGING SMOKE FOUND.
+   *
+   * Deleting the 6b validation pass puts the transition checks back inside the claim loop, where
+   * `RETURN` refuses AFTER earlier orders have already been written. Only the reversed-ordering
+   * assertions can see it -- `illegal/*` stays green under this mutation, which is precisely how
+   * the defect survived the first time.
+   */
+  M12: {
+    what: 'transitions checked during the write loop again, so a refusal writes part of a settlement',
+    expect: ['illegal_reversed/no_partial_application'],
+    apply: (sql) => {
+      const from = sql.indexOf('  -- ---- 6b. EVERY TRANSITION IS CHECKED BEFORE THE FIRST WRITE')
+      if (from < 0) return sql
+      const marker = '  -- ONE ROW PER PAYMENT CARRIES THE MERCHANT ORDER NUMBER.'
+      const to = sql.indexOf(marker, from)
+      if (to < 0) return sql
+      return sql.slice(0, from) + sql.slice(to)
+    },
   },
   M10: {
     what: 'an already-settled order can be settled again (the tab-close replay protection)',
@@ -167,18 +228,18 @@ const MUTATIONS = {
     concurrencyOnly: true,
     concurrencyScript: 'supabase/tests/close-race.test.sh',
     expect: [],
-    apply: (sql) =>
-      sql
-        .replace(
-          `    IF v_status = 'paid' THEN
+    apply: (sql) => {
+      let out = replaceEvery(
+        sql,
+        `    IF v_status = 'paid' THEN
       -- Already paid by whoever won the race. Not an error and not a re-write; reported so the
       -- caller can tell a duplicate from a conflict.
       CONTINUE;
     END IF;`,
-          `    IF false THEN
+        `    IF false THEN
       CONTINUE;
     END IF;`,
-        )
+      )
         /**
          * BOTH replay protections, together, and that is the finding rather than a convenience.
          *
@@ -190,12 +251,17 @@ const MUTATIONS = {
          * That redundancy is real defence in depth and is the honest reason an earlier, narrower
          * mutation could not be made to fail.
          */
-        .replace(
-          `    IF v_status NOT IN (
+      out = replaceEvery(
+        out,
+        `    IF v_status NOT IN (
          'unpaid', 'pending', 'terminal_pending', 'cash_pending', 'failed',
          'amount_mismatch_hold', 'verification_unavailable_hold', 'cancelled') THEN`,
-          `    IF false THEN`,
-        ),
+        `    IF false THEN`,
+      )
+      // 6b's own paid check is a CONTINUE WHEN, not an IF block, so it needs naming separately.
+      out = replaceEvery(out, "    CONTINUE WHEN v_status = 'paid';", '')
+      return out
+    },
   },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
@@ -412,8 +478,16 @@ for (const name of names) {
   }
 
   const run = runSuite()
-  if (run.total < MIN_ASSERTIONS) {
-    console.error(`  FAIL: mutation ${name} left only ${run.total} assertions discovered.`)
+  /**
+   * A mutation whose defect RAISES aborts its test's subtransaction, so that test's assertions
+   * roll back with it and the discovered total legitimately drops. The floor is still enforced --
+   * the mutation must declare the number it expects -- so this cannot become a way to pass with
+   * no assertions at all.
+   */
+  const floor = mutation.minAssertions ?? MIN_ASSERTIONS
+  if (run.total < floor) {
+    console.error(
+      `  FAIL: mutation ${name} left only ${run.total} assertions discovered (floor ${floor}).`)
     bad += 1
     continue
   }
