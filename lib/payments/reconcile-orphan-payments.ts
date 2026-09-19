@@ -219,7 +219,22 @@ export async function reconcileOrphanPayments(
           restaurantId,
           reference,
           amount: Number(row.total) || 0,
-          paymentMethod: (row.payment_method as string) || 'card',
+          /**
+           * F3 — THE GATEWAY'S CHANNEL, NOT THE ORDER'S OLD ONE.
+           *
+           * This read `(row.payment_method as string) || 'card'`, which keeps whatever the order
+           * already said and only defaults when it said nothing. An order moved to `cash_pending`
+           * before the card went through therefore stayed recorded as CASH after a gateway payment
+           * was reconciled onto it -- the same defect the webhook carried, on the path that runs
+           * unattended and is least likely to be noticed.
+           *
+           * `'card'` is STATED, not defaulted, and it is safe to state: this whole function is
+           * driven by a `payment_events` row with `event_type = 'sale'`, and a sale row exists only
+           * for a gateway transaction. The device's recordSaleEvent requires a non-empty
+           * business_order_no AND transaction_id, and recordGatewaySaleEvent writes one only when
+           * `usesGateway`. There is no cash sale row for this to be wrong about.
+           */
+          paymentMethod: 'card',
           source: 'cron_reconcile_orphan_payments',
           extraAuditMetadata: {
             businessOrderNo: merchantNo || null,
@@ -266,6 +281,21 @@ export async function reconcileOrphanPayments(
           paid_at: paidAt,
           status: 'completed',
           completed_at: paidAt,
+          /**
+           * F3 — THE SECOND RESIDUAL ON THIS PATH, AND THE QUIETER ONE.
+           *
+           * The sibling branch above at least carried a method, wrongly. This branch set NO method
+           * at all, so an order marked paid from a gateway sale event kept whatever
+           * `payment_method` it happened to hold -- `cash` for anything that had been through
+           * /api/payments/cancel-terminal, and `null` for the seven production rows that carry
+           * none. Every one of those then reads as a non-card payment in the method split, the
+           * cash-up and the reconciliation report.
+           *
+           * Same justification as above: a `payment_events` sale row exists only for a gateway
+           * transaction, so `card` is the channel by construction and is stated rather than
+           * inferred.
+           */
+          payment_method: 'card',
         })
         .in('id', plainIds)
 

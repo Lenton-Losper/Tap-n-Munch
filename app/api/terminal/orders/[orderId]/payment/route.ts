@@ -8,6 +8,8 @@ import {
   SETTLEMENT_PAYMENT_METHODS,
   normalizeSettlementPaymentMethod, amountsMatch, owesMoney } from '@/lib/payments/payment-integrity'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
+// The single authority on what the reader was asked to charge. See the note at its call site.
+import { expectedChargeFor } from '@/lib/payments/expected-charge'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 import { recordRefusedSecondPayment } from '@/lib/payments/record-refused-second-payment'
@@ -135,7 +137,10 @@ export async function POST(
         // THIS attempt presents against the one the order already carries, and a different one
         // means a second gateway transaction rather than a repeated callback. Read here, before
         // the safety net below can write a merchant order number onto a row that had none.
-        'id, tab_id, restaurant_id, status, total, payment_status, paycloud_merchant_order_no, payment_reference',
+        // pending_charge_cents / pending_tip_cents are SELECTED, not merely written. Without them
+        // expectedChargeFor falls back to the order total on every row and the fix below ships
+        // INERT -- the failure mode this project has shipped before.
+        'id, tab_id, restaurant_id, status, total, payment_status, paycloud_merchant_order_no, payment_reference, pending_charge_cents, pending_tip_cents',
       )
       .eq('id', orderId)
       .eq('restaurant_id', terminal.restaurantId)
@@ -148,7 +153,33 @@ export async function POST(
     let canClose = false
 
     if (status === 'success') {
-      const expectedAmount = Number(order.total)
+      /**
+       * ============================================================================================
+       * WHAT THE READER WAS ASKED FOR, NOT WHAT THE ORDER TOTALS
+       * ============================================================================================
+       *
+       * This was `Number(order.total)`. The gate is correct for an untipped charge and REFUSES A
+       * PAYMENT THAT SUCCEEDED the moment a gratuity is included: prepare-payment records
+       * `pending_charge_cents = items + tip` and returns that figure for the device to charge, and
+       * the card has already been debited by the time this callback runs.
+       *
+       * It is the same defect lib/payments/expected-charge.ts was written to remove from the other
+       * three gates in 2026-09-09. This route was not one of them -- the suite that pins it
+       * (`whole-order-tip-expected-charge`) names verify-payment, the webhook and reconcile, and
+       * this path was missed.
+       *
+       * IDENTICAL BEHAVIOUR FOR EVERY UNTIPPED ORDER. `expectedChargeFor` falls back to the order
+       * total whenever no attempt recorded an expectation, which is every order that predates the
+       * column and every path that does not prepare a charge. Zero tolerance is unchanged: the
+       * figure being compared is corrected, the comparison is not loosened.
+       *
+       * THIS ROUTE IS SINGLE-ORDER BY DESIGN and stays that way. It is the device reporting the
+       * outcome of ONE order's charge, so the verified set and the applied set are both `{orderId}`
+       * and the Riviera shape is not available here. Expanding it to a settlement would change what
+       * the endpoint means, not fix anything.
+       */
+      const charge = expectedChargeFor(order)
+      const expectedAmount = charge.expectedAmount
       if (!amountsMatch(amount, expectedAmount)) {
         // The card has ALREADY been charged when this runs -- WiseCashier reported success.
         // Refusing is still right (the figures genuinely disagree), but leaving no trace is
