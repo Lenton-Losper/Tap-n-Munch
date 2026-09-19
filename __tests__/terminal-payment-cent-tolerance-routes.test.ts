@@ -118,7 +118,25 @@ jest.mock('@/lib/supabase/server', () => ({
           state.op = 'update'
           return b
         },
-        insert: async () => ({ data: null, error: null }),
+        /**
+         * AWAITABLE AND CHAINABLE. The settle route writes `payments` with
+         * `.insert(...).select('id').maybeSingle()` — it needs the row id, because
+         * `payment_tips.payment_id` names the settlement a gratuity rode on. A bare async insert
+         * made that chain throw, the route's outer catch turned it into `401 Unauthorized`, and
+         * this suite failed with "expected 200, received 401" — a fake gap reading as an auth
+         * defect. Pre-existing: it fails identically at 3a58efce.
+         *
+         * audit_logs and payment_events await the insert directly, so both shapes must work.
+         */
+        insert: (row: Record<string, unknown>) => {
+          const inserted = {
+            select: () => inserted,
+            single: async () => ({ data: { id: 'payment-row-1', ...row }, error: null }),
+            maybeSingle: async () => ({ data: { id: 'payment-row-1', ...row }, error: null }),
+            then: (resolve: (v: unknown) => unknown) => resolve({ data: null, error: null }),
+          }
+          return inserted
+        },
         eq: () => b,
         neq: () => b,
         in: (col: string) => {
