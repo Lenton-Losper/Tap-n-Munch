@@ -557,6 +557,13 @@ export async function POST(req: Request) {
           .select(
             'id, restaurant_id, order_number, payment_status, payment_checkout_url, paycloud_merchant_order_no, kiosk_order_number, channel',
           )
+          /**
+           * SCOPED TO THE VENUE. `orders.idempotency_key` was globally unique, so this lookup was
+           * unambiguous only by accident of the index; the F12 migration rescopes it to
+           * (restaurant_id, idempotency_key), after which an unscoped `.single()` can return
+           * another venue's order. Harmless under the old index, required under the new one.
+           */
+          .eq('restaurant_id', restaurantUuid)
           .eq('idempotency_key', idempotencyKey)
           .single()
         if (existing?.id) {

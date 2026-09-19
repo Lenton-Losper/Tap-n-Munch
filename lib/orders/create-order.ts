@@ -145,9 +145,23 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
   if (orderError) {
     // Handle idempotency duplicate
     if (orderError.code === '23505' && params.idempotencyKey) {
+      /**
+       * SCOPED TO THE VENUE, and that is load-bearing rather than defensive.
+       *
+       * `orders.idempotency_key` carried a GLOBAL partial-unique index, so one key could only ever
+       * match one row anywhere and this lookup was unambiguous by accident of the index. The F12
+       * migration rescopes that index to (restaurant_id, idempotency_key) -- two venues may then
+       * legitimately hold the same key, at which point an unscoped `.single()` either returns
+       * ANOTHER VENUE'S ORDER or fails outright on multiple rows.
+       *
+       * Harmless under the old index (the key already implied the venue) and required under the
+       * new one, which is what makes it safe to ship AHEAD of the migration -- and it must ship
+       * ahead of it. See docs/payment-hardening-remediation.md for the deployment order.
+       */
       const { data: existing } = await supabase
         .from('orders')
         .select('id, restaurant_id, order_number, payment_status')
+        .eq('restaurant_id', params.restaurantId)
         .eq('idempotency_key', params.idempotencyKey)
         .single()
       if (existing) {
