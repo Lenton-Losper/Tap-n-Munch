@@ -80,6 +80,7 @@ import {
   ALLOCATION_PAYER_AT_TABLE,
   canTakePaymentByItem,
   formatCents,
+  orderPaymentSummary,
   outstandingTotalCents,
   payableLines,
   planFor,
@@ -87,6 +88,12 @@ import {
   type PayableLine,
   type SettlementPlan,
 } from '../lib/takePaymentLines';
+import {
+  ORDER_SUMMARY_COUNT_ONLY,
+  ORDER_SUMMARY_PAID,
+  ORDER_SUMMARY_PARTIAL,
+  ORDER_SUMMARY_UNPAID,
+} from '../constants/orderPaymentSummaryCopy';
 import {
   TAKE_PAYMENT_ALL_PAID,
   TAKE_PAYMENT_LINE_NO_PRICE,
@@ -358,12 +365,18 @@ export default function TableDetailScreen({route, navigation}: Props) {
   /** Rows for the item list: an order heading followed by its lines. */
   const itemRows = useMemo(() => {
     const rows: Array<
-      {kind: 'heading'; key: string; orderNumber: number} | {kind: 'line'; key: string; line: PayableLine}
+      | {kind: 'heading'; key: string; orderNumber: number; orderId: string}
+      | {kind: 'line'; key: string; line: PayableLine}
     > = [];
     let lastOrderId: string | null = null;
     for (const line of payable) {
       if (line.orderId !== lastOrderId) {
-        rows.push({kind: 'heading', key: `h-${line.orderId}`, orderNumber: line.orderNumber});
+        rows.push({
+          kind: 'heading',
+          key: `h-${line.orderId}`,
+          orderNumber: line.orderNumber,
+          orderId: line.orderId,
+        });
         lastOrderId = line.orderId;
       }
       rows.push({kind: 'line', key: line.id, line});
@@ -1546,6 +1559,65 @@ export default function TableDetailScreen({route, navigation}: Props) {
   };
 
   /**
+   * THE ORDER AS A WHOLE, above its items.
+   *
+   * The rows below this already say Paid / "{amount} still owed" per item and are unchanged. With
+   * eight items on screen, though, the only way to answer "does this order still owe anything"
+   * was to read every row and add up -- the heading said "Order #12" and nothing else.
+   *
+   * DISPLAY ONLY. `orderPaymentSummary` counts what `payable` already holds; it settles nothing
+   * and re-derives no money, so this line and the rows beneath it cannot disagree.
+   */
+  const renderOrderSummary = (orderId: string) => {
+    const summary = orderPaymentSummary(payable, orderId);
+    if (summary.totalLines === 0) {
+      return null;
+    }
+    const amount = formatCents(
+      summary.state === 'paid' ? 0 : summary.remainingCents,
+    );
+    /**
+     * An order carrying an unpriced line states the COUNT and no figure. See ORDER_SUMMARY_COUNT_ONLY:
+     * a remainder containing an unknown would read as nothing owed.
+     */
+    const text =
+      summary.unpricedLines > 0
+        ? ORDER_SUMMARY_COUNT_ONLY.replace('{paid}', String(summary.paidLines)).replace(
+            '{total}',
+            String(summary.totalLines),
+          )
+        : summary.state === 'paid'
+          ? ORDER_SUMMARY_PAID.replace('{amount}', formatCents(orderPaidCents(orderId)))
+          : summary.state === 'unpaid'
+            ? ORDER_SUMMARY_UNPAID.replace('{amount}', amount)
+            : ORDER_SUMMARY_PARTIAL.replace('{paid}', String(summary.paidLines))
+                .replace('{total}', String(summary.totalLines))
+                .replace('{amount}', amount);
+
+    return (
+      <Text
+        testID={`take-payment-order-summary-${orderId}`}
+        style={[
+          styles.orderSummary,
+          summary.state === 'partial' && styles.orderSummaryPartial,
+          summary.state === 'paid' && styles.orderSummaryPaid,
+        ]}>
+        {text}
+      </Text>
+    );
+  };
+
+  /** What has been collected on this order, for the PAID reading. Cents, from the same rows. */
+  const orderPaidCents = (orderId: string) =>
+    payable
+      .filter(line => line.orderId === orderId)
+      .reduce(
+        (sum, line) =>
+          sum + (Number.isFinite(line.totalCents ?? NaN) ? (line.totalCents as number) : 0),
+        0,
+      );
+
+  /**
    * ONE ITEM. What a customer at the table is actually paying for.
    *
    * A row that cannot be sold still RENDERS -- greyed, with its reason. Hiding a paid item makes a
@@ -1753,9 +1825,12 @@ export default function TableDetailScreen({route, navigation}: Props) {
           testID="take-payment-item-list"
           renderItem={({item: row}) =>
             row.kind === 'heading' ? (
-              <Text style={styles.itemGroupHeading}>
-                {TAKE_PAYMENT_ORDER_HEADING.replace('{number}', String(row.orderNumber))}
-              </Text>
+              <View>
+                <Text style={styles.itemGroupHeading}>
+                  {TAKE_PAYMENT_ORDER_HEADING.replace('{number}', String(row.orderNumber))}
+                </Text>
+                {renderOrderSummary(row.orderId)}
+              </View>
             ) : (
               renderItemRow(row.line)
             )
@@ -2382,6 +2457,24 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xs,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  /**
+   * THE ORDER-LEVEL READING. Louder than the heading above it on purpose: the heading is context,
+   * this is the answer to "does this order still owe anything", which is a thing to act on.
+   */
+  orderSummary: {
+    ...Typography.small,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.xs,
+    fontWeight: '600',
+  },
+  /** Part-paid is the reading that used to be invisible, so it is the one that gets the colour. */
+  orderSummaryPartial: {
+    color: Colors.amber,
+    fontWeight: '700',
+  },
+  orderSummaryPaid: {
+    color: Colors.green,
   },
   itemNotice: {
     ...Typography.small,

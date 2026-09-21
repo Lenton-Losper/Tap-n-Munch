@@ -289,3 +289,106 @@ export function formatCents(cents: number): string {
   const safe = Number.isFinite(cents) ? cents : 0;
   return `NAD ${(safe / 100).toFixed(2)}`;
 }
+
+/**
+ * ==================================================================================================
+ * HOW MUCH OF ONE ORDER IS PAID FOR -- THE ORDER-LEVEL READING, DISPLAY ONLY
+ * ==================================================================================================
+ *
+ * The per-item rows already say Paid / "{amount} still owed" and are UNCHANGED. What a waiter had
+ * no way to see was the order as a whole: with eight items on screen they were counting ticks to
+ * work out whether the table still owed anything, and the order heading said only "Order #12".
+ *
+ * DERIVED ENTIRELY FROM `PayableLine`, which comes from the allocations the server sent. This adds
+ * no arithmetic of its own beyond counting, and settles, claims and writes nothing -- the figures
+ * are `outstandingCents` and `isPaid`, which the rows and the settle button already use. A summary
+ * that disagreed with the rows beneath it would be worse than no summary.
+ *
+ * THE SAME RULE AS THE WEB'S `orderPaymentProgress`, stated twice in two codebases that cannot
+ * import from each other. If one changes, the other is wrong.
+ *
+ * WHY THE LABEL FOLLOWS THE MONEY AND NOT THE COUNT: a line can read paid while cents remain (a
+ * part-settled allocation set is exactly that shape), so a 4/4 count must not be allowed to say
+ * PAID while the order still owes something. `remainingCents` decides the state; the count only
+ * describes it.
+ *
+ * UNPRICED LINES COUNT IN THE DENOMINATOR AND NEVER THE NUMERATOR. "3/4 paid" where the fourth
+ * cannot be priced is honest; 4/4 would tell a waiter the order is settled when nobody knows what
+ * the last item costs.
+ */
+export type OrderPaymentState = 'unpaid' | 'partial' | 'paid';
+
+export type OrderPaymentSummary = {
+  state: OrderPaymentState;
+  /** Lines fully paid for. Never counts an unpriced line. */
+  paidLines: number;
+  /** Every payable line on the order, including unpriced ones. */
+  totalLines: number;
+  /** Still to collect on this order, in integer cents. */
+  remainingCents: number;
+  /**
+   * Unpaid lines the server could not price. While this is above zero the REMAINDER IS NOT KNOWN,
+   * and `remainingCents` is a floor rather than the answer -- see the note in the function.
+   */
+  unpricedLines: number;
+};
+
+/** Reduce one order's payable lines to the heading summary. */
+export function orderPaymentSummary(
+  lines: readonly PayableLine[],
+  orderId: string,
+): OrderPaymentSummary {
+  const own = lines.filter(line => line.orderId === orderId);
+  const totalLines = own.length;
+
+  if (totalLines === 0) {
+    return {
+      state: 'paid',
+      paidLines: 0,
+      totalLines: 0,
+      remainingCents: 0,
+      unpricedLines: 0,
+    };
+  }
+
+  let paidLines = 0;
+  let unpricedLines = 0;
+  let remainingCents = 0;
+  for (const line of own) {
+    if (line.isPaid) {
+      paidLines += 1;
+      continue;
+    }
+    if (line.totalCents == null) {
+      // `payableLines` gives an unpriced line outstandingCents 0 -- it cannot owe a number nobody
+      // knows. Counting it here would make the order's remainder look complete.
+      unpricedLines += 1;
+      continue;
+    }
+    const owed = Number.isFinite(line.outstandingCents)
+      ? Math.max(0, Math.round(line.outstandingCents))
+      : 0;
+    remainingCents += owed;
+  }
+
+  /**
+   * AN UNPRICED LINE MUST NOT LET AN ORDER READ PAID.
+   *
+   * An unpriced line contributes 0 to the remainder, so an order of "one item paid, one item the
+   * server could not price" totals 0 still owed and would announce PAID over a bill nobody has
+   * priced. The row itself already says "No price -- settle this order whole"; the heading above
+   * it must not contradict that.
+   *
+   * So while any unpriced line is unpaid, the order is never `paid`: it is `partial` if anything
+   * has been collected and `unpaid` if not, and the caller drops the figure, because a remainder
+   * containing an unknown is not a remainder.
+   */
+  const settledEverything = remainingCents === 0 && unpricedLines === 0;
+  const state: OrderPaymentState = settledEverything
+    ? 'paid'
+    : paidLines > 0
+      ? 'partial'
+      : 'unpaid';
+
+  return {state, paidLines, totalLines, remainingCents, unpricedLines};
+}
