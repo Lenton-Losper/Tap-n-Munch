@@ -15,6 +15,10 @@ import {
 } from '@/components/ui/select'
 import { getAccessToken } from '@/lib/onboarding/api-client'
 import {
+  orderPaymentLabel,
+  type OrderPaymentProgress,
+} from '@/lib/payments/order-payment-progress'
+import {
   calendarDateInTimeZone,
   DATE_RANGE_PRESETS,
   describeDateRangeProblem,
@@ -43,6 +47,12 @@ type HistoryOrder = {
   memberName?: string
   paymentStatus?: 'paid' | 'partially_refunded' | 'refunded' | null
   refundedAmount?: number
+  /**
+   * The partial-payment breakdown, or null when the server could not read it. Null means "no
+   * breakdown available" and NOT "nothing paid" -- the row falls back to the badges it drew
+   * before rather than claiming a figure.
+   */
+  payment_progress?: OrderPaymentProgress | null
 }
 
 type HistoryResponse = {
@@ -100,6 +110,63 @@ function formatItemsSummary(items: unknown) {
 function formatPaymentMethod(method: string | null | undefined) {
   if (!method) return '—'
   return String(method).replace(/_/g, ' ')
+}
+
+/**
+ * WHAT HAS ACTUALLY BEEN COLLECTED ON THIS ORDER.
+ *
+ * The badge beside it is the FULFILMENT status -- "Pending" there means the kitchen has not
+ * finished, and it is left alone. What it never meant, and what a waiter kept reading into it, is
+ * anything about money: a part-paid order and an untouched one both rendered "Pending", so the
+ * only way to tell three-of-four-settled from nobody-has-paid was to open the order.
+ *
+ * Renders nothing when the server could not read the breakdown. A row that silently keeps its old
+ * badges is a smaller failure than one that states a confident wrong figure.
+ */
+function PaymentProgressBadge({
+  progress,
+  currencySymbol,
+}: {
+  progress: OrderPaymentProgress | null | undefined
+  currencySymbol: string
+}) {
+  if (!progress) return null
+
+  const label = orderPaymentLabel(progress)
+  const remaining = currency(progress.remainingCents / 100, currencySymbol)
+  const collected = currency(progress.paidCents / 100, currencySymbol)
+
+  if (progress.state === 'paid') {
+    return (
+      <Badge
+        data-testid="payment-progress"
+        className="bg-emerald-50 text-emerald-800 border-emerald-200"
+      >
+        {label} · {collected}
+      </Badge>
+    )
+  }
+
+  if (progress.state === 'unpaid') {
+    return (
+      <Badge
+        data-testid="payment-progress"
+        className="bg-rose-50 text-rose-800 border-rose-200"
+      >
+        {label} · {remaining} remaining
+      </Badge>
+    )
+  }
+
+  // Partial: the count is the point, and the remainder is what the waiter still has to collect.
+  return (
+    <Badge
+      data-testid="payment-progress"
+      className="bg-amber-50 text-amber-900 border-amber-300 font-semibold"
+    >
+      {label} · {remaining} remaining
+    </Badge>
+  )
 }
 
 function StatusBadge({ status }: { status: string | null | undefined }) {
@@ -637,6 +704,10 @@ export function OrderHistoryContent() {
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex flex-wrap items-center gap-1.5">
+                              <PaymentProgressBadge
+                                progress={order.payment_progress}
+                                currencySymbol={currencySymbol}
+                              />
                               <StatusBadge status={order.status} />
                               <PaymentStatusBadge paymentStatus={order.paymentStatus} />
                             </div>

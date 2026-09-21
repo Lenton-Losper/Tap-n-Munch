@@ -15,6 +15,7 @@ import {
   DEFAULT_REPORT_TIMEZONE,
 } from '@/lib/reports/format-report-datetime'
 import { preLaunchRestaurant } from '@/lib/reporting/pre-launch-restaurants'
+import { readOrderPaymentProgress } from '@/lib/payments/read-order-payment-progress'
 
 export const dynamic = 'force-dynamic'
 
@@ -125,6 +126,26 @@ async function loadOrderHistory(req: Request): Promise<Response> {
     pageOrderIds,
   )
 
+  /**
+   * PARTIAL PAYMENT, MADE VISIBLE. Display only -- it reads allocations and settles nothing.
+   *
+   * A part-paid order arrived here indistinguishable from an untouched one: both carry
+   * `status: 'pending'`, so the page rendered both as "Pending" and a waiter had to open the order
+   * to discover that three of its four items were already settled.
+   *
+   * Orders whose lines could not be read are ABSENT from this map by design, and the client falls
+   * back to the badge it drew before. Absent means "no breakdown", never "nothing paid".
+   */
+  const paymentProgressByOrder = await readOrderPaymentProgress(
+    supabase,
+    (orders || []).map((o) => ({
+      id: String(o.id),
+      total: o.total,
+      payment_status: o.payment_status,
+      items: o.items,
+    })),
+  )
+
   const enrichedOrders = (orders || []).map((order) => {
     let memberName = '—'
     if (order.member_session_id && order.tab_id) {
@@ -179,6 +200,11 @@ async function loadOrderHistory(req: Request): Promise<Response> {
       amount_discrepancy: amountDiscrepancy,
       no_ledger_row:
         String(order.payment_status ?? '').toLowerCase() === 'paid' && projection === null,
+      /**
+       * `null` when the breakdown could not be read. The client must render its previous badge in
+       * that case rather than invent a figure -- see readOrderPaymentProgress.
+       */
+      payment_progress: paymentProgressByOrder.get(String(order.id)) ?? null,
     }
   })
 
