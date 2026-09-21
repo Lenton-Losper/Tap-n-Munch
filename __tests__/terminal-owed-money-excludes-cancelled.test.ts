@@ -107,6 +107,23 @@ class FakeQuery {
     if (found.length !== 1) return { data: null, error: { message: 'not found' } }
     return { data: project(found[0], this.columns), error: null }
   }
+  /**
+   * NO ROW IS NOT AN ERROR -- that is the whole difference from single(), and the settle route
+   * depends on it: it chains `.select('id').maybeSingle()` off the payments insert to get the id
+   * the gratuity is hung on, and treats any `error` as a failed write.
+   *
+   * This method was simply absent, so the chain died on `maybeSingle is not a function`, the
+   * route's catch-all turned the TypeError into 401 Unauthorized, and all ten assertions here
+   * read as an auth failure rather than as anything about cancelled orders.
+   *
+   * PostgREST semantics: zero rows -> { data: null, error: null }; more than one -> an error.
+   */
+  async maybeSingle() {
+    const found = this.rows()
+    if (found.length === 0) return { data: null, error: null }
+    if (found.length > 1) return { data: null, error: { message: 'multiple rows returned' } }
+    return { data: project(found[0], this.columns), error: null }
+  }
   then(resolve: (r: { data: Row[]; error: null }) => unknown) {
     const matched = this.rows()
     if (this.patch) {

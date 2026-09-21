@@ -131,11 +131,28 @@ jest.mock('@/lib/supabase/server', () => ({
           state.payload = payload
           return b
         },
-        insert: async (payload: Record<string, unknown>) => {
+        /**
+         * INSERT IS CHAINABLE, because the route chains `.select('id').maybeSingle()` off it --
+         * it needs the new payments row's id to hang payment_tips.payment_id on. This fake
+         * returned a bare promise, so the route died on
+         * `supabase.from(...).insert(...).select is not a function`, the settle route's catch-all
+         * turned that into 401 Unauthorized, and every assertion here read as an auth failure.
+         *
+         * The returned object is BOTH awaitable and chainable, so call sites that simply
+         * `await insert(...)` are unchanged.
+         */
+        insert: (payload: Record<string, unknown>) => {
           state.op = 'insert'
           state.payload = payload
           ops.push({ ...state })
-          return { data: null, error: failOp(state) }
+          const result = { data: { id: 'payment-row-1' }, error: failOp(state) }
+          const chain: Record<string, unknown> = {
+            select: () => chain,
+            maybeSingle: async () => result,
+            single: async () => result,
+            then: (resolve: (v: unknown) => unknown) => resolve(result),
+          }
+          return chain
         },
         eq: () => b,
         neq: () => b,

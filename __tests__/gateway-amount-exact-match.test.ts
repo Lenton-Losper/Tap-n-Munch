@@ -155,9 +155,24 @@ jest.mock('@/lib/supabase/server', () => ({
           state.op = 'update'
           return b
         },
-        insert: async (row: Row) => {
+        /**
+         * CHAINABLE, because the settle route chains `.select('id').maybeSingle()` off the
+         * payments insert to get the row the gratuity is hung on. A bare promise made the route
+         * die on `.insert(...).select is not a function`, which its catch-all reports as 401 --
+         * so the one-cent tolerance case below was reading an auth failure, not a tolerance.
+         *
+         * Still awaitable, so the audit_logs call sites are unchanged.
+         */
+        insert: (row: Row) => {
           if (state.table === 'audit_logs') mockAudits.push(row)
-          return { data: null, error: null }
+          const result = { data: { id: 'payment-row-1' }, error: null }
+          const chain: Record<string, unknown> = {
+            select: () => chain,
+            maybeSingle: async () => result,
+            single: async () => result,
+            then: (resolve: (v: unknown) => unknown) => resolve(result),
+          }
+          return chain
         },
         eq: () => b,
         neq: () => b,

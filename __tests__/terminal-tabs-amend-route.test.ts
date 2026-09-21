@@ -37,6 +37,13 @@ jest.mock('@/lib/orders/order-number', () => {
 
 let rpcCalls: unknown[] = []
 let rpcResponses: Array<{ data: unknown; error: unknown }> = []
+/**
+ * The lines the route's PRE-RPC READ sees. Before amending, the route reads order_lines to work
+ * out whether any amendment REDUCES a quantity, because taking items off a bill needs a manager
+ * or owner PIN. Default: the line these tests amend, at the quantity they amend it TO, so nothing
+ * here is a reduction and the PIN gate is not the thing under test.
+ */
+let mockOrderLines: Array<{ id: string; quantity: number }> = []
 
 jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => ({
@@ -44,6 +51,24 @@ jest.mock('@/lib/supabase/server', () => ({
       rpcCalls.push({ name, args })
       const next = rpcResponses.shift()
       return next ?? { data: null, error: { message: 'no mock response queued' } }
+    },
+    /**
+     * THE READ THIS MOCK WAS MISSING ENTIRELY.
+     *
+     * The route reads order_lines before calling the RPC, to decide whether an amendment reduces
+     * a line and therefore needs a PIN. With only `rpc` mocked, `supabase.from` was undefined,
+     * the TypeError reached the route's outer catch, and it answered 500 "Failed to amend the
+     * tab" -- so four assertions about the RPC were reading a server error instead.
+     */
+    from: (table: string) => {
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        eq: () => builder,
+        in: () => builder,
+        then: (resolve: (v: unknown) => unknown) =>
+          resolve({ data: table === 'order_lines' ? mockOrderLines : [], error: null }),
+      }
+      return builder
     },
   }),
 }))
@@ -65,6 +90,7 @@ beforeEach(() => {
   nextNumber = 100
   rpcCalls = []
   rpcResponses = []
+  mockOrderLines = [{ id: LINE_ID, quantity: 5 }]
 })
 
 describe('POST /api/terminal/tabs/[tabId]/amend', () => {
