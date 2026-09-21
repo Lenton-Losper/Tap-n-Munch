@@ -49,6 +49,8 @@ let orderRow: Row
 let tabRow: Row
 let tabOrders: Row[]
 const mockAudits: Row[] = []
+/** Every settle_order_payment call the route makes. The RPC is now the paid-writer. */
+const mockRpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = []
 
 // ---------------------------------------------------------------- module mocks
 
@@ -111,6 +113,30 @@ jest.mock('@/lib/receipts/safeIssueReceipt', () => ({
  */
 jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => ({
+    /**
+     * A WORKING DATABASE, because the absence of `rpc` was being read as a code defect.
+     *
+     * This sprint routes the verify-payment leg through `settle_order_payment`. A client with no
+     * `rpc` method throws `supabase.rpc is not a function`, `settleWholeOrderPayment` reports
+     * `rpc_failed` -- which is deliberately RETRYABLE -- and the route answers 502. That is the
+     * CORRECT response to a broken database, so the fake was simulating an outage and the suite
+     * was grading the outage, not the code.
+     */
+    rpc: async (fn: string, args: Record<string, unknown>) => {
+      mockRpcCalls.push({ fn, args: args ?? {} })
+      if (fn !== 'settle_order_payment') return { data: null, error: null }
+      const ids = (args?.p_order_ids as string[] | undefined) ?? []
+      return {
+        data: {
+          ok: true,
+          applied: true,
+          claimed_order_ids: ids,
+          intended_order_ids: ids,
+          expected_amount_cents: args?.p_expected_amount_cents ?? null,
+        },
+        error: null,
+      }
+    },
     from: (table: string) => {
       const state = { table, op: 'select', filters: [] as string[] }
       const b: Record<string, unknown> = {}
@@ -164,6 +190,7 @@ beforeEach(() => {
   markOrderPaidConfirmed.mockClear()
   queryFinaticOrderPaid.mockClear()
   mockAudits.length = 0
+  mockRpcCalls.length = 0
 
   orderRow = {
     id: ORDER_ID,
@@ -181,8 +208,27 @@ beforeEach(() => {
     status: 'open',
     settled_at: null,
   }
+  /**
+   * `restaurant_id` IS LOAD-BEARING HERE, and its absence was a false failure.
+   *
+   * `resolveSettlementTarget` derives the venue from the rows it reads (`singleRestaurantOf`,
+   * lib/payments/settlement-target.ts). With no `restaurant_id` on the row it derives `''` ->
+   * `null` and refuses the whole settlement as `cross_restaurant`, so the gateway-amount
+   * correction never runs and three assertions fail against correct code.
+   *
+   * Real PostgREST cannot produce that row: `restaurant_id` is in `TARGET_ORDER_COLUMNS` and
+   * `loadOrders` also filters `.eq('restaurant_id', restaurantId)`. This fake defeats both --
+   * its `eq` is a no-op and its `in` records only the column NAME -- so the column has to be
+   * present in the fixture for the double to resemble the database it stands in for.
+   */
   tabOrders = [
-    { id: ORDER_ID, total: SERVER_TOTAL, payment_status: 'pending', terminal_pushed_at: null },
+    {
+      id: ORDER_ID,
+      restaurant_id: RESTAURANT_UUID,
+      total: SERVER_TOTAL,
+      payment_status: 'pending',
+      terminal_pushed_at: null,
+    },
   ]
 })
 
@@ -224,7 +270,20 @@ describe('verify-payment — the gateway leg is EXACT', () => {
     const { body } = await call(SERVER_TOTAL)
 
     expect({ paid: body.paid, applied: body.applied }).toEqual({ paid: true, applied: true })
-    expect(markOrderPaidConfirmed).toHaveBeenCalledTimes(1)
+    /**
+     * THE PAID-WRITER ON THIS LEG IS THE RPC, NOT markOrderPaidConfirmed.
+     *
+     * verify-payment/route.ts records the swap in terms:
+     *   "markOrderPaidConfirmed(orderId)  -> the atomic RPC over the whole target set".
+     * The point of the change is that the set the amount is checked against is provably the set
+     * that gets written, so asserting the OLD single-order writer would now pin behaviour this
+     * sprint deliberately removed. What must still hold is that the settlement ran, over THIS
+     * order, at the agreed figure -- which is what is asserted instead.
+     */
+    const settleCalls = mockRpcCalls.filter((c) => c.fn === 'settle_order_payment')
+    expect(settleCalls).toHaveLength(1)
+    expect(settleCalls[0].args.p_order_ids).toEqual([ORDER_ID])
+    expect(markOrderPaidConfirmed).toHaveBeenCalledTimes(0)
     expect(uncertainAudits()).toHaveLength(0)
   })
 
