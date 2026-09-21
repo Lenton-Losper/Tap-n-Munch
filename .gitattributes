@@ -1,0 +1,64 @@
+# ==================================================================================================
+# LINE ENDINGS ARE LOAD-BEARING IN THIS REPO
+# ==================================================================================================
+#
+# This repo had no .gitattributes and the machines building it run `core.autocrlf=true`, so a
+# Windows clone rewrote every text file to CRLF on checkout while the stored blobs stayed LF.
+#
+# That is not cosmetic here. Several suites are SOURCE-TEXT tests: they `readFileSync` a component
+# and assert that it contains an exact string, newlines included. `settleAmountIsOutstanding.test.ts`
+# is the one that caught this -- it asserts on
+#
+#     'selectCashSettleableOrders(\n      orders,\n      requestedOrderIds,\n      payable,\n    )'
+#
+# and reads the file raw, with no newline normalisation. On a CRLF checkout every such assertion
+# fails, so the suite went red 2/15 for anyone with a fresh clone while passing for whoever happened
+# to have LF on disk. A test that depends on the checkout that produced it is not a test.
+#
+# Fixing it in the tests would mean teaching every source-text suite to normalise before matching,
+# and remembering to do so in the next one. Fixing it here fixes it once, for every reader of the
+# tree -- git, jest, Metro and the editor all see the same bytes.
+#
+# `eol=lf` is stated explicitly rather than relying on `text=auto` alone: `text=auto` normalises
+# what is STORED, and would still hand a CRLF working tree to anyone with core.autocrlf=true. The
+# whole problem is in the working tree.
+# ==================================================================================================
+
+# Every text file: LF in the repository AND in the working tree, whatever core.autocrlf says.
+# `text=auto` keeps git's binary detection, so a file it judges binary is left alone.
+* text=auto eol=lf
+
+# --------------------------------------------------------------------------------------------------
+# THE ONE PLACE CRLF IS CORRECT
+#
+# A Windows batch file is parsed by cmd.exe, which is not reliably tolerant of bare LF -- a `goto`
+# past a label can misread. gradlew.bat is how the Android build is invoked on these machines, so it
+# keeps CRLF in the working tree. The blob stays LF, which is what it already is.
+# --------------------------------------------------------------------------------------------------
+*.bat text eol=crlf
+
+# --------------------------------------------------------------------------------------------------
+# NEVER NORMALISE, NEVER DIFF
+#
+# Marked explicitly rather than left to `text=auto`, because the costly case is a binary that LOOKS
+# textual. `android/app/src/main/assets/index.android.bundle` is exactly that: 1.5 MB of generated
+# JavaScript with no NUL byte, so `text=auto` would call it text and rewrite it. The two bundles
+# under releases/ ARE binary (Hermes bytecode). Both are build outputs; normalising either is churn
+# at best and corruption at worst.
+# --------------------------------------------------------------------------------------------------
+*.bundle binary
+*.jar     binary
+*.aar     binary
+*.keystore binary
+*.apk     binary
+*.aab     binary
+*.zip     binary
+*.so      binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.webp    binary
+*.ico     binary
+*.ttf     binary
+*.otf     binary
