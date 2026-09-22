@@ -2,6 +2,11 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { normalizeActivationCode } from '@/lib/terminals/activation-code'
 import {
+  ACTIVATION_REFUSALS,
+  resolveActivationTarget,
+  type IdentityHolder,
+} from '@/lib/terminals/resolve-activation-target'
+import {
   generateRefreshToken,
   hashRefreshToken,
   refreshTokenExpiresAt,
@@ -89,10 +94,74 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid or expired activation code' }, { status: 400 })
     }
 
-    const restaurantId = String(data.restaurant_id)
-    const terminalId = String(data.id)
+    const codeRestaurantId = String(data.restaurant_id)
+    const codeTerminalId = String(data.id)
     const deviceSerial =
       deviceId || terminalSn || (data.device_id ? String(data.device_id) : null)
+
+    /**
+     * ============================================================================================
+     * DOES THIS DEVICE ALREADY OWN A ROW?
+     * ============================================================================================
+     *
+     * Asked BEFORE any write, because the alternative is what shipped: write blindly, collide with
+     * `restaurant_terminals_device_id_unique`, and hand the reader a 23505 dressed as
+     * "Failed to activate terminal". See lib/terminals/resolve-activation-target.ts for the
+     * invariant this keeps.
+     *
+     * TWO `.in()` READS RATHER THAN ONE `.or()`. `.in()` is parser-free -- the #242/#254 shape --
+     * and these values arrive in a request body. An `.or()` string built from them would be a
+     * filter expression assembled from caller input, which is exactly the class this codebase has
+     * fixed twice.
+     */
+    const presentedIdentity = [...new Set([deviceId, deviceSerial].filter(Boolean) as string[])]
+    const holders: IdentityHolder[] = []
+    if (presentedIdentity.length > 0) {
+      for (const column of ['device_id', 'device_serial'] as const) {
+        const { data: rows, error: holderError } = await supabase
+          .from('restaurant_terminals')
+          .select('id, restaurant_id')
+          .in(column, presentedIdentity)
+        if (holderError) {
+          // A failed read must not be read as "nobody holds it" -- that lands straight back on the
+          // 23505 this exists to avoid. Refuse, and let the operator retry.
+          console.error('[activate] could not read device identity holders', holderError)
+          return NextResponse.json(
+            { error: 'Could not check this device. Try again in a moment.', code: 'DEVICE_CHECK_UNAVAILABLE' },
+            { status: 503 },
+          )
+        }
+        for (const row of rows ?? []) {
+          holders.push({ id: String(row.id), restaurant_id: String(row.restaurant_id) })
+        }
+      }
+    }
+
+    const decision = resolveActivationTarget({
+      codeRow: { id: codeTerminalId, restaurant_id: codeRestaurantId },
+      holders,
+    })
+
+    if (decision.kind === 'reject_cross_restaurant') {
+      console.warn('[activate] refused: device identity is held elsewhere', {
+        codeTerminalId,
+        codeRestaurantId,
+        holders: holders.map((h) => h.id),
+      })
+      return NextResponse.json(
+        { error: ACTIVATION_REFUSALS.cross_restaurant, code: 'DEVICE_REGISTERED_ELSEWHERE' },
+        { status: 409 },
+      )
+    }
+
+    /**
+     * THE ROW THAT ENDS UP ACTIVE. On a rebind it is the row the device already owns, NOT the row
+     * the code named -- so the till keeps its id, and with it every payment, printer config and
+     * audit row ever attributed to it. The code's own row is retired below.
+     */
+    const rebinding = decision.kind === 'rebind_existing'
+    const terminalId = rebinding ? decision.terminalId : codeTerminalId
+    const restaurantId = codeRestaurantId
 
     const refreshToken = generateRefreshToken()
     const refreshTokenHash = await hashRefreshToken(refreshToken)
@@ -130,7 +199,59 @@ export async function POST(request: Request) {
       .single()
 
     if (updateError || !updateData?.id) {
-      throw updateError || new Error('Failed to activate terminal')
+      /**
+       * NOT RETHROWN AS-IS. A PostgREST error is a PLAIN OBJECT, so the outer catch's
+       * `error instanceof Error` was false and EVERY failed update -- whatever the cause --
+       * collapsed to 500 "Failed to activate terminal". That message is true of every failure and
+       * actionable for none of them, and the real 23505 lived only in a log with no retention.
+       *
+       * A duplicate HERE means the identity was claimed between the read above and this write.
+       * That is answerable: reissue on the terminal that holds it.
+       */
+      const pgCode = (updateError as { code?: unknown } | null)?.code
+      if (pgCode === '23505') {
+        console.error('[activate] identity claimed between check and write', {
+          terminalId,
+          constraint: (updateError as { constraint?: unknown } | null)?.constraint,
+        })
+        return NextResponse.json(
+          { error: ACTIVATION_REFUSALS.identity_taken, code: 'DEVICE_IDENTITY_TAKEN' },
+          { status: 409 },
+        )
+      }
+      console.error('[activate] terminal update failed', updateError)
+      return NextResponse.json(
+        {
+          error: 'Could not activate this terminal. Try again in a moment.',
+          code: 'ACTIVATION_WRITE_FAILED',
+        },
+        { status: 503 },
+      )
+    }
+
+    /**
+     * RETIRE THE ROW THE CODE NAMED, once the device is bound to the row it owns. Left pending it
+     * would keep a live activation code against a till that does not exist, and appear in the admin
+     * list as a screen nobody can pair. Best-effort: the activation has already succeeded, and
+     * failing it now would be worse than a stale pending row.
+     */
+    if (rebinding) {
+      const { error: retireError } = await supabase
+        .from('restaurant_terminals')
+        .update({
+          status: 'revoked',
+          active: false,
+          activation_code: null,
+          activation_code_expires_at: null,
+        })
+        .eq('id', decision.supersededTerminalId)
+        .eq('restaurant_id', restaurantId)
+      if (retireError) {
+        console.error('[activate] could not retire the superseded pending row', {
+          supersededTerminalId: decision.supersededTerminalId,
+          error: retireError,
+        })
+      }
     }
 
     const { data: restaurant, error: restaurantError } = await supabase
@@ -176,8 +297,25 @@ export async function POST(request: Request) {
       storeNo: restaurant?.finatic_store_no,
     })
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to activate terminal'
+    /**
+     * THE MESSAGE THE READER GETS IS NEVER THE DATABASE'S.
+     *
+     * This used to be `error instanceof Error ? error.message : 'Failed to activate terminal'`.
+     * A PostgREST error is a plain object, so every database refusal took the fallback branch and
+     * arrived at the P5 as "Failed to activate terminal" -- indistinguishable from a bug, an
+     * outage, or a constraint doing its job. Diagnosing it needed a rolled-back SQL reproduction.
+     *
+     * The diagnosis is logged in full; the caller gets something it can act on, with no constraint
+     * name, column or row id in it. Those describe our schema to an UNAUTHENTICATED endpoint, and
+     * the reader cannot act on them anyway.
+     */
     console.error('[activate] failed:', error)
-    return NextResponse.json({ error: message }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: 'Could not activate this terminal. Try again, or reissue the code.',
+        code: 'ACTIVATION_FAILED',
+      },
+      { status: 500 },
+    )
   }
 }
