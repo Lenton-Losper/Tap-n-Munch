@@ -307,6 +307,32 @@ BEGIN
   END;
   PERFORM public._expect('paid_guard/hold_resolution_allowed', s = 'ok', s);
 
+  -- PayToday is not a gateway charge (f-manual's tab settle claim).
+  PERFORM public._seed_amend();
+  PERFORM public._cr_prepare(40000);
+  PERFORM public._cr_expire_window();
+  PERFORM public._cr_guest_edit();
+  BEGIN
+    UPDATE public.orders SET payment_status = 'paid', payment_method = 'paytoday' WHERE id = public._cr_order();
+    s := 'ok';
+  EXCEPTION WHEN OTHERS THEN s := SQLSTATE;
+  END;
+  PERFORM public._expect('paid_guard/paytoday_allowed', s = 'ok' AND public._cr_status() = 'paid', s);
+
+  -- Mark-as-Paid on a standalone card machine states what it collected from the live figure.
+  PERFORM public._seed_amend();
+  PERFORM public._cr_prepare(40000);
+  PERFORM public._cr_expire_window();
+  PERFORM public._cr_guest_edit();
+  BEGIN
+    UPDATE public.orders
+       SET payment_status = 'paid', payment_method = 'card', settled_charge_cents = 45000
+     WHERE id = public._cr_order();
+    s := 'ok';
+  EXCEPTION WHEN OTHERS THEN s := SQLSTATE;
+  END;
+  PERFORM public._expect('paid_guard/explicit_live_figure_allowed', s = 'ok' AND public._cr_status() = 'paid', s);
+
   PERFORM public._seed_amend();
   PERFORM public._cr_prepare(40000);
   BEGIN

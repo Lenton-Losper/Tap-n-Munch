@@ -491,6 +491,17 @@ const MUTATIONS = {
     expect: ['paid_guard/card_refused'],
     sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_charge_basis_paid_guard ON public.orders;',
   },
+  MR3b: {
+    what: 'the paid guard exempts only cash again (PayToday / Mark-as-Paid refused on a dead card attempt)',
+    expect: ['paid_guard/paytoday_allowed', 'paid_guard/explicit_live_figure_allowed'],
+    apply: (sql) =>
+      sql
+        .replace(
+          "     AND lower(btrim(COALESCE(NEW.payment_method, ''))) NOT IN ('cash', 'paytoday')\n",
+          "     AND lower(btrim(COALESCE(NEW.payment_method, ''))) <> 'cash'\n",
+        )
+        .replace('     AND NEW.settled_charge_cents IS NOT DISTINCT FROM OLD.settled_charge_cents\n', ''),
+  },
   MR4: {
     what: "prepare-payment's stale read is accepted (the read-basis check removed)",
     expect: ['prepare_read/stale_read_refused'],

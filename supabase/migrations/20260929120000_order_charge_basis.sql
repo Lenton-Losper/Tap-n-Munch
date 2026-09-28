@@ -61,10 +61,12 @@
 -- (C) BACKSTOP FOR EVERY OTHER PAID-WRITER -- `orders_refuse_paid_on_changed_charge` raises FTCHG
 --     when an order moves to 'paid' by a non-cash method while its stamped basis no longer matches.
 --     markOrderPaidConfirmed (device callback, verify-before-cancel, auto-cancel cron, reconcile)
---     catches FTCHG and holds + records. Cash is exempt: cash is counted against the live figure the
---     waiter is shown, not against a card attempt's stamp, and an abandoned card attempt must never
---     make a table impossible to settle in cash. Held -> paid is exempt: that is a human resolving a
---     hold, and this trigger must not make a hold unresolvable.
+--     catches FTCHG and holds + records. Exempt, because none of them consumes the prepared card
+--     charge: cash and PayToday (counted against the live figure the waiter is shown -- an abandoned
+--     card attempt must never make a table impossible to settle another way); a writer that states
+--     settled_charge_cents in the same statement (the dashboard's Mark-as-Paid, which computes it
+--     from the live figure); and held -> paid (a human resolving a hold, which this trigger must not
+--     make unresolvable).
 --
 -- SAFE TO APPLY: additive. Three nullable columns, two functions, three triggers, and a backfill
 -- that stamps the basis on orders already carrying a prepared charge (so a charge in flight at
@@ -228,7 +230,16 @@ BEGIN
   IF lower(btrim(COALESCE(NEW.payment_status, ''))) = 'paid'
      AND lower(btrim(COALESCE(OLD.payment_status, ''))) NOT IN
            ('paid', 'amount_mismatch_hold', 'verification_unavailable_hold')
-     AND lower(btrim(COALESCE(NEW.payment_method, ''))) <> 'cash'
+     -- NOT A GATEWAY CHARGE, so there is no prepared figure it could be stale against. Cash and
+     -- PayToday are counted by a person against the live figure on screen.
+     AND lower(btrim(COALESCE(NEW.payment_method, ''))) NOT IN ('cash', 'paytoday')
+     -- A writer that states what it collected (settled_charge_cents, in the SAME statement) computed
+     -- it from the order as it stands: the dashboard's Mark-as-Paid (record_manual_order_payment,
+     -- f-manual 20260929100000), including a standalone card machine. It is not consuming the
+     -- prepared charge. Gateway writers never do this: settle_order_payment, markOrderPaidConfirmed
+     -- and the tab-settle card claim leave it to orders_record_settled_charge (which fires AFTER this
+     -- trigger, alphabetically) or write it in a later statement.
+     AND NEW.settled_charge_cents IS NOT DISTINCT FROM OLD.settled_charge_cents
      AND OLD.pending_charge_basis IS NOT NULL
      AND OLD.pending_charge_basis <> public.order_charge_basis(OLD.id, OLD.total, OLD.items)
   THEN
