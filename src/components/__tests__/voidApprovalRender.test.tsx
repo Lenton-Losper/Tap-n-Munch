@@ -55,13 +55,19 @@ const LINE: TabLine = {
   is_voided: false,
 } as unknown as TabLine;
 
-const okResult = {order_id: 'o1', order_number: 12, applied: [{line_id: LINE.id}], refused: []};
+const okResult = {
+  order_id: 'o1',
+  order_number: 12,
+  applied: [{line_id: LINE.id, action: 'replaced'}],
+  refused: [],
+  well_formed: true,
+};
 
 async function mount() {
   let tree!: renderer.ReactTestRenderer;
   await act(async () => {
     tree = renderer.create(
-      <AmendLineSheet tabId="tab-1" line={LINE} onClose={jest.fn()} onAmended={jest.fn()} />,
+      <AmendLineSheet tabId="tab-1" line={LINE} onClose={jest.fn()} onRefetch={jest.fn()} />,
     );
   });
   return tree;

@@ -30,7 +30,7 @@ import type {
   HeldOrphanStoreResponse,
 } from './heldOrphanStore';
 import {Sdk6ReceiptLine} from './wiseSdk6Printer';
-import type {AmendResult, LineAmendment} from './amendTabLines';
+import {parseAmendResult, type AmendResult, type LineAmendment} from './amendTabLines';
 import {
   isPinLockedError as pinLockedFromFields,
   isRefundAmountExceedsRemaining as refundExceedsFromFields,
@@ -278,18 +278,84 @@ export async function refreshAccessToken(): Promise<string | null> {
   }
 }
 
+/**
+ * THE REQUEST NEVER ANSWERED. Thrown by terminalFetch when a caller opted into `timeoutMs` and it
+ * ran out, or when fetch itself rejected (no network, DNS, connection reset).
+ *
+ * AN UNKNOWN OUTCOME, NOT A FAILURE. The server may have received the request and acted on it —
+ * a timeout says only that the ANSWER never arrived. Every caller that opts in must treat this as
+ * "we do not know", never as "nothing happened" and never as success.
+ *
+ * TIMEOUTS ARE OPT-IN AND MUST STAY OFF PAYMENT CALLS. A card payment that outlives a client
+ * timer is still a card payment; treating the timer as a decline is how a customer is charged
+ * twice. Sprint 2026-09-28 brief: amend, authorize and rounds only.
+ */
+export class RequestOutcomeUnknownError extends Error {
+  kind: 'timeout' | 'network';
+
+  constructor(kind: 'timeout' | 'network', message?: string) {
+    super(
+      message ??
+        (kind === 'timeout'
+          ? 'The server did not answer in time.'
+          : 'The server could not be reached.'),
+    );
+    this.name = 'RequestOutcomeUnknownError';
+    this.kind = kind;
+  }
+}
+
+/**
+ * fetch with an optional deadline. Without `timeoutMs` this is plain fetch, byte for byte, so
+ * every existing caller (payments included) behaves exactly as before.
+ */
+async function fetchWithDeadline(
+  url: string,
+  init: RequestInit,
+  timeoutMs?: number,
+): Promise<Response> {
+  if (!timeoutMs) {
+    return fetch(url, init);
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await fetch(url, {...init, signal: controller.signal});
+  } catch (err) {
+    if (timedOut) {
+      throw new RequestOutcomeUnknownError('timeout');
+    }
+    throw new RequestOutcomeUnknownError(
+      'network',
+      err instanceof Error ? err.message : undefined,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function terminalFetch(
   url: string,
   options: RequestInit,
   token: string,
+  /** Opt-in. See RequestOutcomeUnknownError for why payment calls never pass it. */
+  deadline?: {timeoutMs: number},
 ): Promise<Response> {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...options.headers,
-      Authorization: `Bearer ${token}`,
+  const response = await fetchWithDeadline(
+    url,
+    {
+      ...options,
+      headers: {
+        ...options.headers,
+        Authorization: `Bearer ${token}`,
+      },
     },
-  });
+    deadline?.timeoutMs,
+  );
 
   if (response.status === 401) {
     const newToken = await refreshAccessToken();
@@ -297,17 +363,26 @@ async function terminalFetch(
       throw new TerminalAuthError('Session expired');
     }
 
-    return fetch(url, {
-      ...options,
-      headers: {
-        ...options.headers,
-        Authorization: `Bearer ${newToken}`,
+    return fetchWithDeadline(
+      url,
+      {
+        ...options,
+        headers: {
+          ...options.headers,
+          Authorization: `Bearer ${newToken}`,
+        },
       },
-    });
+      deadline?.timeoutMs,
+    );
   }
 
   return response;
 }
+
+/** How long the cancellation-path calls wait before reporting an UNKNOWN outcome. */
+export const AMEND_TIMEOUT_MS = 20000;
+export const AUTHORIZE_TIMEOUT_MS = 15000;
+export const ROUND_TIMEOUT_MS = 20000;
 
 export async function activateTerminal(
   code: string,
@@ -904,6 +979,24 @@ export async function settleTab(
  *
  * 90s TTL, single use, purpose-scoped server-side. Used to attribute a cash settlement
  * to the staff member who took the money.
+ *
+ * ================================================================================================
+ * A WRONG PIN IS NOT AN EXPIRED SESSION. (Sprint 2026-09-28 brief.)
+ * ================================================================================================
+ *
+ * This used terminalFetch + throwIfUnauthorized, and the route answers a wrong PIN with
+ * 401 PIN_MISMATCH. So a mistyped manager PIN (a) was read by terminalFetch as an expired terminal
+ * token, which refreshed the token and RE-POSTED the same wrong PIN — two strikes towards the
+ * lockout for one keypress — and then (b) reached throwIfUnauthorized and told the waiter
+ * "Terminal session expired". A 403 (not a member, no permission, no PIN set) said the same.
+ *
+ * Now, following resetTabPin's pattern of splitting what the helper conflates:
+ *   401 PIN_MISMATCH  -> ApiRequestError code PIN_MISMATCH, attemptsRemaining. Never re-POSTed.
+ *   401 otherwise     -> the terminal token really expired: refresh once and retry, as before.
+ *   403               -> ApiRequestError code AUTHORIZATION_DENIED (the route sends no code).
+ *   429 PIN_LOCKED    -> unchanged: lockout copy and retry-after.
+ * A network failure or a timeout arrives as RequestOutcomeUnknownError; nothing was spent, since
+ * a token that never reached the caller cannot be consumed by anything.
  */
 export async function authorizeTerminalAction(
   userId: string,
@@ -917,27 +1010,67 @@ export async function authorizeTerminalAction(
     | 'cash_up',
   token: string,
 ): Promise<{token_id: string; expires_at: string}> {
-  const response = await terminalFetch(
-    `${FLASHTAP_API_URL}/api/terminal/authorize`,
-    {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({user_id: userId, pin, purpose}),
-    },
-    token,
-  );
-
-  throwIfUnauthorized(response);
-
-  if (!response.ok) {
-    const err = await parseApiError(response);
-    // PIN lockout has its own copy and its own retry-after; everything else falls through
-    // to the generic authorization message.
-    throw new ApiRequestError(
-      isPinLockedError(err) ? staffMessageForPinLock(err) : err.message,
-      err.status,
-      {code: err.code, retryAfterSeconds: err.retryAfterSeconds},
+  const url = `${FLASHTAP_API_URL}/api/terminal/authorize`;
+  const post = (bearer: string) =>
+    fetchWithDeadline(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${bearer}`,
+        },
+        body: JSON.stringify({user_id: userId, pin, purpose}),
+      },
+      AUTHORIZE_TIMEOUT_MS,
     );
+
+  let response = await post(token);
+  let err: ApiRequestError | null = response.ok ? null : await parseApiError(response);
+
+  // Only a 401 WITHOUT PIN_MISMATCH is the terminal's own token. The PIN was never checked, so
+  // retrying once with a fresh token spends no attempt.
+  if (err && err.status === 401 && err.code !== 'PIN_MISMATCH') {
+    const newToken = await refreshAccessToken();
+    if (!newToken) {
+      throw new TerminalAuthError('Session expired');
+    }
+    response = await post(newToken);
+    err = response.ok ? null : await parseApiError(response);
+    if (err && err.status === 401 && err.code !== 'PIN_MISMATCH') {
+      throw new TerminalAuthError();
+    }
+  }
+
+  if (err) {
+    if (isPinLockedError(err)) {
+      throw new ApiRequestError(staffMessageForPinLock(err), err.status, {
+        code: err.code,
+        retryAfterSeconds: err.retryAfterSeconds,
+      });
+    }
+    if (err.status === 401) {
+      throw new ApiRequestError(
+        err.attemptsRemaining != null
+          ? `That PIN was not accepted. ${err.attemptsRemaining} ${
+              err.attemptsRemaining === 1 ? 'try' : 'tries'
+            } left before it locks.`
+          : 'That PIN was not accepted.',
+        401,
+        {code: 'PIN_MISMATCH', attemptsRemaining: err.attemptsRemaining},
+      );
+    }
+    if (err.status === 403) {
+      throw new ApiRequestError(
+        'This person cannot approve this here.',
+        403,
+        {code: err.code ?? 'AUTHORIZATION_DENIED'},
+      );
+    }
+    throw new ApiRequestError(err.message, err.status, {
+      code: err.code,
+      retryAfterSeconds: err.retryAfterSeconds,
+    });
   }
 
   return response.json() as Promise<{token_id: string; expires_at: string}>;
@@ -2485,6 +2618,104 @@ export interface RoundResult {
    */
   line_count: number;
   station_counts: StationCounts;
+  /**
+   * C4. TRUE WHEN THIS KEY HAD ALREADY BEEN SENT: the server did NOT create anything now, and is
+   * reporting the round it made the first time. The screen must say "Already sent — this is what
+   * the kitchen has", never a fresh green "Round sent" — after an edited basket those differ.
+   */
+  duplicate: boolean;
+  /** What the server holds for this round, when it says (C4). Empty on an older server. */
+  persisted_items: RoundPersistedItem[];
+}
+
+/** One item as the SERVER has it — the only list a waiter may be shown as "what the kitchen has". */
+export interface RoundPersistedItem {
+  name: string;
+  quantity: number;
+}
+
+function parsePersistedItems(raw: unknown): RoundPersistedItem[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const out: RoundPersistedItem[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const row = entry as Record<string, unknown>;
+    const name = [row.displayName, row.name, row.name_snapshot].find(
+      (v): v is string => typeof v === 'string' && v.trim() !== '',
+    );
+    const quantity = Number(row.quantity ?? 1);
+    if (!name || !Number.isFinite(quantity)) {
+      continue;
+    }
+    out.push({name, quantity});
+  }
+  return out;
+}
+
+/** The server's items for a round, from either field name C4 allows. */
+function persistedItemsOf(raw: Record<string, unknown>): RoundPersistedItem[] {
+  const items = parsePersistedItems(raw.items);
+  return items.length > 0 ? items : parsePersistedItems(raw.lines);
+}
+
+/**
+ * THE ROUND'S OUTCOME IS UNKNOWN. A timeout, no network, or a 5xx other than LINES_NOT_WRITTEN.
+ *
+ * The server may have created the order. The only safe moves are to re-send THE SAME ROUND WITH THE
+ * SAME KEY (the server answers duplicate: true if it already has it) or to look at the table. The
+ * basket must not change and the key must not rotate until one of those gives a definite answer —
+ * an edited basket re-sent under the old key is how Riviera #160's Modena reached the kitchen.
+ */
+export class RoundOutcomeUnknownError extends Error {
+  kind: 'timeout' | 'network' | 'server';
+  status: number | null;
+
+  constructor(message: string, kind: 'timeout' | 'network' | 'server', status: number | null) {
+    super(message);
+    this.name = 'RoundOutcomeUnknownError';
+    this.kind = kind;
+    this.status = status;
+  }
+}
+
+/**
+ * C4 409 IDEMPOTENCY_KEY_BODY_MISMATCH. The server already has a round under this key, and it is
+ * NOT the basket just sent. The kitchen has the ORIGINAL; nothing new was created.
+ */
+export class RoundKeyMismatchError extends Error {
+  orderId: string | null;
+  orderNumber: number | null;
+  items: RoundPersistedItem[];
+
+  constructor(
+    message: string,
+    orderId: string | null,
+    orderNumber: number | null,
+    items: RoundPersistedItem[],
+  ) {
+    super(message);
+    this.name = 'RoundKeyMismatchError';
+    this.orderId = orderId;
+    this.orderNumber = orderNumber;
+    this.items = items;
+  }
+}
+
+/** C5 400. The server would not price the round. Nothing was created; do NOT retry it as it is. */
+export class RoundPricingRefusedError extends Error {
+  code: string | null;
+  unavailableItems: string[];
+
+  constructor(message: string, code: string | null, unavailableItems: string[]) {
+    super(message);
+    this.name = 'RoundPricingRefusedError';
+    this.code = code;
+    this.unavailableItems = unavailableItems;
+  }
 }
 
 /**
@@ -2563,6 +2794,8 @@ export async function sendRound(
       name: string;
       quantity: number;
       note?: string;
+      /** C6. `{ [groupName]: optionLabel }`, the QR cart's shape. Part of the C4 fingerprint. */
+      selectedVariants?: Record<string, string>;
     }[];
     subtotal: number;
     total: number;
@@ -2599,25 +2832,49 @@ export async function sendRound(
     body.order_instructions = instructions;
   }
 
-  const response = await terminalFetch(
-    `${FLASHTAP_API_URL}/api/terminal/rounds`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-idempotency-key': params.idempotencyKey,
+  let response: Response;
+  try {
+    response = await terminalFetch(
+      `${FLASHTAP_API_URL}/api/terminal/rounds`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-idempotency-key': params.idempotencyKey,
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    },
-    token,
-  );
+      token,
+      {timeoutMs: ROUND_TIMEOUT_MS},
+    );
+  } catch (err) {
+    if (err instanceof RequestOutcomeUnknownError) {
+      throw new RoundOutcomeUnknownError(err.message, err.kind, null);
+    }
+    throw err;
+  }
 
   throwIfTerminalSessionExpired(response);
 
   if (response.ok) {
-    const data = (await response.json()) as RoundResult;
+    let data: (RoundResult & Record<string, unknown>) | null;
+    try {
+      data = (await response.json()) as RoundResult & Record<string, unknown>;
+    } catch {
+      data = null;
+    }
+    // A 2xx we cannot read says the server did SOMETHING. That is not a confirmation.
+    if (!data || typeof data !== 'object' || typeof data.order_id !== 'string') {
+      throw new RoundOutcomeUnknownError(
+        'The server answered but did not say which order it made.',
+        'server',
+        response.status,
+      );
+    }
     return {
       ...data,
+      duplicate: data.duplicate === true,
+      persisted_items: persistedItemsOf(data),
       lines_written: data.lines_written !== false,
       line_count: Number(data.line_count ?? 0),
       station_counts: {
@@ -2655,6 +2912,41 @@ export async function sendRound(
     );
   }
 
+  if (response.status === 409 && code === 'IDEMPOTENCY_KEY_BODY_MISMATCH') {
+    throw new RoundKeyMismatchError(
+      serverMessage ?? 'This round was already sent with different items.',
+      typeof raw.order_id === 'string' ? raw.order_id : null,
+      finiteOrNull(raw.order_number),
+      persistedItemsOf(raw),
+    );
+  }
+
+  // C5. Any 400 carrying unavailableItems, or one of the named pricing codes. Never retried.
+  if (
+    response.status === 400 &&
+    (Array.isArray(raw.unavailableItems) ||
+      code === 'MENU_ITEM_VARIANT_REQUIRED' ||
+      code === 'MENU_ITEM_UNPRICEABLE_SELECTION')
+  ) {
+    const unavailable: unknown[] = Array.isArray(raw.unavailableItems) ? raw.unavailableItems : [];
+    throw new RoundPricingRefusedError(
+      serverMessage ?? 'Some items could not be priced.',
+      code ?? null,
+      unavailable
+        .map(entry => {
+          if (typeof entry === 'string') {
+            return entry;
+          }
+          if (entry && typeof entry === 'object') {
+            const row = entry as Record<string, unknown>;
+            return String(row.name ?? row.item ?? '');
+          }
+          return '';
+        })
+        .filter(name => name !== ''),
+    );
+  }
+
   if (code === 'OUT_OF_STOCK') {
     const rows = Array.isArray(raw.outOfStock) ? raw.outOfStock : [];
     throw new RoundOutOfStockError(
@@ -2669,6 +2961,15 @@ export async function sendRound(
           ingredient:
             row.ingredient != null ? String(row.ingredient) : undefined,
         })),
+    );
+  }
+
+  // Any other 5xx: the server may have made the order before it failed. Unknown, not failed.
+  if (response.status >= 500) {
+    throw new RoundOutcomeUnknownError(
+      serverMessage ?? `The server failed (${response.status}).`,
+      'server',
+      response.status,
     );
   }
 
@@ -2754,6 +3055,9 @@ export async function amendTabLines(
     throw new Error('amendTabLines called with no amendments');
   }
 
+  // A deadline, because the waiter is standing at the table waiting to be told. When it runs out
+  // the answer is UNKNOWN (RequestOutcomeUnknownError), never "nothing changed": the server may
+  // have voided the line and the reply was lost.
   const response = await terminalFetch(
     `${FLASHTAP_API_URL}/api/terminal/tabs/${encodeURIComponent(tabId)}/amend`,
     {
@@ -2771,6 +3075,7 @@ export async function amendTabLines(
       }),
     },
     token,
+    {timeoutMs: AMEND_TIMEOUT_MS},
   );
 
   throwIfTerminalSessionExpired(response);
@@ -2779,14 +3084,13 @@ export async function amendTabLines(
     throw await parseApiError(response);
   }
 
-  const data = (await response.json()) as Partial<AmendResult>;
-
-  return {
-    order_id: data.order_id ?? null,
-    order_number: data.order_number ?? null,
-    applied: Array.isArray(data.applied) ? data.applied : [],
-    refused: Array.isArray(data.refused) ? data.refused : [],
-  };
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+  return parseAmendResult(data);
 }
 
 /**

@@ -66,6 +66,7 @@ describe('nothingApplied — a 200 that changed nothing is not a success', () =>
     order_number: null,
     applied: [],
     refused: [],
+    well_formed: true,
     ...over,
   });
 
@@ -107,7 +108,17 @@ describe('nothingApplied — a 200 that changed nothing is not a success', () =>
     ).toBe(false);
   });
 
-  it('is false for an empty result, which is not a refusal', () => {
-    expect(nothingApplied(result({}))).toBe(false);
+  /**
+   * REVERSED BY THE Sprint 2026-09-28 brief (Riviera #160). This test used to read "is false for
+   * an empty result, which is not a refusal" — and that was the defect: a 200 carrying nothing
+   * was treated as success, and the waiter was shown the sheet closing. An empty result is not a
+   * refusal, but it is not a confirmation either; nothing is confirmed unless it is IN `applied`.
+   */
+  it('is TRUE for an empty result: nothing is confirmed unless it is in applied', () => {
+    expect(nothingApplied(result({}))).toBe(true);
+  });
+
+  it('is TRUE for a body that could not be read as a result', () => {
+    expect(nothingApplied(result({well_formed: false}))).toBe(true);
   });
 });

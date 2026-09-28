@@ -89,9 +89,15 @@ export const VOID_REASON_TOO_LONG =
  * to "Update the app". A WAITER CANNOT UPDATE IT, so that sentence is a dead end in the middle of
  * service with a customer waiting. The dashboard is the route they can actually take, so it is the
  * only one offered. Do not put the update instruction back.
+ *
+ * CHANGED AGAIN, Sprint 2026-09-28 brief (Riviera #160). "Ask a manager to remove it from the
+ * dashboard" pointed at a per-line void the dashboard DOES NOT HAVE — a second dead end, and one
+ * that sends a manager hunting for a control while the kitchen cooks the item. The owner's 09-06
+ * ruling (no "update the app") still stands; the dashboard route is gone because it never existed.
+ * The sentence now says what is true: nothing changed, the item is still on the bill.
  */
 export const VOID_NEEDS_AUTHORIZATION =
-  'This terminal needs updating before items can come off a bill. Nothing has changed. Ask a manager to remove it from the dashboard.';
+  'This terminal needs updating before items can come off a bill. Nothing has changed, and the item is still on the bill. Tell a manager.';
 
 /**
  * A REDUCTION THAT IS NOT ZERO IS STILL A VOID.

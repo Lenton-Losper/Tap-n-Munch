@@ -24,6 +24,7 @@
  * VOID_NEEDS_AUTHORIZATION, which is why that string exists.
  */
 import {
+  AMEND_AUTHORIZE_DENIED,
   AMEND_EFFECT_CHANGE,
   AMEND_EFFECT_REMOVE,
 } from '../constants/amendCopy';
@@ -105,9 +106,14 @@ export function reductionEffect(current: number, next: number): string {
  */
 export function voidFailureMessage(code: string | null): string | null {
   switch (code) {
+    // PIN_MISMATCH, Sprint 2026-09-28: a wrong PIN at /authorize (401) used to surface as
+    // "Terminal session expired". authorizeTerminalAction now codes it.
     case 'AUTHORIZATION_INVALID':
     case 'AUTHORIZATION_REQUIRED':
+    case 'PIN_MISMATCH':
       return VOID_REFUSED_PIN;
+    case 'AUTHORIZATION_DENIED':
+      return AMEND_AUTHORIZE_DENIED;
     case 'VOID_NEEDS_AUTHORIZATION':
       return VOID_NEEDS_AUTHORIZATION;
     case 'VOID_NEEDS_REASON':
