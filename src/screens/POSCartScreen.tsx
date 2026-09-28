@@ -14,6 +14,8 @@ import {clearPersistedPaymentState} from '../components/PaymentStateMachine';
 import {ApiRequestError, createPOSOrder} from '../lib/api';
 import {buildPOSOrderItems, CartLine, useCart} from '../context/CartContext';
 import * as VariantCopy from '../constants/variantPickerCopy';
+import * as PosCopy from '../constants/posSaleCopy';
+import {posKeyMismatchNotice} from '../lib/posSaleRefusal';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 
@@ -85,6 +87,19 @@ export default function POSCartScreen() {
           VariantCopy.VARIANT_REFUSED_TITLE,
           `${err.message}\n\n${VariantCopy.VARIANT_REFUSED_SUFFIX}`,
         );
+        return;
+      }
+      /**
+       * C4: this key already names a DIFFERENT sale (an earlier attempt with other items reached
+       * the server). Nothing on screen was sent or charged. Re-sending under the same key would be
+       * refused forever, so the only way forward is a new sale -- which issues a new key.
+       */
+      const mismatch = posKeyMismatchNotice(err);
+      if (mismatch) {
+        Alert.alert(mismatch.title, mismatch.body, [
+          {text: PosCopy.POS_KEEP_CART, style: 'cancel'},
+          {text: PosCopy.POS_START_NEW_SALE, onPress: () => clearCart()},
+        ]);
         return;
       }
       const message =
