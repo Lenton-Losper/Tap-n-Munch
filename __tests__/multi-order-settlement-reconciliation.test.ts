@@ -311,7 +311,9 @@ describe('G. REPEATED PREPARATION — the identity is stable', () => {
   })
 
   it('it is read off the LEAD order', () => {
-    expect(CODE).toMatch(/const leadRow = orderRow\.find\(/)
+    // Sprint 2026-09-28: the lead is looked up among the CHARGED rows -- an order owing nothing is
+    // not part of the settlement, and prepare-payment refuses a lead that owes nothing.
+    expect(CODE).toMatch(/const leadRow = chargedRows\.find\(/)
     expect(CODE).toMatch(/leadRow\?\.pending_settlement_id/)
   })
 

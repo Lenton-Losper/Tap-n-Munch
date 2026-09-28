@@ -93,6 +93,15 @@ class FakeQuery {
     // silently matching everything and turning a real conflict into a green test.
     throw new Error('FakeQuery.or() is not modelled — this test covers the card path only')
   }
+  // The financial projection pages its reads: .order() is a no-op here, .range() really slices.
+  order(_col: string) {
+    return this
+  }
+  private bounds: [number, number] | null = null
+  range(from: number, to: number) {
+    this.bounds = [from, to]
+    return this
+  }
   update(patch: Row) {
     this.patch = patch
     return this
@@ -129,7 +138,8 @@ class FakeQuery {
     if (this.patch) {
       for (const row of matched) Object.assign(row, this.patch)
     }
-    return Promise.resolve(resolve({ data: matched.map((r) => project(r, this.columns)), error: null }))
+    const page = this.bounds ? matched.slice(this.bounds[0], this.bounds[1] + 1) : matched
+    return Promise.resolve(resolve({ data: page.map((r) => project(r, this.columns)), error: null }))
   }
 }
 

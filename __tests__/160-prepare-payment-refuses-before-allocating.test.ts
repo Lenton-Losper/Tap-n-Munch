@@ -80,6 +80,10 @@ jest.mock('@/lib/supabase/server', () => ({
         // The route reads the settlement's orders with .in('id', ids). Absent here it threw, the
         // route's catch turned it into a 500, and the failure read as a route defect.
         in: () => b,
+        // The financial projection reads order_lines with .order().range() (paginated). Its rows
+        // come back from the thenable below as [] -- an order with no lines owes its total.
+        order: () => b,
+        range: () => b,
         update: (patch: Row) => {
           if (table === 'orders') orderUpdates.push(patch)
           return b
@@ -133,7 +137,12 @@ jest.mock('@/lib/supabase/server', () => ({
             // The literal, not ORDER_ID: a jest.mock factory is hoisted above the file's consts and
             // may only close over `mock`-prefixed names. Referencing it threw, the route's catch
             // turned that into a 500, and the failure looked like a route defect.
-            data: table === 'orders' ? [{ id: '133ffc3a-106b-4076-bf23-2dd55cba8d9c', total: 100 }] : [],
+            // payment_status is part of the financial projection's input: only an order that still
+            // owes money has anything outstanding to charge.
+            data:
+              table === 'orders'
+                ? [{ id: '133ffc3a-106b-4076-bf23-2dd55cba8d9c', total: 100, payment_status: 'pending' }]
+                : [],
             error: null,
           }).then(r),
       })

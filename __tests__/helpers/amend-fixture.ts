@@ -31,9 +31,11 @@ export class AmendFixture {
 
   constructor(readonly tabId = 'tab-1') {}
 
-  private nextId(prefix: string): string {
+  /** UUID-shaped, because the routes validate ids; the prefix picks a recognisable first group. */
+  private nextId(prefix: 'order' | 'line'): string {
     this.seq += 1
-    return `${prefix}-${this.seq}`
+    const group = prefix === 'order' ? '0000aaaa' : '0000bbbb'
+    return `${group}-0000-4000-8000-${String(this.seq).padStart(12, '0')}`
   }
 
   /** Place an order: one item per entry, one line per item, every line outstanding. */

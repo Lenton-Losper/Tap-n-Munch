@@ -124,6 +124,9 @@ jest.mock('@/lib/supabase/server', () => ({
         in: () => b,
         is: () => b,
         or: () => b,
+        // The financial projection pages its reads with .order().range(); both chain.
+        order: () => b,
+        range: () => b,
         single: async () => ({
           data: { id: TAB_ID, table_id: 'table-uuid-1', total: TOTAL, status: 'open', settled_at: null },
           error: null,

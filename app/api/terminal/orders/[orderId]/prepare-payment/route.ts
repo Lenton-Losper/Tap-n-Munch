@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { chargeableCentsFor, settledCentsByOrder } from '@/lib/payments/settled-cents'
+import {
+  FINANCIAL_ORDER_COLUMNS,
+  projectOrderRows,
+  type FinancialOrderInput,
+  type OrderFinancials,
+} from '@/lib/orders/order-financials'
 import { NextResponse } from 'next/server'
 import { parseTipCents } from '@/lib/payments/tips'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
@@ -265,8 +270,9 @@ export async function POST(
       const { data: orderRows, error: orderReadError } = await supabase
         .from('orders')
         // tab_id is selected so the payment intent can name the tab it belongs to. A tab-less
-        // order (a POS walk-up) yields null, which the column permits.
-        .select('id, total, tab_id, pending_settlement_id')
+        // order (a POS walk-up) yields null, which the column permits. The financial columns are
+        // what the projection below needs to know what is still owed.
+        .select(`${FINANCIAL_ORDER_COLUMNS}, pending_settlement_id`)
         .in('id', settlementOrderIds)
         .eq('restaurant_id', terminal.restaurantId)
 
@@ -289,29 +295,33 @@ export async function POST(
        * WHAT IS STILL OWED, NOT WHAT THE ORDER ONCE COST
        * ================================================================================================
        *
-       * `orders.total` is what the order came to. It is NOT what is still chargeable the moment any
-       * of its items have been paid for individually.
+       * `orders.total` is what the order came to. It is NOT what is still chargeable once any of its
+       * items have been paid for individually, and -- since amend_order_lines never rewrites an
+       * order -- not once any of its lines have been voided either.
        *
        * Order #45 at Digi Cofee: N$37.00 total, N$17.00 already settled through two allocations,
-       * N$20.00 genuinely owed. Summing `total` here asks the reader for N$37.00 and takes the same
-       * N$17.00 a second time.
+       * N$20.00 genuinely owed. Riviera #160: N$1,945 stored, N$1,480 of it voided, and the three
+       * reductions' surviving quantities living on three REPLACEMENT orders on the same tab. Summing
+       * `total` asked the reader for the voided food and then for the replacements on top of it.
        *
-       * The tab header has told the waiter N$20.00 since outstandingCentsFor was written. This is
-       * that arithmetic on the charge path, so the figure a customer is quoted and the figure their
-       * card is asked for cannot disagree.
+       * So each order's charge is its OUTSTANDING figure from the one financial projection
+       * (lib/orders/order-financials.ts): live (original minus voided lines) less what the item
+       * ledger has already collected. That figure is written to pending_charge_cents and to the
+       * intent below, and every downstream gate -- settle_order_payment, verify-payment, the
+       * webhook, reconcile, the device callback -- compares against the recorded figure, so they
+       * all follow without changing.
        *
-       * An order with no allocations -- the ordinary case, and every order that predates splitting
-       * -- has nothing to subtract and is charged exactly as before.
+       * An unamended order with no allocations -- the ordinary case -- has outstanding == total and
+       * is charged exactly as before.
+       *
+       * FAILS CLOSED. Not being able to see what has been voided or collected is not permission to
+       * charge for it. A waiter retrying is recoverable; charging a customer twice is not.
        */
-      let settledByOrder: Map<string, number>
+      let financials: Map<string, OrderFinancials>
       try {
-        settledByOrder = await settledCentsByOrder(supabase, settlementOrderIds)
+        financials = await projectOrderRows(supabase, orderRow as unknown as FinancialOrderInput[])
       } catch (e) {
-        /**
-         * FAILS CLOSED. Not being able to see what has already been collected is not permission to
-         * collect it again. A waiter retrying is recoverable; charging a customer twice is not.
-         */
-        console.error('[terminal/prepare-payment] could not read settled cents', {
+        console.error('[terminal/prepare-payment] could not read what is still owed', {
           error: e instanceof Error ? e.message : String(e),
         })
         return NextResponse.json(
@@ -320,9 +330,25 @@ export async function POST(
         )
       }
 
-      const centsFor = (row: { id?: unknown; total?: unknown }) =>
-        chargeableCentsFor(row.total, settledByOrder.get(String(row.id)))
-      const orderCents = orderRow.reduce((sum, r) => sum + centsFor(r), 0)
+      const centsFor = (row: { id?: unknown }) =>
+        financials.get(String(row.id))?.outstandingCents ?? 0
+
+      /**
+       * AN ORDER THAT OWES NOTHING IS NOT PART OF THE CHARGE.
+       *
+       * A fully voided order, one the item ledger has already collected, or one that is already paid
+       * contributes nothing -- and cannot carry an expectation of zero, because
+       * orders_pending_charge_sane requires pending_charge_cents to be NULL or positive. It is left
+       * out of the settlement set (and so out of the intent, pending_settlement_id and every gate),
+       * which keeps "the set the gateway amount was computed over is the set that gets paid" true.
+       * The device's own settle call may still name it; the settle route records it at zero.
+       */
+      const chargedRows = orderRow.filter((r) => centsFor(r) > 0)
+      const excludedOrderIds = orderRow
+        .filter((r) => centsFor(r) <= 0)
+        .map((r) => String(r.id))
+      const chargedOrderIds = chargedRows.map((r) => String(r.id))
+      const orderCents = chargedRows.reduce((sum, r) => sum + centsFor(r), 0)
       const chargeCents = orderCents + tipCents
 
       /**
@@ -337,6 +363,27 @@ export async function POST(
           {
             error: 'Those items have already been paid for.',
             code: 'NOTHING_LEFT_TO_CHARGE',
+          },
+          { status: 409 },
+        )
+      }
+
+      /**
+       * THE ORDER IN THE URL MUST OWE SOMETHING.
+       *
+       * It holds the merchant order number the device charges under and the gratuity, and it is the
+       * order verify-payment is asked about afterwards; a lead outside the settlement set would leave
+       * those lookups resolving a set of one order that owes nothing. Refused rather than silently
+       * re-led, before any expectation is written, so nothing is charged.
+       */
+      if (!chargedOrderIds.includes(orderId)) {
+        return NextResponse.json(
+          {
+            error:
+              'This order has nothing left to pay (its items were cancelled or already paid). ' +
+              'Take payment for the other orders without it.',
+            code: 'ORDER_NOTHING_OWED',
+            order_ids_owing_nothing: excludedOrderIds,
           },
           { status: 409 },
         )
@@ -362,7 +409,7 @@ export async function POST(
        * So: retrying a payment on the same order keeps one settlement id, exactly as it keeps one
        * merchant order number.
        */
-      const leadRow = orderRow.find((r) => String(r.id) === orderId)
+      const leadRow = chargedRows.find((r) => String(r.id) === orderId)
       const existingSettlementId =
         String(leadRow?.pending_settlement_id ?? '').trim() || null
       const settlementId = existingSettlementId ?? randomUUID()
@@ -388,7 +435,7 @@ export async function POST(
           })
           .eq('pending_settlement_id', existingSettlementId)
           .eq('restaurant_id', terminal.restaurantId)
-          .not('id', 'in', `(${settlementOrderIds.join(',')})`)
+          .not('id', 'in', `(${chargedOrderIds.join(',')})`)
         if (staleError) {
           // Loud, then continue: a stale row left behind widens the expectation, and the gates fail
           // safe on a mismatch rather than marking anything paid.
@@ -410,7 +457,7 @@ export async function POST(
        * The sum is then exactly what the reader was asked for.
        */
       let expectationError: { message: string } | null = null
-      for (const row of orderRow) {
+      for (const row of chargedRows) {
         const isTipCarrier = String(row.id) === orderId
         const { error } = await supabase
           .from('orders')
@@ -477,7 +524,8 @@ export async function POST(
         // What the READER is asked for: the items still owed, plus any gratuity. The same figure
         // returned to the device below, so the amount sent and the amount verified are one number.
         amountCents: chargeCents,
-        orderIds: settlementOrderIds,
+        // THE CHARGED SET: exactly the orders whose outstanding figures sum to amountCents.
+        orderIds: chargedOrderIds,
         tipCents,
         tipStaffUserId: tipCents > 0 ? tipStaffUserId : null,
       })
@@ -502,6 +550,10 @@ export async function POST(
          */
         chargeCents,
         tipCents,
+        // Additive. The orders this charge covers, and any named order that owed nothing and was
+        // left out of it (fully voided, already collected, or already paid).
+        orderIds: chargedOrderIds,
+        excludedOrderIds,
         outcome: null,
         staffMessage: null,
       })
