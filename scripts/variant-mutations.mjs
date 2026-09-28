@@ -63,10 +63,11 @@ const MUTATIONS = {
   M5: {
     what: 'round send omits X-FlashTap-Variant-Protocol',
     file: 'src/lib/api.ts',
-    from: `        'x-idempotency-key': params.idempotencyKey,
-        ...VARIANT_PROTOCOL_HEADERS,`,
-    to: `        'x-idempotency-key': params.idempotencyKey,
-        ...(false ? VARIANT_PROTOCOL_HEADERS : {}),`,
+    // Indented two deeper since the merge with term-cancel: sendRound's fetch now sits in a try.
+    from: `          'x-idempotency-key': params.idempotencyKey,
+          ...VARIANT_PROTOCOL_HEADERS,`,
+    to: `          'x-idempotency-key': params.idempotencyKey,
+          ...(false ? VARIANT_PROTOCOL_HEADERS : {}),`,
   },
 };
 
