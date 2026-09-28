@@ -19,6 +19,12 @@
 --   'line_settled' -- the line carries a non-voided order_line_allocations row that is settled
 --                     (settled_at set, or a ledger row in order_line_allocation_settlements).
 --
+-- AND A VOIDED LINE'S UNSETTLED ALLOCATIONS ARE VOIDED WITH IT (money-flow audit, same sprint).
+-- The original voided order_lines and left their order_line_allocations live. prepare-split-payment
+-- checks only allocation.voided_at, so a guest could be charged for a voided line and settlement
+-- then refused it with `line_voided` -- SETTLEMENT_FAILED_AFTER_CHARGE. The allocations are now
+-- voided (void_reason 'line_voided_by_amendment') in the same transaction as the line.
+--
 -- A paid line is corrected by a refund, not by a void. That flow does not exist yet and this does
 -- not invent one; it stops the void from silently creating the problem.
 --
@@ -49,10 +55,11 @@
 -- Same signature (so CREATE OR REPLACE replaces rather than overloads), same SECURITY DEFINER and
 -- search_path, same per-line accept/refuse semantics (a refused line never blocks the others; a
 -- RAISE rolls back the whole call), same owner and the same REVOKE/GRANT. The body is the
--- original's with the locks, the two checks, and one variable added. Its header comments are not
+-- original's with the locks, the two checks, the allocation void, and one variable added. Its header comments are not
 -- repeated here; read them there.
 --
--- SAFE TO APPLY: redefines one function in place, no table or data change. Rolling back is
+-- SAFE TO APPLY: redefines one function in place; no schema change and no data written by the
+-- migration itself. Rolling back is
 -- re-running 20260829150000's CREATE OR REPLACE.
 
 CREATE OR REPLACE FUNCTION "public"."amend_order_lines"(
@@ -212,6 +219,19 @@ BEGIN
             VALUES
                 (p_restaurant_id, v_voided.id, 'bar', 'outstanding', 'voided', p_actor_kind, p_actor_user_id);
         END IF;
+
+        -- Sprint 2026-09-28: the voided line's UNSETTLED allocations are voided with it, in this
+        -- transaction. Left live, prepare-split-payment (which checks only allocation.voided_at)
+        -- would charge a customer for the voided line and settlement would then refuse it
+        -- (line_voided) -- a charge with nothing recorded. SETTLED allocations cannot be here:
+        -- the line_settled refusal above returned before the void. Not re-targeted onto a
+        -- replacement line (20260829170000's ruling); the replacement is allocated afresh.
+        UPDATE public.order_line_allocations
+        SET voided_at = now(),
+            void_reason = 'line_voided_by_amendment'
+        WHERE order_line_id = v_voided.id
+          AND voided_at IS NULL
+          AND settled_at IS NULL;
 
         IF v_new_quantity = 0 THEN
             v_applied := v_applied || jsonb_build_object(

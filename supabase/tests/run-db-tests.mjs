@@ -43,7 +43,7 @@ const MIGRATIONS = [
   // CREATE OR REPLACE path production will take -- a second definition would be an overload.
   'supabase/migrations/20260829150000_amend_order_lines_function.sql',
   'supabase/migrations/20260906120100_order_line_events_void_reason.sql',
-  'supabase/migrations/20260928120000_amend_order_lines_refuse_paid.sql',
+  'supabase/migrations/20260928150000_amend_order_lines_refuse_paid.sql',
 ]
 
 /**
@@ -272,7 +272,7 @@ const MUTATIONS = {
     },
   },
   /**
-   * amend_order_lines (20260928120000). Each anchor is text only the NEW migration contains, except
+   * amend_order_lines (20260928150000). Each anchor is text only the NEW migration contains, except
    * MA3 and MA6, which are in the original too -- replacing both copies is intended, since the new
    * definition replaces the original anyway.
    */
@@ -358,6 +358,15 @@ const MUTATIONS = {
         TO anon, PUBLIC;
     `,
   },
+  MA7: {
+    what: "a voided line's unsettled allocations are left live (chargeable for food that was voided)",
+    expect: ['amend_alloc/voided_with_line', 'amend_alloc/reduction_voids_allocation'],
+    apply: (sql) =>
+      sql.replace(
+        '          AND settled_at IS NULL;\n\n        IF v_new_quantity = 0 THEN',
+        '          AND settled_at IS NULL AND false;\n\n        IF v_new_quantity = 0 THEN',
+      ),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -402,8 +411,15 @@ function psqlValue(sql) {
   ).trim()
 }
 
+/**
+ * LF-NORMALISED. A Windows checkout (core.autocrlf) has every migration in CRLF, and a mutation
+ * anchor spanning a line break is written with `\n` -- so on that checkout M2 and M4 reported
+ * "anchor no longer matches" on correct code, and a new migration's multi-line anchors would
+ * start failing the first time git rewrote the file. Normalising here makes the anchors mean the
+ * same thing on every checkout; psql does not care which ending it is fed.
+ */
 function readRepo(rel) {
-  return readFileSync(join(REPO, rel), 'utf8')
+  return readFileSync(join(REPO, rel), 'utf8').replace(/\r\n/g, '\n')
 }
 
 /**

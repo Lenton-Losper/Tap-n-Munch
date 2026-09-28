@@ -1,4 +1,4 @@
--- DATABASE / RPC TESTS for amend_order_lines() -- 20260829150000, redefined by 20260928120000.
+-- DATABASE / RPC TESTS for amend_order_lines() -- 20260829150000, redefined by 20260928150000.
 --
 -- Run by supabase/tests/run-db-tests.mjs AFTER settlement-rpc.test.sql, in the same throwaway
 -- database: it reuses that file's `_test_results` table, `_expect()` helper and `_seed()`, and
@@ -167,7 +167,18 @@ DECLARE
   new_line uuid;
 BEGIN
   PERFORM public._seed_amend();
+  -- An UNSETTLED split of the lagers, which the reduction must void along with the line.
+  INSERT INTO public.order_line_allocations
+    (id, restaurant_id, order_id, order_line_id, tab_id, allocated_to, quantity_allocated,
+     amount_cents, created_by_actor_kind)
+  VALUES
+    ('dddddddd-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111',
+     'bbbbbbbb-0000-4000-8000-000000000160', 'cccccccc-0000-4000-8000-000000000002',
+     '22222222-2222-4222-8222-222222222222', 'guest-3', 3, 9000, 'terminal');
   r := public._amend('[{"line_id":"cccccccc-0000-4000-8000-000000000002","new_quantity":1}]', 901);
+  PERFORM public._expect('amend_alloc/reduction_voids_allocation',
+    (SELECT voided_at IS NOT NULL AND void_reason = 'line_voided_by_amendment'
+       FROM public.order_line_allocations WHERE id = 'dddddddd-0000-4000-8000-000000000002'), NULL);
 
   PERFORM public._expect('amend_reduce/applied_replaced',
     jsonb_array_length(r->'applied') = 1
@@ -333,6 +344,16 @@ BEGIN
     r->'applied'->0->>'line_id' = 'cccccccc-0000-4000-8000-000000000006'
       AND public._line_state('cccccccc-0000-4000-8000-000000000006') = 'voided/-',
     r::text);
+  -- The money-flow audit's defect: a voided line's unsettled allocation stayed chargeable.
+  PERFORM public._expect('amend_alloc/voided_with_line',
+    (SELECT voided_at IS NOT NULL AND void_reason = 'line_voided_by_amendment' AND settled_at IS NULL
+       FROM public.order_line_allocations WHERE id = 'dddddddd-0000-4000-8000-000000000006'),
+    (SELECT row_to_json(a)::text FROM public.order_line_allocations a
+      WHERE id = 'dddddddd-0000-4000-8000-000000000006'));
+  -- ...and ONLY that line's: the settled allocation on the refused wine line is untouched.
+  PERFORM public._expect('amend_alloc/other_lines_untouched',
+    (SELECT voided_at IS NULL FROM public.order_line_allocations
+      WHERE id = 'dddddddd-0000-4000-8000-000000000005'), NULL);
 
   UPDATE public.order_line_allocations SET voided_at = now(), settled_at = now()
    WHERE id = 'dddddddd-0000-4000-8000-000000000005';

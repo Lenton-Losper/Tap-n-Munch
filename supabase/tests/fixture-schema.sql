@@ -230,7 +230,7 @@ END
 $$;
 
 -- ==================================================================================================
--- amend_order_lines (20260829150000, redefined by 20260928120000). Added for amend-rpc.test.sql.
+-- amend_order_lines (20260829150000, redefined by 20260928150000). Added for amend-rpc.test.sql.
 -- ==================================================================================================
 --
 -- Appended as ALTERs rather than folded into the tables above so the settlement fixture stays
