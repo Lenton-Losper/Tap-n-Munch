@@ -414,5 +414,152 @@ BEGIN
 END;
 $$;
 
+-- ==================================================================================================
+-- ML8-ML11. A MANUAL PAYMENT IS A FRESH CHARGE AT THE LIVE AMOUNT (20260929100100).
+-- ==================================================================================================
+
+-- A card attempt on order 1: prepared (the stamp trigger sets pending_charge_at = now()) and an
+-- intent launched, optionally backdated past the in-flight window.
+CREATE OR REPLACE FUNCTION public._ml_card_attempt(p_age interval, p_intent_status text DEFAULT 'launched')
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE public.orders SET pending_charge_cents = 22000
+   WHERE id = 'bbbbbbbb-0000-4000-8000-000000000001';
+  UPDATE public.orders SET pending_charge_at = now() - p_age
+   WHERE id = 'bbbbbbbb-0000-4000-8000-000000000001';
+  IF p_intent_status IS NOT NULL THEN
+    INSERT INTO public.terminal_payment_intents
+      (id, restaurant_id, merchant_order_no, amount_cents, scope, order_ids, status, created_at)
+    VALUES ('77777777-7777-4777-8777-777777777701', '11111111-1111-4111-8111-111111111111',
+      'FT-ML-ATTEMPT', 22000, 'orders', ARRAY['bbbbbbbb-0000-4000-8000-000000000001']::uuid[],
+      p_intent_status, now() - p_age);
+  END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public._t_ml_in_flight_refused()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  r jsonb;
+  n integer;
+  o record;
+BEGIN
+  PERFORM public._ml_seed();
+  -- No intent: only the prepared figure's age can refuse (ML11 covers a fresh intent alone).
+  PERFORM public._ml_card_attempt(interval '30 seconds', NULL);
+  r := public._ml_mark_paid('bbbbbbbb-0000-4000-8000-000000000001', 'pending', 22000, 'cash');
+  PERFORM public._expect('ml_inflight/refused', r->>'reason' = 'payment_in_flight', r::text);
+  SELECT count(*) INTO n FROM public.non_gateway_payment_events;
+  PERFORM public._expect('ml_inflight/no_ledger_row', n = 0, format('%s rows', n));
+  SELECT * INTO o FROM public.orders WHERE id = 'bbbbbbbb-0000-4000-8000-000000000001';
+  PERFORM public._expect('ml_inflight/attempt_untouched',
+    o.payment_status = 'pending' AND o.pending_charge_cents = 22000 AND o.pending_charge_basis IS NOT NULL,
+    format('%s %s %s', o.payment_status, o.pending_charge_cents, o.pending_charge_basis));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public._t_ml_stale_released()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  r jsonb;
+  n integer;
+  o record;
+  aud record;
+BEGIN
+  PERFORM public._ml_seed();
+  PERFORM public._ml_card_attempt(interval '10 minutes');
+  -- The order moved after that dead attempt was prepared: its stamp is now stale.
+  UPDATE public.orders SET items = '[{"name":"Burger","quantity":1,"total":220}]'::jsonb
+   WHERE id = 'bbbbbbbb-0000-4000-8000-000000000001';
+  -- A standalone card machine: the one non-gateway method the paid guard does not exempt by method.
+  r := public._ml_mark_paid('bbbbbbbb-0000-4000-8000-000000000001', 'pending', 22000, 'card');
+  PERFORM public._expect('ml_stale/paid', COALESCE((r->>'ok')::boolean, false), r::text);
+  SELECT * INTO o FROM public.orders WHERE id = 'bbbbbbbb-0000-4000-8000-000000000001';
+  PERFORM public._expect('ml_stale/attempt_released',
+    o.pending_charge_cents IS NULL AND o.pending_charge_basis IS NULL AND o.pending_charge_at IS NULL
+      AND o.payment_status = 'paid' AND o.settled_charge_cents = 22000,
+    format('%s %s %s %s', o.pending_charge_cents, o.pending_charge_basis, o.payment_status, o.settled_charge_cents));
+  PERFORM public._expect('ml_stale/intent_expired',
+    (SELECT status FROM public.terminal_payment_intents
+      WHERE id = '77777777-7777-4777-8777-777777777701') = 'failed', 'intent not expired');
+  SELECT * INTO aud FROM public.audit_logs WHERE action = 'payment.stale_card_attempt_released';
+  PERFORM public._expect('ml_stale/release_audited',
+    aud.entity_id = 'bbbbbbbb-0000-4000-8000-000000000001'
+      AND (aud.metadata->>'released_charge_cents')::integer = 22000,
+    COALESCE(aud.metadata::text, 'no audit row'));
+  SELECT count(*) INTO n FROM public.non_gateway_payment_events;
+  PERFORM public._expect('ml_stale/one_ledger_row', n = 1, format('%s rows', n));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public._t_ml_uncertain_intent_refused()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  r jsonb;
+BEGIN
+  PERFORM public._ml_seed();
+  -- Old, so only the intent's UNCERTAIN status can refuse.
+  PERFORM public._ml_card_attempt(interval '1 hour', 'uncertain');
+  r := public._ml_mark_paid('bbbbbbbb-0000-4000-8000-000000000001', 'pending', 22000, 'cash');
+  PERFORM public._expect('ml_uncertain/refused', r->>'reason' = 'payment_in_flight', r::text);
+  PERFORM public._expect('ml_uncertain/intent_untouched',
+    (SELECT status FROM public.terminal_payment_intents
+      WHERE id = '77777777-7777-4777-8777-777777777701') = 'uncertain', 'an uncertain intent moved');
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public._t_ml_live_intent_refused()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  r jsonb;
+BEGIN
+  PERFORM public._ml_seed();
+  -- A split-style attempt: a fresh intent, no prepared figure on the order.
+  INSERT INTO public.terminal_payment_intents
+    (restaurant_id, merchant_order_no, amount_cents, scope, order_ids, status)
+  VALUES ('11111111-1111-4111-8111-111111111111', 'FT-ML-LIVE', 22000, 'orders',
+    ARRAY['bbbbbbbb-0000-4000-8000-000000000001']::uuid[], 'launched');
+  r := public._ml_mark_paid('bbbbbbbb-0000-4000-8000-000000000001', 'pending', 22000, 'cash');
+  PERFORM public._expect('ml_live_intent/refused', r->>'reason' = 'payment_in_flight', r::text);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public._t_ml_release_security()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_sig text := 'public.release_stale_card_attempts(uuid, uuid[], text, uuid)';
+BEGIN
+  PERFORM public._expect('ml_release_security/exists', to_regprocedure(v_sig) IS NOT NULL, v_sig);
+  PERFORM public._expect('ml_release_security/anon_cannot_execute',
+    NOT has_function_privilege('anon', v_sig, 'EXECUTE'), 'anon can execute');
+  PERFORM public._expect('ml_release_security/service_role_can_execute',
+    has_function_privilege('service_role', v_sig, 'EXECUTE'), 'service_role cannot execute');
+END;
+$$;
+
+DO $$
+DECLARE
+  t text;
+  tests text[] := ARRAY[
+    '_t_ml_in_flight_refused',
+    '_t_ml_stale_released',
+    '_t_ml_uncertain_intent_refused',
+    '_t_ml_live_intent_refused',
+    '_t_ml_release_security'
+  ];
+BEGIN
+  FOREACH t IN ARRAY tests LOOP
+    BEGIN
+      EXECUTE format('SELECT public.%I()', t);
+    EXCEPTION WHEN OTHERS THEN
+      INSERT INTO public._test_results (name, passed, detail)
+      VALUES (t || '/threw', false, SQLERRM)
+      ON CONFLICT (name) DO UPDATE SET passed = false, detail = EXCLUDED.detail;
+      RAISE WARNING 'THREW % -- %', t, SQLERRM;
+    END;
+  END LOOP;
+END;
+$$;
+
 -- Leave nothing behind that would block the next _seed() (the race probes reuse this database).
 SELECT public._ml_cleanup();

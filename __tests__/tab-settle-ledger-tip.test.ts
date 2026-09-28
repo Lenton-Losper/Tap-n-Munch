@@ -32,6 +32,27 @@ const TIP_STAFF = '66666666-6666-4666-8666-666666666666'
 let mockDb: InMemoryDb
 /** When set, the non-gateway ledger insert fails. */
 let mockLedgerFails = false
+/** When set, the database refuses the paid claim with FTCHG (20260929120000). */
+let mockFtchg = false
+const IN_FLIGHT_WINDOW_MS = 5 * 60 * 1000
+
+/**
+ * A MODEL of release_stale_card_attempts (20260929100100) -- the function itself, with its lock,
+ * its intents and its audit row, is proven against Postgres by manual-ledger.test.sql and
+ * manual-ledger-race.test.sh. This proves the route's side: it asks, obeys, and fails closed.
+ */
+function mockReleaseStaleCardAttempts(a: Record<string, unknown>) {
+  const ids = (a.p_order_ids as string[]).map(String)
+  const rows = mockDb.rows('orders').filter((o) => ids.includes(String(o.id)) && o.pending_charge_cents != null)
+  const inFlight = rows.filter(
+    (o) => o.pending_charge_at == null || Date.now() - Date.parse(String(o.pending_charge_at)) < IN_FLIGHT_WINDOW_MS,
+  )
+  if (inFlight.length > 0) {
+    return { data: { ok: false, reason: 'payment_in_flight', in_flight_order_ids: inFlight.map((o) => o.id) }, error: null }
+  }
+  for (const o of rows) Object.assign(o, { pending_charge_cents: null, pending_tip_cents: 0, pending_charge_at: null })
+  return { data: { ok: true, released_order_ids: rows.map((o) => o.id) }, error: null }
+}
 
 jest.mock('@/lib/terminal-auth', () => ({
   requireTerminalAuth: async () => ({
@@ -53,6 +74,11 @@ jest.mock('@/lib/supabase/server', () => ({
     const client = mockDb.client()
     return {
       ...client,
+      async rpc(name: string, args: Record<string, unknown>) {
+        mockDb.rpcCalls.push({ name, args })
+        if (name === 'release_stale_card_attempts') return mockReleaseStaleCardAttempts(args)
+        return client.rpc(name, args)
+      },
       from(table: string) {
         const b = client.from(table) as unknown as Record<string, unknown> & {
           in: (c: string, v: unknown[]) => unknown
@@ -62,6 +88,18 @@ jest.mock('@/lib/supabase/server', () => ({
           const m = /^payment_status\.in\.\(([^)]*)\),/.exec(expr)
           if (!m) throw new Error(`unmodelled .or(${expr})`)
           return b.in('payment_status', m[1].split(','))
+        }
+        if (table === 'orders' && mockFtchg) {
+          const update = (b.update as (p: Record<string, unknown>) => unknown).bind(b)
+          b.update = (payload: Record<string, unknown>) => {
+            if (payload.payment_status !== 'paid') return update(payload)
+            // The trigger aborts the whole claim statement: nothing is written.
+            const refused: Record<string, unknown> = {}
+            for (const m of ['in', 'eq', 'or', 'select']) refused[m] = () => refused
+            refused.then = (ok: (v: unknown) => unknown) =>
+              Promise.resolve({ data: null, error: { code: 'FTCHG', message: 'order changed after its card charge was prepared' } }).then(ok)
+            return refused
+          }
         }
         if (table === 'non_gateway_payment_events' && mockLedgerFails) {
           b.insert = () => ({
@@ -141,6 +179,7 @@ const card = (orderIds: string[], amount: number, extra: Record<string, unknown>
 
 beforeEach(() => {
   mockLedgerFails = false
+  mockFtchg = false
   jest.spyOn(console, 'error').mockImplementation(() => {})
   jest.spyOn(console, 'warn').mockImplementation(() => {})
 })
@@ -299,5 +338,61 @@ describe('task 3: the card sale row records what the card was charged, tip inclu
     })
     expect(records).not.toBeNull()
     expect(records!.reduce((s, r) => s + r.amountCents, 0)).toBe(72000)
+  })
+})
+
+/**
+ * TEAM-LEAD RULING (Sprint 2026-09-29): a non-gateway settlement is a FRESH charge at the live
+ * amount -- it neither races a card attempt that may be running nor settles over a dead one -- and a
+ * genuine card settlement the database refuses as changed (FTCHG) is held, never a 500.
+ */
+describe('card attempts and the FTCHG refusal', () => {
+  const prepare = (id: string, ageMs: number) =>
+    Object.assign(order(id), {
+      pending_charge_cents: 22000,
+      pending_charge_at: new Date(Date.now() - ageMs).toISOString(),
+    })
+
+  it('cash over a card charge prepared INSIDE the window: 409 PAYMENT_IN_FLIGHT, nothing written', async () => {
+    const { a } = twoOrders()
+    prepare(a, 30_000)
+    const { status, body } = await settle({ order_ids: [a], amount: 220, method: 'cash' })
+    expect(status).toBe(409)
+    expect(body.code).toBe('PAYMENT_IN_FLIGHT')
+    expect(order(a).payment_status).toBe('pending')
+    expect(order(a).pending_charge_cents).toBe(22000)
+    expect(ledger()).toHaveLength(0)
+  })
+
+  it('cash over a DEAD attempt (older than the window): released first, then settled once', async () => {
+    const { a } = twoOrders()
+    prepare(a, 10 * 60_000)
+    const { status } = await settle({ order_ids: [a], amount: 220, method: 'cash' })
+    expect(status).toBe(200)
+    expect(mockDb.rpcCalls.filter((c) => c.name === 'release_stale_card_attempts')).toHaveLength(1)
+    expect(order(a).pending_charge_cents).toBeNull()
+    expect(order(a).payment_status).toBe('paid')
+    expect(ledger()).toHaveLength(1)
+  })
+
+  it('no card history: the release is not even asked (settlement exactly as before)', async () => {
+    const { a } = twoOrders()
+    await settle({ order_ids: [a], amount: 220, method: 'cash' })
+    expect(mockDb.rpcCalls.filter((c) => c.name === 'release_stale_card_attempts')).toHaveLength(0)
+  })
+
+  it('a CARD settlement refused FTCHG: every charged order HELD, 409 ORDER_CHANGED_DURING_PAYMENT, card_charged', async () => {
+    const { a, b } = twoOrders()
+    mockFtchg = true
+    const { status, body } = await card([a, b], 720)
+    expect(status).toBe(409)
+    expect(body.code).toBe('ORDER_CHANGED_DURING_PAYMENT')
+    expect(body.card_charged).toBe(true)
+    expect(order(a).payment_status).toBe('amount_mismatch_hold')
+    expect(order(b).payment_status).toBe('amount_mismatch_hold')
+    expect(sales()).toHaveLength(0)
+    const held = mockDb.rows('audit_logs').filter((r) => r.action === 'payment.held_order_changed_since_charge_prepared')
+    expect(held).toHaveLength(1)
+    expect(held[0].metadata).toMatchObject({ card_charged: true, held_order_ids: [a, b] })
   })
 })

@@ -169,6 +169,22 @@ const MUTATIONS = {
     what: 'the financial projection ignores refunds again (refund-then-cancel reads as overpaid)',
     edits: [[FINANCIALS, '  const refundedCents = Math.min(paidCents, Math.round(paidCents * fraction))', '  const refundedCents = Math.min(0, fraction)']],
   },
+  FM18: {
+    what: 'a cash / PayToday tab settle no longer asks about card attempts before claiming',
+    edits: [[TAB_SETTLE, '    if (!usesGateway && (tabOrders ?? []).some(', '    if ((false as boolean) && (tabOrders ?? []).some(']],
+  },
+  FM19: {
+    what: "the tab settle ignores the release's in-flight refusal",
+    edits: [[TAB_SETTLE, '      if (released.ok !== true) {', '      if (false as boolean) {']],
+  },
+  FM20: {
+    what: 'a card tab settle refused FTCHG is a 500 again (orders not held)',
+    edits: [[TAB_SETTLE, "    if (ordersError && String((ordersError as { code?: unknown }).code ?? '') === 'FTCHG') {", '    if (false as boolean) {']],
+  },
+  FM21: {
+    what: 'Mark-as-Paid no longer reports a card attempt in flight as PAYMENT_IN_FLIGHT',
+    edits: [[MANUAL, "      case 'payment_in_flight':", "      case 'payment_in_flight_disabled':"]],
+  },
 }
 
 function runSuites() {

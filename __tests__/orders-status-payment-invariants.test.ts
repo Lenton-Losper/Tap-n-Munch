@@ -63,6 +63,10 @@ function mockRecordManualPayment(a: Record<string, unknown>) {
   if (!['unpaid', 'pending', 'cash_pending', 'failed'].includes(String(o.payment_status))) {
     return { data: { ok: false, reason: 'not_settleable' }, error: null }
   }
+  // 20260929100100: a card charge prepared inside the in-flight window refuses.
+  if (o.pending_charge_cents != null && Date.now() - Date.parse(String(o.pending_charge_at)) < 5 * 60 * 1000) {
+    return { data: { ok: false, reason: 'payment_in_flight' }, error: null }
+  }
   // The function RAISES on these; a raise is an error with nothing written.
   if (!a.p_staff_user_id || !(Number(a.p_amount_cents) > 0) || mockRpcFails) {
     return { data: null, error: { message: 'record_manual_order_payment raised (test)' } }
@@ -382,5 +386,18 @@ describe('Mark-as-Paid writes exactly one non-gateway ledger row', () => {
     expect(rpcCalls()).toHaveLength(0)
     expect(ledger()).toHaveLength(0)
     expect(order(id).payment_status).toBe('pending')
+  })
+})
+
+describe('Mark-as-Paid never races a card attempt (team-lead ruling, 20260929100100)', () => {
+  it('a card charge prepared inside the window: 409 PAYMENT_IN_FLIGHT, nothing recorded', async () => {
+    const id = oneOrder()
+    Object.assign(order(id), { pending_charge_cents: 22000, pending_charge_at: new Date().toISOString() })
+    const { status, body } = await patch(id, { payment_status: 'paid', payment_method: 'card' })
+    expect(status).toBe(409)
+    expect(body.code).toBe('PAYMENT_IN_FLIGHT')
+    expect(order(id).payment_status).toBe('pending')
+    expect(ledger()).toHaveLength(0)
+    expect(mockReceipts).toHaveLength(0)
   })
 })

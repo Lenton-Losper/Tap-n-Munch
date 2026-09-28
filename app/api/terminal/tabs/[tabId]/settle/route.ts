@@ -158,7 +158,7 @@ export async function POST(
       // The payment columns the claim below overwrites are read too, so a claim that has to be
       // undone (a partial claim -- see SETTLE_CLAIM_CONFLICT) can be put back exactly as it was.
       .select(
-        `${FINANCIAL_ORDER_COLUMNS}, terminal_pushed_at, payment_method, payment_reference, payment_voucher_no, paid_at, completed_at`,
+        `${FINANCIAL_ORDER_COLUMNS}, terminal_pushed_at, payment_method, payment_reference, payment_voucher_no, paid_at, completed_at, pending_charge_cents`,
       )
       .eq('tab_id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
@@ -522,6 +522,51 @@ export async function POST(
     // would put a card-shaped reference on a payment no card was used for.
     const paymentVoucherNo = usesGateway ? voucherNo || gatewayReference || null : null
 
+    /**
+     * A NON-GATEWAY SETTLEMENT IS A FRESH CHARGE AT THE LIVE AMOUNT (team-lead ruling,
+     * 20260929100100). It must neither race a card attempt that may be running nor settle over a
+     * dead one. When any selected order carries a prepared card charge, release_stale_card_attempts
+     * decides, under the orders' row locks: inside the in-flight window (or an intent whose answer
+     * is unknown) -> 409 PAYMENT_IN_FLIGHT and nothing is written; older -> the attempt is released
+     * (charge cleared, launched intent expired, audited) before the claim below.
+     *
+     * Asked only when there is something to release, so every settlement with no card history is
+     * exactly as before. FAILS CLOSED: an error is a refusal, never a settlement over an attempt.
+     */
+    if (!usesGateway && (tabOrders ?? []).some((o) => (o as { pending_charge_cents?: unknown }).pending_charge_cents != null)) {
+      const { data: release, error: releaseError } = await supabase.rpc('release_stale_card_attempts', {
+        p_restaurant_id: terminal.restaurantId,
+        p_order_ids: orderIds,
+        p_source: 'terminal/tabs/settle',
+        p_actor_user_id: attributedStaffUserId,
+      })
+      if (releaseError) {
+        console.error('[terminal/tabs/settle] could not check for a card attempt in flight', releaseError)
+        return NextResponse.json(
+          { error: 'Could not check for a card payment in progress. Try again.', code: 'CARD_ATTEMPT_UNREADABLE' },
+          { status: 503 },
+        )
+      }
+      const released = (release ?? {}) as { ok?: boolean; in_flight_order_ids?: string[] }
+      if (released.ok !== true) {
+        return NextResponse.json(
+          {
+            error:
+              'A card payment for part of this selection may still be in progress. Wait for it to ' +
+              'finish or cancel it on the terminal, then take the payment.',
+            code: 'PAYMENT_IN_FLIGHT',
+            order_ids: released.in_flight_order_ids ?? [],
+          },
+          { status: 409 },
+        )
+      }
+      // The released orders no longer carry the charge; the claim below must restore THAT state
+      // if it ever has to be undone, not the dead attempt.
+      for (const o of tabOrders ?? []) {
+        ;(o as Record<string, unknown>).pending_charge_cents = null
+      }
+    }
+
     // The rows as READ, copied before the claim, so a partial claim can be undone exactly.
     const priorById = new Map(
       (tabOrders ?? []).map((o) => [String(o.id), { ...(o as Record<string, unknown>) }]),
@@ -563,6 +608,71 @@ export async function POST(
     }
 
     const { data: claimed, error: ordersError } = await claimQuery.select('id')
+
+    /**
+     * THE CARD WAS CHARGED FOR AN ORDER THAT HAS SINCE CHANGED (team-lead ruling, Sprint 2026-09-29).
+     *
+     * orders_refuse_paid_on_changed_charge (20260929120000) raises FTCHG when a card payment would
+     * mark paid an order whose items, voids or item settlements moved after the charge was prepared.
+     * The claim is one statement, so NOTHING was claimed -- and the reader has already taken the
+     * money. Answering 500 would invite a retry and leave the charge recorded nowhere. Instead every
+     * order in the charged selection is HELD for review (amount_mismatch_hold, what
+     * markOrderPaidConfirmed does for the same refusal), so none of them can be charged again, and the
+     * charge is written down for staff to reconcile.
+     */
+    if (ordersError && String((ordersError as { code?: unknown }).code ?? '') === 'FTCHG') {
+      const { data: heldRows, error: holdError } = await supabase
+        .from('orders')
+        .update({ payment_status: 'amount_mismatch_hold' })
+        .in('id', orderIds)
+        .eq('tab_id', tabId)
+        .eq('restaurant_id', terminal.restaurantId)
+        .in('payment_status', [...settleableStatuses])
+        .select('id')
+      if (holdError) {
+        console.error('[terminal/tabs/settle] could not hold orders changed during payment', holdError)
+      }
+      const heldIds = (heldRows ?? []).map((r) => String(r.id))
+      const { error: heldAuditError } = await supabase.from('audit_logs').insert({
+        restaurant_id: terminal.restaurantId,
+        action: 'payment.held_order_changed_since_charge_prepared',
+        entity_type: 'tabs',
+        entity_id: tabId,
+        metadata: {
+          source: 'terminal/tabs/settle',
+          reason: 'order_changed_since_preparation',
+          requested_order_ids: orderIds,
+          held_order_ids: heldIds,
+          card_charged: true,
+          amount: expectedAmount,
+          client_amount: Number.isFinite(amount) ? amount : null,
+          tip_cents: tipCents,
+          business_order_no: businessOrderNo || null,
+          voucher_no: voucherNo || null,
+          gateway_reference: gatewayReference || null,
+          terminal_id: terminal.terminalId,
+          note:
+            'The card was charged, but an order in this selection changed after the charge was ' +
+            'prepared. Nothing was marked paid; the orders are held for review. Check what the ' +
+            'customer owes against what was charged and refund or collect the difference.',
+          recorded_at: new Date().toISOString(),
+        },
+      })
+      if (heldAuditError) {
+        console.error('[terminal/tabs/settle] held-order audit failed', heldAuditError)
+      }
+      return NextResponse.json(
+        {
+          error:
+            'The card was charged, but an order changed while it was being paid. The orders are ' +
+            'held for review; nothing was marked paid.',
+          code: 'ORDER_CHANGED_DURING_PAYMENT',
+          card_charged: true,
+          held_order_ids: heldIds,
+        },
+        { status: 409 },
+      )
+    }
 
     if (ordersError) {
       return NextResponse.json(

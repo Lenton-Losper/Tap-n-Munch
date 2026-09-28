@@ -58,6 +58,10 @@ const MIGRATIONS = [
   'supabase/migrations/20260929120000_order_charge_basis.sql',
   'supabase/migrations/20260929120100_settle_holds_order_changed_since_charge.sql',
   'supabase/migrations/20260929120200_amend_refuses_payment_in_flight.sql',
+  // F-MANUAL follow-up: a manual payment refuses a card attempt in flight and releases a stale one.
+  // Its version sorts before the 120000 series, and plpgsql binds pending_charge_at at call time; it
+  // is listed last so the suite exercises it against the redefinitions above.
+  'supabase/migrations/20260929100100_manual_payment_releases_stale_card_attempt.sql',
 ]
 
 /**
@@ -494,6 +498,48 @@ const MUTATIONS = {
         uuid, uuid, text, text, integer, text, uuid, text) TO anon, authenticated;
     `,
   },
+  ML7: {
+    what: 'a manual payment no longer refuses a card attempt inside the in-flight window',
+    expect: ['ml_inflight/refused', 'ml_inflight/attempt_untouched'],
+    apply: (sql) =>
+      sql.replace(
+        '    IF v_row.pending_charge_at IS NULL OR v_row.pending_charge_at > now() - v_window THEN',
+        '    IF false THEN',
+      ),
+  },
+  ML8: {
+    what: 'a stale card attempt is not released (the manual payment settles over it)',
+    expect: ['ml_stale/attempt_released'],
+    apply: (sql) =>
+      sql.replace(
+        '       SET pending_charge_cents      = NULL,\n           pending_tip_cents         = 0,',
+        '       SET pending_charge_cents      = pending_charge_cents,\n           pending_tip_cents         = pending_tip_cents,',
+      ),
+  },
+  ML9: {
+    what: 'an UNCERTAIN card intent no longer stops a manual payment',
+    expect: ['ml_uncertain/refused'],
+    apply: (sql) => sql.replace("     AND status = 'uncertain'\n", "     AND status = 'uncertain' AND false\n"),
+  },
+  ML10: {
+    what: 'the stale launched intent is not expired with the attempt',
+    expect: ['ml_stale/intent_expired'],
+    apply: (sql) =>
+      sql.replace("       SET status = 'failed', resolved_at = now()", '       SET status = status'),
+  },
+  ML11: {
+    what: 'a freshly launched intent (no prepared figure) no longer counts as in flight',
+    expect: ['ml_live_intent/refused'],
+    apply: (sql) =>
+      sql.replace('     AND created_at > now() - v_window;', '     AND false;'),
+  },
+  ML7r: {
+    what: 'as ML7, in two sessions: Mark-as-Paid lands on a card charge being prepared',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/manual-ledger-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.ML7.apply(sql),
+  },
   ML6: {
     what: 'the RPC claim ignores the status that was read (a double click writes twice)',
     expect: ['ml_replay/second_refused'],
@@ -734,7 +780,12 @@ function runSuite() {
 function runConcurrencyProbe(script = 'supabase/tests/concurrency.test.sh') {
   // The amend probe seeds through amend-rpc.test.sql's _seed_amend(), which a concurrency-only
   // mutation run (no runSuite) would not have defined yet.
-  if (script.includes('amend-race') || script.includes('charge-edit-race')) runSuite()
+  if (
+    script.includes('amend-race') ||
+    script.includes('charge-edit-race') ||
+    script.includes('manual-ledger-race')
+  )
+    runSuite()
   try {
     const out = execFileSync('bash', [join(REPO, script)], {
       encoding: 'utf8',
@@ -809,6 +860,14 @@ if (!baseCharge.passed) {
   process.exit(1)
 }
 console.log('  charge-edit-race probe: edits and voids refused mid-charge, stale prepares refused, late settlement held')
+
+const baseManual = runConcurrencyProbe('supabase/tests/manual-ledger-race.test.sh')
+if (!baseManual.passed) {
+  console.error('FAIL: the manual-payment race probe did not pass on unmutated code.')
+  console.error(baseManual.out.split('\n').slice(-30).join('\n'))
+  process.exit(1)
+}
+console.log('  manual-ledger-race probe: Mark-as-Paid refused mid-prepare, a late claim on a released attempt matches nothing')
 
 if (!which) process.exit(0)
 

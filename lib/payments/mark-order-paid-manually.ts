@@ -217,6 +217,19 @@ export async function markOrderPaidManually(
         return refuse(404, 'ORDER_NOT_FOUND', 'Order not found')
       case 'already_paid':
         return refuse(409, 'ALREADY_PAID', 'This order is already paid.')
+      case 'payment_in_flight':
+        /**
+         * A MANUAL PAYMENT IS A FRESH CHARGE, NEVER A RACE (team-lead ruling, 20260929100100). A
+         * card charge was prepared for this order inside the in-flight window, or its gateway
+         * answer is still unknown: a reader may be charging the customer right now. An older,
+         * dead attempt is released by the transaction itself and never reaches here.
+         */
+        return refuse(
+          409,
+          'PAYMENT_IN_FLIGHT',
+          'A card payment for this order may still be in progress on a terminal. Wait for it to ' +
+            'finish or cancel it there, then record the payment.',
+        )
       case 'not_settleable':
         return refuse(
           409,
