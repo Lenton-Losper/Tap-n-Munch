@@ -17,7 +17,7 @@
  * server has, instead of only the narrowest one.
  */
 
-import {settlementAmountFor, type OutstandingLineLike} from './settlementAmount';
+import {settlementAmountFor, type MoneyBasis} from './settlementAmount';
 function matchesStatusSet(status: unknown, set: readonly string[]): boolean {
   const s = String(status ?? '')
     .trim()
@@ -77,12 +77,14 @@ export interface ClaimableOrderLike {
   id: string;
   total: number;
   payment_status: string;
+  status?: string | null;
 }
 
 export interface ClaimableSettleSelection<T> {
   orderIds: string[];
   orders: T[];
-  amount: number;
+  /** Null when what the orders owe cannot be known -- the caller must refuse, never charge 0. */
+  amount: number | null;
 }
 
 /**
@@ -100,7 +102,7 @@ export interface ClaimableSettleSelection<T> {
 export function selectClaimableOrdersForSettle<T extends ClaimableOrderLike>(
   orders: T[],
   orderIds: string[],
-  lines?: readonly OutstandingLineLike[],
+  basis: MoneyBasis,
 ): ClaimableSettleSelection<T> {
   const claimable = orders.filter(
     order =>
@@ -117,9 +119,10 @@ export function selectClaimableOrdersForSettle<T extends ClaimableOrderLike>(
      * the reader is charged BEFORE this figure is checked, that disagreement orphaned a real
      * charge rather than merely refusing one. See settlementAmount.ts.
      *
-     * `lines` absent, or an order with no lines, falls back to the total: an allocation exists
-     * only against a line, so an order with none cannot have been part-paid.
+     * Sprint 2026-09-28: the server's C2 financials when the payload carries them, else the
+     * payload's own lines with voids subtracted; an order with no lines owes its total. NO payload
+     * is null (unknown), not the total -- see settlementAmount.ts.
      */
-    amount: settlementAmountFor(claimable, lines),
+    amount: settlementAmountFor(claimable, basis),
   };
 }

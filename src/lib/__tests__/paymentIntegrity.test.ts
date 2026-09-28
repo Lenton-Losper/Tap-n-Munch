@@ -5,6 +5,7 @@ import {
   owesMoney,
   selectClaimableOrdersForSettle,
 } from '../paymentIntegrity';
+import {noLinesPayload} from './helpers/linesPayload';
 
 describe('isClaimablePaymentStatus', () => {
   it.each(['unpaid', 'pending', 'UNPAID', ' Pending '])(
@@ -35,7 +36,7 @@ describe('selectClaimableOrdersForSettle', () => {
       'order-unpaid',
       'order-pending',
       'order-cancelled',
-    ]);
+    ], noLinesPayload());
 
     // The cancelled order's 9999 total must never be added in, even though
     // its id was passed in — this is the exact overcharge this filter exists
@@ -49,7 +50,7 @@ describe('selectClaimableOrdersForSettle', () => {
     const result = selectClaimableOrdersForSettle(orders, [
       'order-unpaid',
       'order-paid',
-    ]);
+    ], noLinesPayload());
 
     expect(result.amount).toBe(100);
     expect(result.orderIds).toEqual(['order-unpaid']);
@@ -59,7 +60,7 @@ describe('selectClaimableOrdersForSettle', () => {
     const result = selectClaimableOrdersForSettle(orders, [
       'order-cancelled',
       'order-paid',
-    ]);
+    ], noLinesPayload());
 
     expect(result.amount).toBe(0);
     expect(result.orderIds).toEqual([]);
@@ -72,7 +73,7 @@ describe('selectClaimableOrdersForSettle', () => {
       'order-pending',
       'order-cancelled',
       'order-paid',
-    ]);
+    ], noLinesPayload());
 
     const recomputed = result.orders.reduce((sum, o) => sum + o.total, 0);
     expect(result.amount).toBe(recomputed);
@@ -83,7 +84,7 @@ describe('selectClaimableOrdersForSettle', () => {
     const result = selectClaimableOrdersForSettle(orders, [
       'order-unpaid',
       'does-not-exist',
-    ]);
+    ], noLinesPayload());
 
     expect(result.amount).toBe(100);
     expect(result.orderIds).toEqual(['order-unpaid']);

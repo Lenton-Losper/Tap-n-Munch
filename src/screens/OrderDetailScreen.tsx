@@ -18,6 +18,8 @@ import PaymentStatusBadge from '../components/PaymentStatusBadge';
 import StatusBadge from '../components/StatusBadge';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {getOrder, updateOrderStatus} from '../lib/api';
+import {resolveOrderMoney, type OrderMoneyState} from '../lib/orderLiveMoney';
+import {LIVE_TOTAL_AFTER_VOIDS, LIVE_TOTAL_UNAVAILABLE} from '../constants/liveTotalCopy';
 import {formatCurrency, getItemLineTotal} from '../lib/currency';
 import {printReceiptForOrder} from '../lib/receiptPrinting';
 import {
@@ -69,6 +71,12 @@ export default function OrderDetailScreen({route}: Props) {
   const [reprintFailed, setReprintFailed] = useState(false);
   const [receiptPrintingEnabled, setReceiptPrintingEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * What the order is worth NOW. `order.total` is the stored original and keeps counting voided
+   * lines (sprint 2026-09-28), so the Total row shows this instead, with the original beside it
+   * when a void has made them differ.
+   */
+  const [liveMoney, setLiveMoney] = useState<OrderMoneyState>({kind: 'loading'});
 
   const loadOrder = useCallback(async () => {
     setLoading(true);
@@ -80,6 +88,10 @@ export default function OrderDetailScreen({route}: Props) {
       }
       const fetched = await getOrder(orderId, token);
       setOrder(fetched);
+      // Not awaited: the order renders at once and the Total row fills in. resolveOrderMoney never
+      // throws -- a failed read is 'unavailable'.
+      setLiveMoney({kind: 'loading'});
+      resolveOrderMoney(fetched, token).then(setLiveMoney);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load order');
     } finally {
@@ -267,8 +279,23 @@ export default function OrderDetailScreen({route}: Props) {
 
         <View style={styles.totalRow}>
           <Text style={styles.totalLabel}>Total</Text>
-          <Text style={styles.totalValue}>{formatCurrency(order.total)}</Text>
+          <Text style={styles.totalValue} testID="order-detail-total">
+            {liveMoney.kind === 'known'
+              ? formatCurrency(liveMoney.money.liveCents / 100)
+              : liveMoney.kind === 'loading'
+                ? '…'
+                : LIVE_TOTAL_UNAVAILABLE}
+          </Text>
         </View>
+        {liveMoney.kind === 'known' &&
+        liveMoney.money.originalCents !== liveMoney.money.liveCents ? (
+          <Text style={styles.memberName} testID="order-detail-after-voids">
+            {LIVE_TOTAL_AFTER_VOIDS.replace(
+              '{original}',
+              formatCurrency(liveMoney.money.originalCents / 100),
+            ).replace('{live}', formatCurrency(liveMoney.money.liveCents / 100))}
+          </Text>
+        ) : null}
 
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
 

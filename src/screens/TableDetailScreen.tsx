@@ -76,6 +76,14 @@ import {
   showsSkipOnly,
 } from '../lib/cashAttributionPicker';
 import {selectCashSettleableOrders} from '../lib/cashSettlement';
+import {orderMoney, settlementAmountFor} from '../lib/settlementAmount';
+import {
+  LIVE_TOTAL_AFTER_VOIDS,
+  LIVE_TOTAL_UNAVAILABLE,
+  LIVE_TOTAL_UNAVAILABLE_BODY,
+  LIVE_TOTAL_UNAVAILABLE_TITLE,
+} from '../constants/liveTotalCopy';
+import {TABLE_LINE_VOIDED_CHIP} from '../constants/serviceCopy';
 import {
   ALLOCATION_PAYER_AT_TABLE,
   canTakePaymentByItem,
@@ -105,7 +113,7 @@ import {
   TAKE_PAYMENT_SELECTION,
   TAKE_PAYMENT_SELECTION_ONE,
 } from '../constants/takePaymentCopy';
-import type {TabLinesPayload} from '../lib/tabLines';
+import type {TabLine, TabLinesPayload} from '../lib/tabLines';
 import {canResetTabPin} from '../lib/terminalPermissions';
 import {
   TAB_RECOVERY_ACTION_LABEL,
@@ -333,9 +341,14 @@ export default function TableDetailScreen({route, navigation}: Props) {
     [orders, selectedIds],
   );
 
+  /**
+   * What the selected orders still owe -- the LIVE outstanding figure, never Σ order.total, which
+   * keeps counting voided lines. Null when it cannot be known; the bar then says so rather than
+   * showing a number the settle would not use. Sprint 2026-09-28.
+   */
   const selectedTotal = useMemo(
-    () => selectedOrders.reduce((sum, order) => sum + order.total, 0),
-    [selectedOrders],
+    () => settlementAmountFor(selectedOrders, linesPayload),
+    [selectedOrders, linesPayload],
   );
 
   // ---- Take Payment by item -------------------------------------------------------------
@@ -362,27 +375,42 @@ export default function TableDetailScreen({route, navigation}: Props) {
     () => selectionTotalCents(payable, selectedLineIds),
     [payable, selectedLineIds],
   );
-  /** Rows for the item list: an order heading followed by its lines. */
+  /**
+   * Rows for the item list: an order heading, its payable lines, then its VOIDED lines.
+   *
+   * Voided lines are listed -- struck through, labelled, never selectable, and in no total -- so a
+   * waiter reconciling against the customer's docket can see why the bill went down (sprint
+   * 2026-09-28). They are NOT PayableLines: `payableLines` still drops them, so nothing that counts
+   * money can see them. An order whose every line was voided still gets its heading, for the same
+   * reason.
+   */
   const itemRows = useMemo(() => {
     const rows: Array<
       | {kind: 'heading'; key: string; orderNumber: number; orderId: string}
       | {kind: 'line'; key: string; line: PayableLine}
+      | {kind: 'voided'; key: string; line: TabLine}
     > = [];
-    let lastOrderId: string | null = null;
-    for (const line of payable) {
-      if (line.orderId !== lastOrderId) {
-        rows.push({
-          kind: 'heading',
-          key: `h-${line.orderId}`,
-          orderNumber: line.orderNumber,
-          orderId: line.orderId,
-        });
-        lastOrderId = line.orderId;
+    for (const order of linesPayload?.orders ?? []) {
+      const own = payable.filter(line => line.orderId === order.order_id);
+      const voided = (order.lines ?? []).filter(line => line.is_voided);
+      if (own.length === 0 && voided.length === 0) {
+        continue;
       }
-      rows.push({kind: 'line', key: line.id, line});
+      rows.push({
+        kind: 'heading',
+        key: `h-${order.order_id}`,
+        orderNumber: order.order_number,
+        orderId: order.order_id,
+      });
+      for (const line of own) {
+        rows.push({kind: 'line', key: line.id, line});
+      }
+      for (const line of voided) {
+        rows.push({kind: 'voided', key: `v-${line.id}`, line});
+      }
     }
     return rows;
-  }, [payable]);
+  }, [linesPayload, payable]);
 
   // Cash settleability comes from the SERVER (can_settle_cash), never re-derived here.
   // The server owns the settleable-status sets; a second definition on the client is
@@ -621,14 +649,22 @@ export default function TableDetailScreen({route, navigation}: Props) {
     // call always agree on exactly what was paid for. See
     // selectClaimableOrdersForSettle's tests for the exact guarantee.
     /**
-     * `payable` carries each line's outstandingCents, derived from the SAME allocations the
-     * server reads. Passing it is what makes the device's figure and the server's one number.
+     * `linesPayload` carries the server's C2 financials (or, from an older server, the lines and
+     * allocations the live figure is derived from). Passing it is what makes the device's figure
+     * and the server's one number -- and a voided line is never charged. Sprint 2026-09-28.
      */
     const {orderIds, amount} = selectClaimableOrdersForSettle(
       orders,
       requestedOrderIds,
-      payable,
+      linesPayload,
     );
+
+    if (amount == null) {
+      // What is owed cannot be known (no bill read, or a void the server did not price). Charging
+      // a guessed figure is how voided food gets paid for; refuse and ask for a refresh.
+      Alert.alert(LIVE_TOTAL_UNAVAILABLE_TITLE, LIVE_TOTAL_UNAVAILABLE_BODY);
+      return;
+    }
 
     if (amount <= 0 || orderIds.length === 0) {
       Alert.alert('Error', 'Selected orders have no amount to settle.');
@@ -929,8 +965,13 @@ export default function TableDetailScreen({route, navigation}: Props) {
     const {orderIds, amount} = selectCashSettleableOrders(
       orders,
       requestedOrderIds,
-      payable,
+      linesPayload,
     );
+
+    if (amount == null) {
+      Alert.alert(LIVE_TOTAL_UNAVAILABLE_TITLE, LIVE_TOTAL_UNAVAILABLE_BODY);
+      return;
+    }
 
     if (orderIds.length === 0 || amount <= 0) {
       Alert.alert(
@@ -1607,6 +1648,46 @@ export default function TableDetailScreen({route, navigation}: Props) {
     );
   };
 
+  /**
+   * "N$1,945.00 original · N$465.00 after voids" under an order heading, only when a void has made
+   * the two differ. Display only; the figures are orderMoney's, the same the settle uses.
+   */
+  const renderOrderVoidNote = (orderId: string) => {
+    const order = orders.find(o => o.id === orderId);
+    const money = order ? orderMoney(order, linesPayload) : null;
+    if (!money || money.originalCents === money.liveCents) {
+      return null;
+    }
+    return (
+      <Text style={styles.orderMeta} testID={`take-payment-order-voids-${orderId}`}>
+        {LIVE_TOTAL_AFTER_VOIDS.replace('{original}', formatCents(money.originalCents)).replace(
+          '{live}',
+          formatCents(money.liveCents),
+        )}
+      </Text>
+    );
+  };
+
+  /** A voided line: struck, labelled, inert, and counted nowhere. */
+  const renderVoidedRow = (line: TabLine) => (
+    <View
+      key={`v-${line.id}`}
+      testID={`take-payment-voided-${line.id}`}
+      style={[styles.orderRow, styles.orderRowPaid]}>
+      <MaterialCommunityIcons name="close-circle-outline" size={24} color={Colors.textMuted} />
+      <View style={styles.orderInfo}>
+        <Text style={[styles.memberName, styles.voidedText]} numberOfLines={1}>
+          {line.quantity > 1 ? `${line.quantity}x ` : ''}
+          {line.name_snapshot}
+        </Text>
+        <Text style={styles.orderMeta}>{TABLE_LINE_VOIDED_CHIP}</Text>
+      </View>
+      <Text style={[styles.orderTotal, styles.voidedText]}>
+        {typeof line.total_cents === 'number' ? formatCents(line.total_cents) : '—'}
+      </Text>
+    </View>
+  );
+
   /** What has been collected on this order, for the PAID reading. Cents, from the same rows. */
   const orderPaidCents = (orderId: string) =>
     payable
@@ -1687,6 +1768,38 @@ export default function TableDetailScreen({route, navigation}: Props) {
     );
   };
 
+  /**
+   * AN ORDER'S AMOUNT ON THE ORDER LIST: the live figure, with the stored original beside it when a
+   * void has made the two differ. Sprint 2026-09-28 -- `order.total` alone kept showing voided food.
+   *
+   * A PAID order shows what it was worth (live), not what is outstanding on it (0). An order whose
+   * money cannot be known shows the unavailable wording, never its stored total.
+   */
+  const renderOrderAmount = (order: TabOrder) => {
+    const money = orderMoney(order, linesPayload);
+    if (!money) {
+      return (
+        <Text style={styles.orderMeta} testID={`order-amount-${order.id}`}>
+          {LIVE_TOTAL_UNAVAILABLE}
+        </Text>
+      );
+    }
+    const figure = isPaid(order) ? money.liveCents : money.outstandingCents;
+    return (
+      <View style={styles.orderAmount} testID={`order-amount-${order.id}`}>
+        <Text style={styles.orderTotal}>{formatCents(figure)}</Text>
+        {money.originalCents !== money.liveCents ? (
+          <Text style={styles.orderMeta}>
+            {LIVE_TOTAL_AFTER_VOIDS.replace('{original}', formatCents(money.originalCents)).replace(
+              '{live}',
+              formatCents(money.liveCents),
+            )}
+          </Text>
+        ) : null}
+      </View>
+    );
+  };
+
   const renderOrderRow = ({item}: {item: TabOrder}) => {
     const paid = isPaid(item);
     const claimable = isClaimable(item);
@@ -1741,7 +1854,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
           </Text>
         </View>
 
-        <Text style={styles.orderTotal}>{formatNad(item.total)}</Text>
+        {renderOrderAmount(item)}
       </Pressable>
     );
   };
@@ -1830,7 +1943,10 @@ export default function TableDetailScreen({route, navigation}: Props) {
                   {TAKE_PAYMENT_ORDER_HEADING.replace('{number}', String(row.orderNumber))}
                 </Text>
                 {renderOrderSummary(row.orderId)}
+                {renderOrderVoidNote(row.orderId)}
               </View>
+            ) : row.kind === 'voided' ? (
+              renderVoidedRow(row.line)
             ) : (
               renderItemRow(row.line)
             )
@@ -1888,7 +2004,9 @@ export default function TableDetailScreen({route, navigation}: Props) {
                 ).replace('{amount}', formatCents(selectedItemCents))
               : `${selectedIds.size} ${
                   selectedIds.size === 1 ? 'order' : 'orders'
-                } selected — ${formatNad(selectedTotal)}`}
+                } selected — ${
+                  selectedTotal == null ? LIVE_TOTAL_UNAVAILABLE : formatNad(selectedTotal)
+                }`}
           </Text>
           {/*
             ABOVE the payment buttons and BEFORE the charge: the amount and who is taking it are
@@ -2443,6 +2561,14 @@ const styles = StyleSheet.create({
   orderMeta: {
     ...Typography.small,
     color: Colors.textSecondary,
+  },
+  orderAmount: {
+    alignItems: 'flex-end',
+  },
+  /** A voided line: shown so the bill can be reconciled, struck so nobody collects on it. */
+  voidedText: {
+    textDecorationLine: 'line-through',
+    color: Colors.textMuted,
   },
   orderTotal: {
     ...Typography.subheading,

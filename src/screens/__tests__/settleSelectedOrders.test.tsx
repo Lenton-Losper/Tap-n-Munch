@@ -41,10 +41,17 @@ jest.mock('../../lib/api', () => {
     settleTab: (...args: unknown[]) => mockSettleTab(...(args as [])),
     closeTable: (...args: unknown[]) => mockCloseTable(...(args as [])),
     getTablesWithMeta: (...args: unknown[]) =>
-      mockGetTablesWithMeta(...(args as [])),    // Take Payment reads the item list on every refresh. Stubbed to null here: these suites are
-    // about the ORDER-level path, and null is exactly what a tab with no line tracking sends, so
-    // the screen renders the order list they were written against.
-    getTabLines: jest.fn(async () => null),
+      mockGetTablesWithMeta(...(args as [])),    // Take Payment reads the item list on every refresh. These suites are about the ORDER-level
+    // path, so it answers with a READ payload carrying no lines (has_lines: false) -- what a tab
+    // with no line tracking sends -- and the screen renders the order list they were written
+    // against, each order owing its total.
+    //
+    // Sprint 2026-09-28: this used to answer `null`, which the screen now reads as "the bill could
+    // not be read" (the fetch failed) and refuses to charge on: the stored totals count voided
+    // lines. null was never what a line-less tab sends; getTabLines only yields null on failure.
+    getTabLines: jest.fn(async () =>
+      require('../../lib/__tests__/helpers/linesPayload').noLinesPayload(),
+    ),
 
     completePaymentReliably: jest.fn(async () => true),
     getAuthorizedUsers: jest.fn(async () => []),

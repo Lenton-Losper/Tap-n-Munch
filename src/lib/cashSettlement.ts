@@ -17,20 +17,24 @@
  * that does not match the orders it closed.
  */
 
-import {settlementAmountFor, type OutstandingLineLike} from './settlementAmount';
+import {settlementAmountFor, type MoneyBasis} from './settlementAmount';
 
 /** Only the fields the selection depends on. */
 export interface CashSettleableOrderLike {
   id: string;
   total: number;
+  status?: string | null;
   can_settle_cash?: boolean;
 }
 
 export interface CashSettleSelection {
   /** The orders the server will accept, in the order they were given. */
   orderIds: string[];
-  /** The cash to record, summed from exactly those orders. */
-  amount: number;
+  /**
+   * The cash to record, summed from exactly those orders -- or NULL when what they owe cannot be
+   * known (see settlementAmount.ts). The caller must refuse to take cash on null, never read it as 0.
+   */
+  amount: number | null;
 }
 
 /**
@@ -42,7 +46,7 @@ export interface CashSettleSelection {
 export function selectCashSettleableOrders(
   orders: CashSettleableOrderLike[],
   requestedOrderIds: string[],
-  lines?: readonly OutstandingLineLike[],
+  basis: MoneyBasis,
 ): CashSettleSelection {
   const eligible = orders.filter(
     order =>
@@ -55,6 +59,6 @@ export function selectCashSettleableOrders(
      * total on an order whose items are half paid collects the same money twice at the till,
      * where there is no gateway record to reconcile it against afterwards.
      */
-    amount: settlementAmountFor(eligible, lines),
+    amount: settlementAmountFor(eligible, basis),
   };
 }

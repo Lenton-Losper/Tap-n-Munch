@@ -12,6 +12,7 @@ import {
   staffMessageForSettleFailure,
 } from '../staffApiErrors';
 import {selectCashSettleableOrders} from '../cashSettlement';
+import {noLinesPayload} from './helpers/linesPayload';
 
 type OrderLike = {
   id: string;
@@ -28,7 +29,7 @@ type OrderLike = {
  * and the screen calls it; this alias just keeps the assertions below readable.
  */
 const selectCashSettleable = (orders: OrderLike[], requested: string[]) =>
-  selectCashSettleableOrders(orders, requested);
+  selectCashSettleableOrders(orders, requested, noLinesPayload());
 
 describe('cash settle error copy', () => {
   it('tells staff what to do when a card payment is in flight', () => {

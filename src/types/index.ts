@@ -51,6 +51,12 @@ export interface Order {
   payment_status?: string;
   payment_status_derived?: 'paid' | 'partially_refunded' | 'refunded' | null;
   refunded_amount?: number;
+  /**
+   * The tab this order belongs to. /api/terminal/orders selects `*`, so it has always been sent;
+   * it is named here so the single-order screens can read the tab's live money (sprint 2026-09-28).
+   * Absent or null for a walk-up / kiosk order, which cannot have been voided.
+   */
+  tab_id?: string | null;
 }
 
 export interface TabOrder {

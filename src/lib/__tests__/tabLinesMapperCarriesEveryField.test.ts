@@ -114,6 +114,8 @@ const declared = {
   order: fieldsInBlock(interfaceBody('TabLineOrder')),
   payload: fieldsInBlock(interfaceBody('TabLinesPayload')),
   station: fieldsInBlock(interfaceBody('StationCookedProgress')),
+  money: fieldsInBlock(interfaceBody('MoneyCents')),
+  financials: fieldsInBlock(interfaceBody('TabFinancials')),
 };
 
 /**
@@ -166,6 +168,21 @@ const SERVER_ORDER = {
   lines: [SERVER_LINE],
 };
 
+/** C2 (sprint 2026-09-28): the server's money. Distinct values per field, for the same reason. */
+const SERVER_MONEY = {
+  original_cents: 3400,
+  voided_cents: 900,
+  live_cents: 2500,
+  paid_cents: 700,
+  outstanding_cents: 1800,
+  overpaid_cents: 0,
+};
+
+const SERVER_FINANCIALS = {
+  tab: SERVER_MONEY,
+  orders: {'order-1': SERVER_MONEY},
+};
+
 const SERVER_PAYLOAD = {
   tab: {
     id: 'tab-1',
@@ -180,6 +197,7 @@ const SERVER_PAYLOAD = {
   all_ready: false,
   has_lines: true,
   server_time: '2026-09-06T09:58:20.000Z',
+  financials: SERVER_FINANCIALS,
 };
 
 describe('the fixture keeps up with the type', () => {
@@ -198,6 +216,11 @@ describe('the fixture keeps up with the type', () => {
 
   it('names every field TabLinesPayload declares', () => {
     expect(Object.keys(SERVER_PAYLOAD).sort()).toEqual([...declared.payload].sort());
+  });
+
+  it('names every field MoneyCents and TabFinancials declare', () => {
+    expect(Object.keys(SERVER_MONEY).sort()).toEqual([...declared.money].sort());
+    expect(Object.keys(SERVER_FINANCIALS).sort()).toEqual([...declared.financials].sort());
   });
 
   it('reads real field names out of the type, not an empty list', () => {
@@ -243,6 +266,7 @@ describe('the mapper carries every field, with its value', () => {
       expect(out.all_ready).toBe(false);
       expect(out.has_lines).toBe(true);
       expect(out.server_time).toBe(SERVER_PAYLOAD.server_time);
+      expect(out.financials).toEqual(SERVER_FINANCIALS);
       const {lines, ...orderRest} = out.orders[0];
       expect(orderRest).toEqual({
         order_id: 'order-1',
@@ -289,6 +313,44 @@ describe('an older server is still handled exactly as before', () => {
       for (const field of ['is_collected', 'is_cooked', 'total_cents', 'allocated_cents', 'allocations'] as const) {
         expect({field, present: field in line}).toEqual({field, present: false});
       }
+    });
+  });
+
+  it('leaves financials ABSENT when the server sends none (C2 predates it)', async () => {
+    const withoutFinancials: Record<string, unknown> = {...OLD_PAYLOAD};
+    delete withoutFinancials.financials;
+    await withApi({status: 200, body: withoutFinancials}, async api => {
+      const out = await api.getTabLines('tab-1', 'jwt');
+      expect('financials' in out).toBe(false);
+    });
+  });
+
+  it('treats an unreadable financials block as absent, never as zeros', async () => {
+    // A string figure, a float, a negative: the device must not trust half of a block it cannot read.
+    for (const bad of [
+      {...SERVER_FINANCIALS, tab: {...SERVER_MONEY, live_cents: '2500'}},
+      {...SERVER_FINANCIALS, tab: {...SERVER_MONEY, outstanding_cents: 12.5}},
+      {...SERVER_FINANCIALS, tab: {...SERVER_MONEY, paid_cents: -1}},
+      'nonsense',
+    ]) {
+      await withApi({status: 200, body: {...SERVER_PAYLOAD, financials: bad}}, async api => {
+        const out = await api.getTabLines('tab-1', 'jwt');
+        expect('financials' in out).toBe(false);
+      });
+    }
+  });
+
+  it('drops only the unreadable ORDER entry, keeping the rest', async () => {
+    const body = {
+      ...SERVER_PAYLOAD,
+      financials: {
+        tab: SERVER_MONEY,
+        orders: {'order-1': SERVER_MONEY, 'order-2': {...SERVER_MONEY, live_cents: null}},
+      },
+    };
+    await withApi({status: 200, body}, async api => {
+      const out = await api.getTabLines('tab-1', 'jwt');
+      expect(Object.keys(out.financials?.orders ?? {})).toEqual(['order-1']);
     });
   });
 
