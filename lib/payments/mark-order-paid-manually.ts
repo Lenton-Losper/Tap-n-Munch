@@ -22,15 +22,24 @@
  *   (original − voided − already collected). Nothing from the client. Recorded as the order's
  *   `settled_charge_cents`, so the projection reads `paid` as what was actually collected.
  *
- *   A DURABLE RECORD, written or the payment is undone. The `payments` row is the settlement anchor
- *   the tab settle route writes for the same methods; the `audit_logs` row is the trail and is
- *   REQUIRED -- if it cannot be written the order is put back and the request fails, so a paid
- *   order can never exist from this path without one.
+ *   AN IMMUTABLE LEDGER ROW, in the same transaction as the payment (Sprint 2026-09-29 brief).
+ *   `record_manual_order_payment` (20260929100000) makes the conditional claim, writes the
+ *   `payments` settlement anchor, the `non_gateway_payment_events` ledger row and the
+ *   `payment.marked_paid_manually` audit row as ONE transaction: all of them land or none do. The
+ *   route-level undo this replaced (put the order back, DELETE the payments row) is gone, because a
+ *   ledger that can be deleted on an error path is not immutable.
  *
- * NO payment_events ROW, deliberately. That table is the gateway ledger, keyed on a gateway
- * reference; the tab settle route's recorded ruling (F2) is that a cash or PayToday row there "can
- * never be matched to anything -- worse than an absence, because it looks reconciled". A manual
- * card payment on a standalone machine has no FlashTap gateway reference either.
+ * THE RECORDED RULING THIS REVERSES. This header used to say "NO payment_events ROW, deliberately":
+ * the tab settle route's F2 ruling that the gateway ledger must not hold a cash row, which left a
+ * manual payment with no ledger record at all. The Sprint 2026-09-29 brief overrules the "no ledger
+ * record" half -- EVERY SUCCESSFUL PAYMENT MUST HAVE AN IMMUTABLE FINANCIAL LEDGER RECORD -- and keeps
+ * the other half: the row goes in `non_gateway_payment_events`, never in `payment_events`, so no
+ * reader of the gateway ledger can mistake it for a gateway transaction. It carries no gateway field
+ * at all; `origin` says a member of staff recorded it, `method` says how the customer paid.
+ *
+ * IDEMPOTENT twice over: the claim is conditioned on the payment_status that was read, and the
+ * ledger key is `staff_mark_paid:<order id>` UNIQUE per restaurant, so a double click or a replay
+ * cannot produce a second row.
  */
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { generatePaymentReference } from '@/lib/payment-reference'
@@ -64,6 +73,8 @@ export type ManualPaymentResult =
       amountCents: number
       paymentReference: string
       paymentRecordWritten: boolean
+      /** The non_gateway_payment_events row this payment is recorded by. */
+      ledgerEventId: string
     }
   | ManualPaymentRefusal
 
@@ -84,23 +95,8 @@ export async function markOrderPaidManually(
     method: unknown
     /** The payment_status the caller read -- the claim below is conditioned on it. */
     currentPaymentStatus: unknown
-    /** The payment columns as read, so an undo puts them back exactly. */
-    previous?: {
-      payment_method?: unknown
-      payment_reference?: unknown
-      paid_at?: unknown
-      settled_charge_cents?: unknown
-    }
   },
 ): Promise<ManualPaymentResult> {
-  // Snapshotted before anything is written, so an undo restores what was READ even if the caller's
-  // object is the row itself.
-  const previous = {
-    payment_method: params.previous?.payment_method ?? null,
-    payment_reference: params.previous?.payment_reference ?? null,
-    paid_at: params.previous?.paid_at ?? null,
-    settled_charge_cents: params.previous?.settled_charge_cents ?? null,
-  }
   const method = normalizeSettlementPaymentMethod(params.method)
   if (!method) {
     return refuse(
@@ -143,14 +139,11 @@ export async function markOrderPaidManually(
   // THE SERVER'S FIGURE. Fails closed: not being able to see what was voided or already collected
   // is not permission to record a payment for it.
   let amountCents: number
-  let tabId: string | null = null
   try {
     const loaded = await loadOrderFinancials(supabase, params.restaurantId, [params.orderId])
     const financials = loaded.byId.get(params.orderId)
     if (!financials) return refuse(404, 'ORDER_NOT_FOUND', 'Order not found')
     amountCents = financials.outstandingCents
-    const row = loaded.rows.find((r) => String(r.id) === params.orderId)
-    tabId = row?.tab_id ? String(row.tab_id) : null
   } catch (e) {
     console.error('[markOrderPaidManually] could not read what is owed', {
       orderId: params.orderId,
@@ -167,115 +160,44 @@ export async function markOrderPaidManually(
   }
 
   const paymentReference = generatePaymentReference()
-  const paidAt = new Date().toISOString()
 
-  // The conditional claim on the status that was READ and validated above: a payment landing from
-  // anywhere else in between makes this match nothing, which is a 409, never an overwrite.
-  const { data: claimed, error: claimError } = await supabase
-    .from('orders')
-    .update({
-      payment_status: 'paid',
-      payment_method: method,
-      payment_reference: paymentReference,
-      paid_at: paidAt,
-      // Explicit, so the settled-charge trigger keeps it: what THIS payment collected.
-      settled_charge_cents: amountCents,
-    })
-    .eq('id', params.orderId)
-    .eq('restaurant_id', params.restaurantId)
-    .eq('payment_status', String(params.currentPaymentStatus))
-    .select('id, payment_status, payment_method, payment_reference, paid_at, status, is_closed, cancelled_at')
-    .maybeSingle()
-
-  if (claimError) return refuse(400, 'PAYMENT_UPDATE_FAILED', claimError.message)
-  if (!claimed) {
-    return refuse(409, 'PAYMENT_STATUS_CHANGED', 'Payment status changed; refresh and try again')
-  }
-
-  const amount = amountCents / 100
-
-  // The settlement anchor, the same row the tab settle route writes for the same methods.
-  const { data: paymentRow, error: paymentError } = await supabase
-    .from('payments')
-    .insert({
-      restaurant_id: params.restaurantId,
-      tab_id: tabId,
-      order_ids: [params.orderId],
-      amount,
-      method,
-      status: 'completed',
-      gateway_reference: null,
-      payment_reference: paymentReference,
-      completed_at: paidAt,
-    })
-    .select('id')
-    .maybeSingle()
-  if (paymentError) {
-    console.error('[markOrderPaidManually] payments row not written', {
-      orderId: params.orderId,
-      error: paymentError.message,
-    })
-  }
-
-  let auditWritten = false
+  /**
+   * ONE TRANSACTION: claim, settlement anchor, ledger row, audit row (20260929100000). The claim
+   * inside is conditioned on the payment_status that was READ and validated above, and scoped to
+   * this restaurant, so a payment landing from anywhere else in between is a refusal, never an
+   * overwrite -- and another venue's order is simply not found.
+   */
+  let rpcData: unknown = null
+  let rpcError: { code?: string; message?: string } | null = null
   try {
-    const { error: auditError } = await supabase.from('audit_logs').insert({
-      restaurant_id: params.restaurantId,
-      action: MANUAL_PAYMENT_ACTION,
-      entity_type: 'order',
-      entity_id: params.orderId,
-      metadata: {
-        source: 'orders/status',
-        staff_user_id: params.staffUserId,
-        method,
-        amount,
-        amount_cents: amountCents,
-        amount_basis: 'order_financials_outstanding',
-        previous_payment_status: from,
-        payment_reference: paymentReference,
-        // Stated, not implied: nothing but this person's word stands behind a manual payment.
-        gateway_verified: false,
-        payment_record_written: !paymentError,
-        recorded_at: paidAt,
-      },
+    const res = await supabase.rpc('record_manual_order_payment', {
+      p_restaurant_id: params.restaurantId,
+      p_order_id: params.orderId,
+      p_expected_payment_status:
+        params.currentPaymentStatus == null ? null : String(params.currentPaymentStatus),
+      p_method: method,
+      // THE SERVER'S FIGURE, from the projection above. Never a client amount.
+      p_amount_cents: amountCents,
+      p_payment_reference: paymentReference,
+      p_staff_user_id: params.staffUserId,
+      p_source: 'orders/status',
     })
-    auditWritten = !auditError
-    if (auditError) console.error('[markOrderPaidManually] audit insert failed', auditError)
+    rpcData = res.data
+    rpcError = res.error
   } catch (thrown) {
-    console.error('[markOrderPaidManually] audit insert threw', thrown)
+    rpcError = { message: thrown instanceof Error ? thrown.message : String(thrown) }
   }
 
-  if (!auditWritten) {
-    /**
-     * NO TRAIL, NO PAYMENT. Put the order back exactly as it was read -- conditioned on this
-     * request's own reference so nothing another writer did since is touched -- and fail.
-     */
-    const { error: revertError } = await supabase
-      .from('orders')
-      .update({
-        payment_status: params.currentPaymentStatus as string,
-        payment_method: previous.payment_method as string | null,
-        payment_reference: previous.payment_reference as string | null,
-        paid_at: previous.paid_at as string | null,
-        settled_charge_cents: previous.settled_charge_cents as number | null,
-      })
-      .eq('id', params.orderId)
-      .eq('restaurant_id', params.restaurantId)
-      .eq('payment_reference', paymentReference)
-    if (revertError) {
-      console.error('[markOrderPaidManually] ORDER LEFT PAID WITHOUT AN AUDIT ROW', {
-        orderId: params.orderId,
-        paymentReference,
-        error: revertError.message,
-      })
+  if (rpcError) {
+    // The ledger key refused a second manual payment of this order: it has one already.
+    if (rpcError.code === '23505') {
+      return refuse(409, 'ALREADY_PAID', 'This order already has a recorded payment.')
     }
-    if (paymentRow?.id) {
-      try {
-        await supabase.from('payments').delete().eq('id', String(paymentRow.id))
-      } catch (thrown) {
-        console.error('[markOrderPaidManually] could not remove the payments row', thrown)
-      }
-    }
+    console.error('[markOrderPaidManually] payment not recorded', {
+      orderId: params.orderId,
+      error: rpcError.message,
+    })
+    // Atomic: nothing was written, so "nothing was changed" is the truth, not a hope.
     return refuse(
       503,
       'PAYMENT_TRAIL_NOT_RECORDED',
@@ -283,12 +205,49 @@ export async function markOrderPaidManually(
     )
   }
 
+  const result = (rpcData ?? {}) as {
+    ok?: boolean
+    reason?: string
+    ledger_event_id?: string
+    payment_id?: string
+  }
+  if (result.ok !== true) {
+    switch (result.reason) {
+      case 'order_not_found':
+        return refuse(404, 'ORDER_NOT_FOUND', 'Order not found')
+      case 'already_paid':
+        return refuse(409, 'ALREADY_PAID', 'This order is already paid.')
+      case 'not_settleable':
+        return refuse(
+          409,
+          'PAYMENT_STATUS_NOT_SETTLEABLE',
+          'This order cannot be marked paid from its current payment state. Refresh and try again.',
+        )
+      default:
+        return refuse(409, 'PAYMENT_STATUS_CHANGED', 'Payment status changed; refresh and try again')
+    }
+  }
+
+  // The committed row, for the response. A failed re-read does not undo a recorded payment.
+  const { data: order } = await supabase
+    .from('orders')
+    .select('id, payment_status, payment_method, payment_reference, paid_at, status, is_closed, cancelled_at')
+    .eq('id', params.orderId)
+    .eq('restaurant_id', params.restaurantId)
+    .maybeSingle()
+
   return {
     ok: true,
-    order: claimed as Record<string, unknown>,
+    order: (order as Record<string, unknown> | null) ?? {
+      id: params.orderId,
+      payment_status: 'paid',
+      payment_method: method,
+      payment_reference: paymentReference,
+    },
     method,
     amountCents,
     paymentReference,
-    paymentRecordWritten: !paymentError,
+    paymentRecordWritten: true,
+    ledgerEventId: String(result.ledger_event_id ?? ''),
   }
 }

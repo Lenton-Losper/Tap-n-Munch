@@ -15,6 +15,7 @@ import {
 import { voidOutstandingOrderLines, type VoidOrderLinesResult } from '@/lib/orders/order-lines'
 import { markOrderPaidManually } from '@/lib/payments/mark-order-paid-manually'
 import { normalizePaymentStatus } from '@/lib/payments/payment-state-machine'
+import { checkPaidOrderCancellation } from '@/lib/orders/paid-order-cancellation'
 
 export const dynamic = 'force-dynamic'
 
@@ -44,10 +45,7 @@ export async function PATCH(
 
   const { data: existingOrder, error: loadError } = await supabase
     .from('orders')
-    // The payment columns are read so a manual payment that cannot be trailed is undone exactly.
-    .select(
-      'id, restaurant_id, status, payment_status, payment_method, payment_reference, paid_at, settled_charge_cents',
-    )
+    .select('id, restaurant_id, status, payment_status')
     .eq('id', orderId)
     .maybeSingle()
 
@@ -99,7 +97,6 @@ export async function PATCH(
         staffUserId: auth.userId ?? null,
         method: body?.payment_method ?? body?.paymentMethod ?? body?.method,
         currentPaymentStatus: existingOrder.payment_status,
-        previous: existingOrder,
       })
       if (!manual.ok) {
         return NextResponse.json(
@@ -116,6 +113,7 @@ export async function PATCH(
           amount_cents: manual.amountCents,
           payment_reference: manual.paymentReference,
           payment_record_written: manual.paymentRecordWritten,
+          ledger_event_id: manual.ledgerEventId,
         },
       })
     }
@@ -164,6 +162,38 @@ export async function PATCH(
     }
   }
 
+  /**
+   * A PAID ORDER IS NOT CANCELLED OVER ITS PAYMENT (Sprint 2026-09-29 brief, F-MANUAL task 2).
+   *
+   * This route used to cancel from any kitchen status but completed/cancelled and write
+   * payment_status 'cancelled' with it -- so an order paid by hand while `preparing`, a QR order paid
+   * before the kitchen started, or an order half paid through the item ledger became a "cancelled
+   * payment" with the money still taken. Now: money on the order refuses the cancel with a typed 409
+   * naming the refund path; a card sale that has been FULLY REFUNDED may be cancelled, and then its
+   * payment_status is left exactly as it is -- the sale and the refund are the history.
+   * See lib/orders/paid-order-cancellation.ts for the state model.
+   */
+  let preservePaymentStatus = false
+  if (status === 'cancelled') {
+    const moneyCheck = await checkPaidOrderCancellation(supabase, {
+      restaurantId: String(existingOrder.restaurant_id),
+      orderId,
+      paymentStatus: existingOrder.payment_status,
+    })
+    if (!moneyCheck.allowed) {
+      return NextResponse.json(
+        {
+          error: moneyCheck.error,
+          code: moneyCheck.code,
+          refund_path: moneyCheck.refundPath,
+          payment_status: existingOrder.payment_status ?? null,
+        },
+        { status: moneyCheck.status },
+      )
+    }
+    preservePaymentStatus = moneyCheck.fullyRefunded
+  }
+
   // Same three spellings and the same "always write something" rule as the terminal status
   // route, so a cancel through either path is traceable without guessing (#103).
   const callerReason = String(
@@ -182,11 +212,12 @@ export async function PATCH(
     }
     if (status === 'cancelled') {
       patch.is_closed = true
-      patch.payment_status = 'cancelled'
+      // A refunded sale keeps its payment_status: 'cancelled' would say no payment ever happened.
+      if (!preservePaymentStatus) patch.payment_status = 'cancelled'
       patch.cancellation_reason = cancellationReason
     }
   }
-  if (paymentStatus) {
+  if (paymentStatus && !preservePaymentStatus) {
     // Only 'cancelled' reaches here, alongside status 'cancelled' (see the gate above).
     patch.payment_status = paymentStatus
   }
@@ -226,7 +257,11 @@ export async function PATCH(
   // manual payment would write a second trail for money collected once). What reaches here is the
   // cancel's redundant payment_status. `.eq` never matches NULL, so a null payment_status has to
   // be claimed with `.is` — without that branch such an order could never be cancelled here.
-  if (paymentStatus) {
+  //
+  // A CANCEL is always claimed on the payment_status that was read, with or without the redundant
+  // body field: the paid check above was made against that value, and a payment landing between
+  // the check and this write must make the cancel match nothing rather than cancel over it.
+  if (paymentStatus || status === 'cancelled') {
     updateQuery =
       expectedCurrentPaymentStatus === null
         ? updateQuery.is('payment_status', null)
@@ -272,6 +307,9 @@ export async function PATCH(
         cancellation_reason: cancellationReason,
         reason_supplied_by_caller: Boolean(callerReason),
         previous_status: expectedCurrentStatus,
+        previous_payment_status: expectedCurrentPaymentStatus,
+        // True only for a fully refunded card sale: the payment history was kept, not cancelled.
+        payment_status_preserved: preservePaymentStatus,
         staff_user_id: auth.userId,
         source: 'orders/status',
       },

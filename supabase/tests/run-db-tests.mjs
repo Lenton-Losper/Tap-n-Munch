@@ -49,6 +49,9 @@ const MIGRATIONS = [
   'supabase/migrations/20260829150000_amend_order_lines_function.sql',
   'supabase/migrations/20260906120100_order_line_events_void_reason.sql',
   'supabase/migrations/20260928150000_amend_order_lines_refuse_paid.sql',
+  // Sprint 2026-09-29 (F-MANUAL): the immutable non-gateway payment ledger and the atomic
+  // Mark-as-Paid RPC. Additive; exercised by manual-ledger.test.sql.
+  'supabase/migrations/20260929100000_non_gateway_payment_events.sql',
 ]
 
 /**
@@ -435,6 +438,65 @@ const MUTATIONS = {
         "     AND false\n     AND (e->>'payment_method' IS NULL",
       ),
   },
+  /**
+   * THE NON-GATEWAY LEDGER (20260929100000, Sprint 2026-09-29 brief). Every anchor is text only
+   * that migration contains.
+   */
+  ML1: {
+    what: 'Mark-as-Paid writes no ledger row (the ledger insert removed from the RPC)',
+    expect: ['ml_pay/one_ledger_row', 'ml_pay/amount_is_server_figure', 'ml_immutable/row_intact'],
+    apply: (sql) => {
+      const from = '  INSERT INTO public.non_gateway_payment_events\n    (restaurant_id, origin, method, amount_cents, tip_cents,'
+      const to = '  RETURNING id INTO v_ledger_id;\n'
+      if (!sql.includes(from) || !sql.includes(to)) return sql
+      return sql
+        .replace(from, `  IF false THEN\n${from}`)
+        .replace(to, `${to}  END IF;\n`)
+    },
+  },
+  ML2: {
+    what: 'record_manual_order_payment no longer scoped to the restaurant',
+    expect: ['ml_cross/refused', 'ml_cross/no_ledger_row', 'ml_cross/order_untouched'],
+    apply: (sql) =>
+      replaceEvery(
+        sql,
+        '   WHERE id = p_order_id\n     AND restaurant_id = p_restaurant_id',
+        '   WHERE id = p_order_id',
+      ),
+  },
+  ML3: {
+    what: 'the ledger idempotency key (uniqueness) is dropped',
+    expect: ['ml_unique/duplicate_refused', 'ml_replay/unique_key_refuses_second_row', 'ml_replay/still_one_row'],
+    sqlAfterMigrations: `
+      ALTER TABLE public.non_gateway_payment_events
+        DROP CONSTRAINT non_gateway_payment_events_idempotency_key;
+    `,
+  },
+  ML4: {
+    what: 'the ledger immutability triggers are dropped',
+    expect: ['ml_immutable/update_refused', 'ml_immutable/delete_refused', 'ml_immutable/truncate_refused'],
+    sqlAfterMigrations: `
+      DROP TRIGGER non_gateway_payment_events_immutable ON public.non_gateway_payment_events;
+      DROP TRIGGER non_gateway_payment_events_no_truncate ON public.non_gateway_payment_events;
+    `,
+  },
+  ML5: {
+    what: 'record_manual_order_payment granted to anon/authenticated (security POSITIVE CONTROL)',
+    expect: ['ml_security/anon_cannot_execute', 'ml_security/authenticated_cannot_execute'],
+    sqlAfterMigrations: `
+      GRANT EXECUTE ON FUNCTION public.record_manual_order_payment(
+        uuid, uuid, text, text, integer, text, uuid, text) TO anon, authenticated;
+    `,
+  },
+  ML6: {
+    what: 'the RPC claim ignores the status that was read (a double click writes twice)',
+    expect: ['ml_replay/second_refused'],
+    apply: (sql) =>
+      sql.replace(
+        '  IF v_order.payment_status IS DISTINCT FROM p_expected_payment_status THEN',
+        '  IF false THEN',
+      ),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -540,6 +602,8 @@ function runSuite() {
   psql(readRepo('supabase/tests/settlement-rpc.test.sql'))
   // Runs second: it reuses the settlement file's _test_results, _expect() and _seed().
   psql(readRepo('supabase/tests/amend-rpc.test.sql'))
+  // Third: the non-gateway ledger (20260929100000). Reuses the same helpers, cleans up after itself.
+  psql(readRepo('supabase/tests/manual-ledger.test.sql'))
   const total = Number(psqlValue('SELECT count(*) FROM public._test_results;'))
   const failed = psqlValue(
     "SELECT string_agg(name || '  ::  ' || COALESCE(detail,''), E'\\n') " +

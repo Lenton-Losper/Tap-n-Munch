@@ -6,11 +6,12 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 // cancelled order kept a table permanently un-closeable (#104, same class as c362efc).
 import {
   SETTLEMENT_PAYMENT_METHODS,
-  normalizeSettlementPaymentMethod, amountsMatch, owesMoney } from '@/lib/payments/payment-integrity'
+  normalizeSettlementPaymentMethod, amountsMatch, owesMoney, methodUsesGateway } from '@/lib/payments/payment-integrity'
 import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
 // The single authority on what the reader was asked to charge. See the note at its call site.
 import { expectedChargeFor } from '@/lib/payments/expected-charge'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
+import { recordNonGatewayPaymentEvent } from '@/lib/payments/record-non-gateway-payment-event'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 import { recordRefusedSecondPayment } from '@/lib/payments/record-refused-second-payment'
 import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
@@ -155,6 +156,8 @@ export async function POST(
     }
 
     let canClose = false
+    /** Sprint 2026-09-29: set only for a non-gateway success -- whether its ledger row exists. */
+    let ledgerEvent: 'recorded' | 'failed' | null = null
 
     if (status === 'success') {
       /**
@@ -277,6 +280,41 @@ export async function POST(
           },
           { status: 409 },
         )
+      }
+
+      /**
+       * A NON-GATEWAY SUCCESS GETS ITS LEDGER ROW (Sprint 2026-09-29 brief).
+       *
+       * This route accepts cash and PayToday as well as card. A card success is recorded in
+       * payment_events by the device's sale call and the gateway paths; a cash or PayToday success
+       * had no ledger row anywhere. It gets a `non_gateway_payment_events` row -- never a
+       * payment_events one. The figure is the one the amount gate above just verified, split into
+       * bill and gratuity the way the charge expectation records them.
+       *
+       * AFTER the claim and NOT undone on failure: markOrderPaidConfirmed has already written the
+       * order, its audit row and the receipt, and it is shared with five gateway callers that must
+       * not change here. A failure is logged and reported as `ledger_event: 'failed'` so it is
+       * visible and reconcilable, never silent.
+       */
+      if (!methodUsesGateway(paymentMethod)) {
+        const chargedCents = Math.round(expectedAmount * 100)
+        const ledger = await recordNonGatewayPaymentEvent(supabase, {
+          restaurantId: terminal.restaurantId,
+          origin: 'terminal_order_payment',
+          method: paymentMethod,
+          billCents: chargedCents - charge.tipCents,
+          tipCents: charge.tipCents,
+          orderIds: [orderId],
+          tabId: result.tabId,
+          // A cash callback may carry no reference; the order id then names the collection.
+          paymentReference: reference || `order:${orderId}`,
+          idempotencyKey: `terminal_order_payment:${orderId}`,
+          recordedBy: null,
+          actorAttribution: 'terminal_only',
+          terminalId: terminal.terminalId,
+          source: 'terminal/orders/payment',
+        })
+        ledgerEvent = ledger.recorded ? 'recorded' : 'failed'
       }
 
       if (result.tabId) {
@@ -402,7 +440,12 @@ export async function POST(
       })
     }
 
-    return NextResponse.json({ success: true, canClose })
+    return NextResponse.json({
+      success: true,
+      canClose,
+      // Additive, non-gateway methods only. 'failed' = paid with no ledger row; reconcile it.
+      ...(ledgerEvent ? { ledger_event: ledgerEvent } : {}),
+    })
   } catch (err: unknown) {
     if (err instanceof Response) return err
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

@@ -86,6 +86,12 @@ export const PUBLIC_USERS_FOREIGN_KEY_REFERENCES = [
     column: 'user_id',
     constraint: 'terminal_authorization_credentials_user_id_fkey',
   },
+  // 20260929100000 (Sprint 2026-09-29): the staff member who recorded a non-gateway payment.
+  {
+    table: 'non_gateway_payment_events',
+    column: 'recorded_by',
+    constraint: 'non_gateway_payment_events_recorded_by_fkey',
+  },
 ] as const
 
 export type PublicUserFkReference = (typeof PUBLIC_USERS_FOREIGN_KEY_REFERENCES)[number]

@@ -289,3 +289,27 @@ CREATE TABLE public.order_line_events (
   occurred_at timestamptz NOT NULL DEFAULT now()
   -- void_reason is added by the REAL migration 20260906120100, applied by the runner.
 );
+
+-- ==================================================================================================
+-- payments (baseline 00000000000000 + 20260909160000). Added for record_manual_order_payment
+-- (20260929100000), which writes the settlement anchor in the same transaction as the ledger row.
+-- ==================================================================================================
+--
+-- Columns, defaults and FKs verbatim from the baseline; the method CHECK is the one
+-- 20260909160000 leaves in place (that migration also alters restaurant_settings, which this
+-- fixture does not have, so the constraint is reproduced rather than the migration applied).
+CREATE TABLE public.payments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  restaurant_id uuid REFERENCES public.restaurants(id) ON DELETE CASCADE,
+  table_id uuid REFERENCES public.restaurant_tables(id),
+  tab_id uuid REFERENCES public.tabs(id),
+  order_ids uuid[] DEFAULT '{}'::uuid[],
+  amount numeric DEFAULT 0 NOT NULL,
+  method text DEFAULT 'card',
+  status text DEFAULT 'pending',
+  gateway_reference text,
+  payment_reference text,
+  created_at timestamptz DEFAULT now(),
+  completed_at timestamptz,
+  CONSTRAINT payments_method_valid_values CHECK (method IS NULL OR method IN ('cash', 'card', 'paytoday'))
+);

@@ -216,11 +216,15 @@ describe('the settle route writes the ledger row itself', () => {
   })
 
   it('passes the SERVER’s amount, never the client’s', () => {
-    // `amount` is the device's figure and is only ever a cross-check; `expectedAmount` is what the
+    // `amount` is the device's figure and is only ever a cross-check; `expectedCents` is what the
     // server computed from its own rows and is what gets stored everywhere else in this route.
+    //
+    // Sprint 2026-09-29 brief (task 3): the sale row records what the CARD WAS CHARGED -- the bill
+    // plus the gratuity, as settle_order_payment() already does -- no longer the bill alone. Both
+    // halves are the server's own figures; the behavioural proof is tab-settle-ledger-tip.test.ts.
     const code = source()
     const call = code.slice(code.indexOf('recordGatewaySaleEvent('))
-    expect(call.slice(0, 900)).toMatch(/amount:\s*expectedAmount/)
+    expect(call.slice(0, 900)).toMatch(/amount:\s*roundToCents\(centsToMajor\(expectedCents \+ tipCents\)\)/)
     expect(call.slice(0, 900)).not.toMatch(/amount:\s*amount\b/)
   })
 

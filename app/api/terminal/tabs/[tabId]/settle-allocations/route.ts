@@ -52,6 +52,7 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { generatePaymentReference } from '@/lib/payment-reference'
 import { parseTipCents, recordTip } from '@/lib/payments/tips'
+import { recordNonGatewayPaymentEvent } from '@/lib/payments/record-non-gateway-payment-event'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import {
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
@@ -542,6 +543,46 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
     }
     const orderIds = [...new Set((appliedRows ?? []).map((r) => String(r.order_id)))]
 
+    /**
+     * THE EVENT-LEVEL LEDGER ROW FOR CASH (Sprint 2026-09-29 brief: every successful payment has an
+     * immutable ledger record).
+     *
+     * The money itself is already recorded, atomically, one row per allocation, in
+     * order_line_allocation_settlements by the RPC above. What cash lacked is the row that says "one
+     * collection of N cents happened, by this method, for these orders" -- the thing a card split has
+     * in payment_events. That goes in `non_gateway_payment_events` (never payment_events: no gateway
+     * saw this). Card is excluded: a card split is a gateway charge, and its event row is the
+     * gateway's.
+     *
+     * NOT UNDONE ON FAILURE, unlike the whole-tab settle: the allocation claims are committed and
+     * append-only, so there is nothing safe to put back. The outcome is carried into the audit row
+     * and the response (`ledger_event`) so a missing event row is visible, never inferred.
+     */
+    let ledgerEvent: 'recorded' | 'failed' | null = null
+    let ledgerEventId: string | null = null
+    if (method === 'cash') {
+      const ledger = await recordNonGatewayPaymentEvent(supabase, {
+        restaurantId: terminal.restaurantId,
+        origin: 'terminal_allocation_settle',
+        method,
+        // The allocation ledger's own figures, as the RPC claimed them. Never the client's.
+        billCents: result.applied.reduce((sum, a) => sum + a.amount_cents, 0),
+        // Collected with it whether or not payment_tips could attribute it.
+        tipCents,
+        orderIds,
+        tabId,
+        allocationIds: result.applied.map((a) => a.allocation_id),
+        paymentReference,
+        idempotencyKey: `terminal_allocation_settle:${paymentReference}`,
+        recordedBy: attributedStaffUserId,
+        actorAttribution: attributedStaffUserId ? 'staff_authorized' : 'terminal_only',
+        terminalId: terminal.terminalId,
+        source: 'terminal/tabs/settle-allocations',
+      })
+      ledgerEvent = ledger.recorded ? 'recorded' : 'failed'
+      ledgerEventId = ledger.recorded ? ledger.eventId : null
+    }
+
     const completedOrderIds: string[] = []
     for (const orderId of orderIds) {
       const { data: fullyPaid, error: fullyPaidError } = await supabase.rpc('order_is_fully_paid_by_allocations', {
@@ -645,6 +686,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
             }
           : {}),
         completed_order_ids: completedOrderIds,
+        // Cash only: whether the event-level ledger row exists (Sprint 2026-09-29).
+        ...(ledgerEvent ? { ledger_event: ledgerEvent, ledger_event_id: ledgerEventId } : {}),
         settled_at: new Date().toISOString(),
       },
     })
@@ -671,6 +714,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       // Same contract as the audit entry: absent means no gratuity was keyed. The settlement
       // succeeded either way, so this is a reconciliation flag and not an error status.
       ...(tipCents > 0 ? { tip_cents: tipCents, tip_recorded: tipOutcome } : {}),
+      // Additive, cash only. 'failed' means the allocations are settled but the event row is
+      // missing and needs reconciling.
+      ...(ledgerEvent ? { ledger_event: ledgerEvent, ledger_event_id: ledgerEventId } : {}),
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err

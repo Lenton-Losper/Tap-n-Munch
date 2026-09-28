@@ -5,6 +5,7 @@ import { generatePaymentReference } from '@/lib/payment-reference'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import { parseTipCents, recordTip } from '@/lib/payments/tips'
 import { recordGatewaySaleEvent } from '@/lib/payments/record-gateway-sale-event'
+import { recordNonGatewayPaymentEvent } from '@/lib/payments/record-non-gateway-payment-event'
 import {
   centsToMajor,
   FINANCIAL_ORDER_COLUMNS,
@@ -307,9 +308,9 @@ export async function POST(
     // audit_logs.metadata.amount below, both `numeric` with no scale. The comparison on the
     // next line is unaffected either way -- amountsMatch works in integer cents (#180).
     const outstandingCentsOf = (id: unknown) => financials.get(String(id))?.outstandingCents ?? 0
-    const expectedAmount = roundToCents(
-      centsToMajor((tabOrders ?? []).reduce((sum, o) => sum + outstandingCentsOf(o.id), 0)),
-    )
+    // The same figure in integer cents, for the ledgers: what the BILL is, gratuity excluded.
+    const expectedCents = (tabOrders ?? []).reduce((sum, o) => sum + outstandingCentsOf(o.id), 0)
+    const expectedAmount = roundToCents(centsToMajor(expectedCents))
 
     /**
      * A settlement that would collect nothing is refused rather than recorded. Every item is
@@ -681,6 +682,107 @@ export async function POST(
     }
 
     /**
+     * ================================================================================================
+     * THE NON-GATEWAY LEDGER ROW -- NO LEDGER, NO SETTLEMENT (Sprint 2026-09-29 brief)
+     * ================================================================================================
+     *
+     * EVERY SUCCESSFUL PAYMENT MUST HAVE AN IMMUTABLE FINANCIAL LEDGER RECORD. The F2 ruling below
+     * ("THAT LEAVES CASH WITH NO LEDGER ROW") is reversed for that half: cash and PayToday now get a
+     * `non_gateway_payment_events` row. The other half of F2 stands -- the row is NOT in
+     * payment_events, so nothing that reconciles against Finatic can mistake it for a gateway sale.
+     *
+     * REQUIRED, and written right after the claim so a failure can still be undone. Nothing has moved
+     * through a gateway on this path: the cash is in the waiter's hand, and a refused settlement is
+     * one they retry. So when the row cannot be written the claim is put back exactly as it was read
+     * (conditioned on this request's own reference, like the N2 undo above) and the request fails --
+     * a paid order with no ledger row is exactly what the invariant forbids. The ledger row itself is
+     * immutable and so is never the thing undone: it is written LAST of the things that can fail.
+     *
+     * Amount = the server's bill (Σ outstanding) + the gratuity, the same "what was collected"
+     * meaning payment_events.amount has for a card; tip_cents says which part was the gratuity.
+     */
+    let nonGatewayLedgerEventId: string | null = null
+    if (!usesGateway) {
+      const ledger = await recordNonGatewayPaymentEvent(supabase, {
+        restaurantId: terminal.restaurantId,
+        origin: 'terminal_tab_settle',
+        method,
+        billCents: expectedCents,
+        tipCents,
+        orderIds: claimedIds,
+        tabId,
+        paymentReference,
+        idempotencyKey: `terminal_tab_settle:${paymentReference}`,
+        recordedBy: attributedStaffUserId,
+        actorAttribution: attributedStaffUserId ? 'staff_authorized' : 'terminal_only',
+        terminalId: terminal.terminalId,
+        source: 'terminal/tabs/settle',
+      })
+      if (!ledger.recorded) {
+        const unrevertedIds: string[] = []
+        for (const id of claimedIds) {
+          const prior = priorById.get(id) as Record<string, unknown> | undefined
+          const { data: undone, error: undoError } = await supabase
+            .from('orders')
+            .update({
+              payment_status: prior?.payment_status ?? null,
+              payment_method: prior?.payment_method ?? null,
+              payment_reference: prior?.payment_reference ?? null,
+              payment_voucher_no: prior?.payment_voucher_no ?? null,
+              status: prior?.status ?? null,
+              paid_at: prior?.paid_at ?? null,
+              completed_at: prior?.completed_at ?? null,
+              terminal_pushed_at: prior?.terminal_pushed_at ?? null,
+              settled_charge_cents: prior?.settled_charge_cents ?? null,
+            })
+            .eq('id', id)
+            .eq('restaurant_id', terminal.restaurantId)
+            .eq('payment_reference', paymentReference)
+            .select('id')
+          if (undoError || !undone || undone.length === 0) unrevertedIds.push(id)
+        }
+        console.error('[terminal/tabs/settle] non-gateway ledger row NOT written; settlement undone', {
+          tabId,
+          order_ids: claimedIds,
+          payment_reference: paymentReference,
+          unreverted_order_ids: unrevertedIds,
+          error: ledger.error,
+        })
+        const { error: ledgerAuditError } = await supabase.from('audit_logs').insert({
+          restaurant_id: terminal.restaurantId,
+          action: 'payment.settle_ledger_not_recorded',
+          entity_type: 'tabs',
+          entity_id: tabId,
+          metadata: {
+            order_ids: claimedIds,
+            // Non-empty means orders are left PAID with no ledger row. Staff must reconcile.
+            unreverted_order_ids: unrevertedIds,
+            method,
+            amount: expectedAmount,
+            tip_cents: tipCents,
+            payment_reference: paymentReference,
+            terminal_id: terminal.terminalId,
+            staff_user_id: attributedStaffUserId,
+            error: ledger.error ?? null,
+            recorded_at: new Date().toISOString(),
+          },
+        })
+        if (ledgerAuditError) {
+          console.error('[terminal/tabs/settle] ledger-failure audit insert failed', ledgerAuditError)
+        }
+        return NextResponse.json(
+          {
+            error: 'The payment could not be recorded, so nothing was settled. Try again.',
+            code: 'PAYMENT_LEDGER_NOT_RECORDED',
+            unreverted_order_ids: unrevertedIds,
+          },
+          { status: 503 },
+        )
+      }
+      nonGatewayLedgerEventId = ledger.eventId
+    }
+
+    /**
      * WHAT THIS SETTLEMENT APPLIED TO EACH ORDER (orders.settled_charge_cents, 20260928135000).
      *
      * The projection reads `paid` for a paid order from this column. On the gateway paths a trigger
@@ -886,10 +988,17 @@ export async function POST(
      * them would be one that can never be matched to anything -- worse than an absence, because it
      * looks reconciled.
      *
-     * THAT LEAVES CASH WITH NO LEDGER ROW, and the `payments` insert above is not one. Measured
-     * 2026-09-19: `payments` holds 14 rows against 5,389 paid orders. See F10 in
-     * docs/payment-hardening-remediation.md -- a durable record of cash collection is a gap this
-     * sprint names rather than closes.
+     * CASH AND PAYTODAY: CLOSED (Sprint 2026-09-29 brief). This used to read "THAT LEAVES CASH WITH NO
+     * LEDGER ROW ... a gap this sprint names rather than closes". They now get their row in
+     * `non_gateway_payment_events`, written and required right after the claim (above).
+     *
+     * THE AMOUNT IS WHAT THE CARD WAS CHARGED: the bill PLUS the gratuity (Sprint 2026-09-29 brief,
+     * task 3). It used to be `expectedAmount`, the bill alone, while settle_order_payment() records
+     * `p_gateway_amount_cents` -- the charge, tip included -- for the same kind of row. So a tipped
+     * tab settle wrote a sale row that disagreed with the charge, the device's own recordSaleEvent
+     * (which reports the charged amount) then hit this row's key with a different amount and got a
+     * 409, and the refundable balance derived from it was short by the tip. The gratuity part stays
+     * derivable exactly as for the RPC's rows: payment_tips.tip_cents under this payment_reference.
      *
      * NOT AWAITED FOR ITS SUCCESS -- the settlement has already happened. The outcome is carried
      * into the audit metadata and the response, the same contract `payment_record_written` has.
@@ -903,8 +1012,9 @@ export async function POST(
         // inventing one would produce a row that matches no Finatic transaction (see F17).
         businessOrderNo: businessOrderNo || null,
         transactionId: voucherNo || gatewayReference || null,
-        // THE SERVER'S FIGURE. `amount` is the client's and is only ever a cross-check.
-        amount: expectedAmount,
+        // THE SERVER'S FIGURE -- the bill it validated plus the gratuity it recorded. `amount` is
+        // the client's and is only ever a cross-check.
+        amount: roundToCents(centsToMajor(expectedCents + tipCents)),
         terminalId: terminal.terminalId,
         source: 'terminal/tabs/settle',
       })
@@ -1012,6 +1122,8 @@ export async function POST(
         // than inferred: a card sale with no payment_events row is precisely the silent gap that
         // left 1,630 paid orders unreconcilable against Finatic.
         ...(usesGateway ? { sale_event: saleEventOutcome } : {}),
+        // Sprint 2026-09-29: the immutable ledger row of a cash / PayToday settlement.
+        ...(!usesGateway ? { ledger_event_id: nonGatewayLedgerEventId } : {}),
         /**
          * The gratuity, if one was keyed. Present ONLY when there was one, so an absent key means
          * "no tip" and never "a tip we lost". `tip_recorded` carries the outcome verbatim --
@@ -1112,6 +1224,8 @@ export async function POST(
        * idempotency branch instead of inserting one.
        */
       ...(usesGateway ? { sale_event: saleEventOutcome } : {}),
+      // Additive. The non_gateway_payment_events row that records a cash / PayToday settlement.
+      ...(!usesGateway ? { ledger_event_id: nonGatewayLedgerEventId } : {}),
       // Same contract as payment_record_written: absent means no gratuity was keyed, and a value
       // other than 'recorded' means one was taken and needs reconciling. The terminal can print
       // the receipt either way -- the settlement succeeded.
