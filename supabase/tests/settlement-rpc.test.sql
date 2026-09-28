@@ -695,7 +695,7 @@ END;
 $$;
 
 -- ==================================================================================================
--- T13. settled_charge_cents (20260928140000): WHAT A SETTLEMENT APPLIED, RECORDED PER ORDER.
+-- T13. settled_charge_cents (20260928135000): WHAT A SETTLEMENT APPLIED, RECORDED PER ORDER.
 --
 -- The financial projection reads `paid` for a paid order from this column. Before it existed the
 -- only possible basis was `paid = total`, which is wrong for every order amended before payment.

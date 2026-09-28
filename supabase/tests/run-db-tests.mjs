@@ -39,7 +39,7 @@ const MIGRATIONS = [
   'supabase/migrations/20260919092000_settle_lead_merchant_order_no.sql',
   'supabase/migrations/20260919093000_settle_validate_before_write.sql',
   // Sprint 2026-09-28: the per-order settled charge the financial projection reads for `paid`.
-  'supabase/migrations/20260928140000_orders_settled_charge_cents.sql',
+  'supabase/migrations/20260928135000_orders_settled_charge_cents.sql',
   // amend_order_lines: the original, the void_reason column the route writes, and the redefinition
   // that refuses paid lines. The ORIGINAL is applied first so the suite exercises the real
   // CREATE OR REPLACE path production will take -- a second definition would be an overload.
@@ -274,7 +274,7 @@ const MUTATIONS = {
     },
   },
   /**
-   * THE PER-ORDER SETTLED CHARGE (20260928140000), removed.
+   * THE PER-ORDER SETTLED CHARGE (20260928135000), removed.
    *
    * Without the trigger every paid order keeps settled_charge_cents NULL, the projection falls back
    * to `paid = total`, and an amended order paid at its live figure reads as underpaid by every

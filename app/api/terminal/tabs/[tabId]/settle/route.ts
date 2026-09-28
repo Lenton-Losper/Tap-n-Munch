@@ -580,7 +580,7 @@ export async function POST(
     }
 
     /**
-     * WHAT THIS SETTLEMENT APPLIED TO EACH ORDER (orders.settled_charge_cents, 20260928140000).
+     * WHAT THIS SETTLEMENT APPLIED TO EACH ORDER (orders.settled_charge_cents, 20260928135000).
      *
      * The projection reads `paid` for a paid order from this column. On the gateway paths a trigger
      * captures it from pending_charge_cents; this route states it EXPLICITLY, per order, because a
