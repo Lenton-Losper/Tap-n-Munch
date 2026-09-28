@@ -273,7 +273,8 @@ export async function POST(
         // tab_id is selected so the payment intent can name the tab it belongs to. A tab-less
         // order (a POS walk-up) yields null, which the column permits. The financial columns are
         // what the projection below needs to know what is still owed.
-        .select(`${FINANCIAL_ORDER_COLUMNS}, pending_settlement_id`)
+        // order_number names a refused order to the waiter (not_claimable below).
+        .select(`${FINANCIAL_ORDER_COLUMNS}, pending_settlement_id, order_number`)
         .in('id', settlementOrderIds)
         .eq('restaurant_id', terminal.restaurantId)
 
@@ -304,13 +305,23 @@ export async function POST(
        * Refused before any expectation or intent is written, so nothing is charged. The waiter
        * refreshes the tab and charges what is actually still open.
        */
-      const notClaimable = orderRow.filter((r) => {
+      /**
+       * Why each order is refused, so the terminal can say it in words rather than guess from the
+       * raw status pair. Cancelled wins over paid (a cancelled order was never paid for), and a
+       * held order is named as held: its money exists, it just is not confirmed.
+       */
+      const notClaimableReason = (r: {
+        payment_status?: unknown
+        status?: unknown
+      }): 'paid' | 'cancelled' | 'held' | null => {
         const ps = String(r.payment_status ?? '').trim().toLowerCase()
         const st = String(r.status ?? '').trim().toLowerCase()
-        return (
-          ps === 'paid' || ps === 'cancelled' || st === 'cancelled' || isHeldForReviewPaymentStatus(ps)
-        )
-      })
+        if (ps === 'cancelled' || st === 'cancelled') return 'cancelled'
+        if (ps === 'paid') return 'paid'
+        if (isHeldForReviewPaymentStatus(ps)) return 'held'
+        return null
+      }
+      const notClaimable = orderRow.filter((r) => notClaimableReason(r) !== null)
       if (notClaimable.length > 0) {
         return NextResponse.json(
           {
@@ -322,6 +333,16 @@ export async function POST(
               order_id: String(r.id),
               payment_status: r.payment_status ?? null,
               status: r.status ?? null,
+            })),
+            // Additive (Sprint 2026-09-29, F-TERMPAY): the same orders with a typed reason, so the
+            // terminal can tell the waiter what happened instead of a generic failure.
+            not_claimable: notClaimable.map((r) => ({
+              order_id: String(r.id),
+              order_number:
+                (r as { order_number?: unknown }).order_number == null
+                  ? null
+                  : Number((r as { order_number?: unknown }).order_number),
+              reason: notClaimableReason(r),
             })),
           },
           { status: 409 },
