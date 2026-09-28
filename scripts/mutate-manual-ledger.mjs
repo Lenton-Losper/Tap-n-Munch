@@ -29,12 +29,18 @@ const TRAIL = 'lib/orders/cancel-order-with-trail.ts'
 const TAB_SETTLE = 'app/api/terminal/tabs/[tabId]/settle/route.ts'
 const ALLOC_SETTLE = 'app/api/terminal/tabs/[tabId]/settle-allocations/route.ts'
 const ORDER_PAYMENT = 'app/api/terminal/orders/[orderId]/payment/route.ts'
+const AUTO_CANCEL = 'lib/orders/auto-cancel-stale-pos-orders.ts'
+const EXPIRE_HOSTED = 'lib/orders/expire-hosted-pending-orders.ts'
+const PAYMENT_FAILED = 'lib/payments/handle-terminal-payment-failed.ts'
+const FINANCIALS = 'lib/orders/order-financials.ts'
 const SUITES = [
   '__tests__/orders-status-payment-invariants.test.ts',
   '__tests__/orders-status-paid-cancel.test.ts',
   '__tests__/tab-settle-ledger-tip.test.ts',
   '__tests__/tab-settle-allocations-route.test.ts',
   '__tests__/terminal-order-payment-non-gateway-ledger.test.ts',
+  '__tests__/auto-cancel-never-over-money.test.ts',
+  '__tests__/order-financials-refunds.test.ts',
 ]
 
 const MUTATIONS = {
@@ -142,6 +148,26 @@ const MUTATIONS = {
   FM12: {
     what: 'a cash success on the single-order terminal callback writes no ledger row',
     edits: [[ORDER_PAYMENT, '      if (!methodUsesGateway(paymentMethod)) {', '      if (false as boolean) {']],
+  },
+  FM13: {
+    what: 'the stale-POS sweep cancels orders with money on them again',
+    edits: [[AUTO_CANCEL, '  const cancellableIds = ids.filter((id) => !moneyHeld.has(String(id)))', '  const cancellableIds = ids']],
+  },
+  FM14: {
+    what: 'the hosted-checkout expiry cancels orders with money on them again',
+    edits: [[EXPIRE_HOSTED, '  const cancellableIds = candidateIds.filter((id) => !moneyHeld.has(id))', '  const cancellableIds = candidateIds']],
+  },
+  FM15: {
+    what: 'the terminal payment-failed path cancels an order with money on it again',
+    edits: [[PAYMENT_FAILED, '  if (moneyHeld === null || moneyHeld.has(params.orderId)) {', '  if (false as boolean) {']],
+  },
+  FM16: {
+    what: 'the money check FAILS OPEN: an unreadable ledger reads as "no money"',
+    edits: [[GUARD, '    return null\n  }\n  return withMoney', '    return new Set<string>()\n  }\n  return withMoney']],
+  },
+  FM17: {
+    what: 'the financial projection ignores refunds again (refund-then-cancel reads as overpaid)',
+    edits: [[FINANCIALS, '  const refundedCents = Math.min(paidCents, Math.round(paidCents * fraction))', '  const refundedCents = Math.min(0, fraction)']],
   },
 }
 

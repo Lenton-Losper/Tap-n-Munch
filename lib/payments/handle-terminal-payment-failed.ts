@@ -13,6 +13,7 @@ import {
   type FinaticOrderPaidResult,
 } from '@/lib/payments/query-finatic-order-paid'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
+import { findOrdersWithMoney } from '@/lib/orders/paid-order-cancellation'
 import { stagingFinaticQueryStub } from '@/lib/payments/staging-finatic-stub'
 /**
  * The audit action the other three cancel paths already write when a Finatic answer is not one we
@@ -456,6 +457,23 @@ export async function handleTerminalPaymentFailed(
 
       return { outcome: 'left_pending_finatic_uncertain', reason }
     }
+  }
+
+  /**
+   * (A refusal is reported as cancel_conflict: the order is left as it is, and every caller already
+   * reads that as "not cancelled".)
+   * NEVER OVER MONEY (Sprint 2026-09-29, team-lead follow-up). A pending order can still carry a
+   * settled item allocation, a non-gateway ledger row or a gateway sale; cancelling it would write
+   * that money away. Those orders are left exactly as they are. An unreadable payment state cancels
+   * NOTHING this run -- the sweep retries next tick, which is recoverable; a cancelled payment is not.
+   */
+  const moneyHeld = await findOrdersWithMoney(supabase as never, [params.orderId])
+  if (moneyHeld === null || moneyHeld.has(params.orderId)) {
+    console.error('[handleTerminalPaymentFailed] NOT cancelled: money is recorded against this order, or its payment state is unreadable', {
+      orderId: params.orderId,
+      unreadable: moneyHeld === null,
+    })
+    return { outcome: 'cancel_conflict' }
   }
 
   const cancelledAt = new Date().toISOString()

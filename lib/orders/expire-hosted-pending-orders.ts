@@ -1,5 +1,6 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { ORDER_CANCELLED_ACTION } from '@/lib/orders/cancel-order-with-trail'
+import { findOrdersWithMoney } from '@/lib/orders/paid-order-cancellation'
 
 const TEN_MIN_MS = 10 * 60 * 1000
 
@@ -52,6 +53,33 @@ export async function expireHostedPendingOrders(
   const tenMinutesAgo = new Date(Date.now() - TEN_MIN_MS).toISOString()
   const cancelledAt = new Date().toISOString()
 
+  // The candidates first, so the money check below can run before anything is written.
+  const { data: candidates, error: candidateError } = await supabase
+    .from('orders')
+    .select('id')
+    .eq('payment_status', 'pending')
+    .eq('payment_channel', 'hosted')
+    .lt('placed_at', tenMinutesAgo)
+  if (candidateError) throw candidateError
+  const candidateIds = (candidates ?? []).map((o: { id: unknown }) => String(o.id))
+  if (candidateIds.length === 0) return { expiredCount: 0, closedTabCount: 0, auditFailureCount: 0 }
+
+  /**
+   * NEVER OVER MONEY (Sprint 2026-09-29, team-lead follow-up). A pending order can still carry a
+   * settled item allocation, a non-gateway ledger row or a gateway sale; cancelling it would write
+   * that money away. Those orders are left exactly as they are. An unreadable payment state cancels
+   * NOTHING this run -- the sweep retries next tick, which is recoverable; a cancelled payment is not.
+   */
+  const moneyHeld = await findOrdersWithMoney(supabase, candidateIds)
+  if (moneyHeld === null) return { expiredCount: 0, closedTabCount: 0, auditFailureCount: 0 }
+  if (moneyHeld.size > 0) {
+    console.error('[EXPIRE-HOSTED] NOT cancelled: money is recorded against these orders', {
+      order_ids: [...moneyHeld],
+    })
+  }
+  const cancellableIds = candidateIds.filter((id) => !moneyHeld.has(id))
+  if (cancellableIds.length === 0) return { expiredCount: 0, closedTabCount: 0, auditFailureCount: 0 }
+
   const { data: expiredOrders, error } = await supabase
     .from('orders')
     .update({
@@ -60,9 +88,9 @@ export async function expireHostedPendingOrders(
       cancelled_at: cancelledAt,
       cancellation_reason: 'hosted_timeout',
     })
+    .in('id', cancellableIds)
+    // Re-asserted: a payment landing since the candidate read wins.
     .eq('payment_status', 'pending')
-    .eq('payment_channel', 'hosted')
-    .lt('placed_at', tenMinutesAgo)
     .select('id, restaurant_id, table_number, tab_id, total, paycloud_merchant_order_no')
 
   if (error) throw error

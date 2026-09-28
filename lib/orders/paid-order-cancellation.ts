@@ -156,3 +156,91 @@ export async function checkPaidOrderCancellation(
 
   return { allowed: true, fullyRefunded: false }
 }
+
+/**
+ * ================================================================================================
+ * THE BATCH FORM, FOR THE AUTOMATIC CANCELLERS (Sprint 2026-09-29, team-lead follow-up)
+ * ================================================================================================
+ *
+ * The stale-POS sweep, the hosted-checkout expiry and the terminal payment-failed path cancel
+ * orders that are still `pending` (or another claimable state), so `payment_status = 'paid'` can
+ * never stop them -- but a pending order can still carry money: a settled item allocation, a
+ * non-gateway ledger row, or a gateway sale the device recorded while the order row never moved.
+ * Cancelling it writes that money away as 'cancelled'.
+ *
+ * Returns the ids that carry ANY of that evidence (a gateway sale counts unless refunded in full),
+ * or null when it could not be read -- which every caller treats as "cancel nothing this run".
+ * Not scoped to a restaurant: the sweeps run across venues, and order ids are uuids.
+ */
+export async function findOrdersWithMoney(
+  supabase: Supabase,
+  orderIds: readonly string[],
+): Promise<Set<string> | null> {
+  const ids = [...new Set(orderIds.map(String).filter(Boolean))]
+  const withMoney = new Set<string>()
+  if (ids.length === 0) return withMoney
+  const wanted = new Set(ids)
+  const CHUNK = 200
+  try {
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const batch = ids.slice(i, i + CHUNK)
+
+      const { data: allocations, error: allocError } = await supabase
+        .from('order_line_allocations')
+        .select('order_id, settled_at')
+        .in('order_id', batch)
+      if (allocError) throw new Error(allocError.message)
+      for (const a of (allocations ?? []) as Array<{ order_id: unknown; settled_at: unknown }>) {
+        if (a.settled_at != null) withMoney.add(String(a.order_id))
+      }
+
+      const { data: ledger, error: ledgerError } = await supabase
+        .from('non_gateway_payment_events')
+        .select('order_ids')
+        .overlaps('order_ids', batch)
+      if (ledgerError) throw new Error(ledgerError.message)
+      for (const row of (ledger ?? []) as Array<{ order_ids: unknown }>) {
+        for (const id of Array.isArray(row.order_ids) ? row.order_ids.map(String) : []) {
+          if (wanted.has(id)) withMoney.add(id)
+        }
+      }
+
+      const { data: sales, error: salesError } = await supabase
+        .from('payment_events')
+        .select('business_order_no, amount, order_ids')
+        .eq('event_type', 'sale')
+        .overlaps('order_ids', batch)
+      if (salesError) throw new Error(salesError.message)
+      const saleRows = (sales ?? []) as Array<{ business_order_no: unknown; amount: unknown; order_ids: unknown }>
+      if (saleRows.length === 0) continue
+
+      const origins = [...new Set(saleRows.map((s) => String(s.business_order_no ?? '')).filter(Boolean))]
+      const { data: refunds, error: refundError } = await supabase
+        .from('payment_events')
+        .select('origin_business_order_no, amount')
+        .eq('event_type', 'refund_succeeded')
+        .in('origin_business_order_no', origins)
+      if (refundError) throw new Error(refundError.message)
+      const refunded = new Map<string, number>()
+      for (const r of (refunds ?? []) as Array<{ origin_business_order_no: unknown; amount: unknown }>) {
+        const key = String(r.origin_business_order_no ?? '')
+        refunded.set(key, (refunded.get(key) ?? 0) + Math.round(Number(r.amount) * 100))
+      }
+      for (const s of saleRows) {
+        const saleCents = Math.round(Number(s.amount) * 100)
+        // Refunded in full: the money has gone back, and the sale no longer holds the order.
+        if ((refunded.get(String(s.business_order_no ?? '')) ?? 0) >= saleCents && saleCents > 0) continue
+        for (const id of Array.isArray(s.order_ids) ? s.order_ids.map(String) : []) {
+          if (wanted.has(id)) withMoney.add(id)
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[findOrdersWithMoney] payment state unreadable; nothing will be cancelled', {
+      orders: ids.length,
+      error: e instanceof Error ? e.message : String(e),
+    })
+    return null
+  }
+  return withMoney
+}

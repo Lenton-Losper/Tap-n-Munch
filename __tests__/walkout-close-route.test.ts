@@ -80,12 +80,15 @@ jest.mock('@/lib/supabase/server', () => ({
        * 2026-09-28), which also reads the orders' lines and item-ledger allocations. None exist
        * here, so every unpaid order owes its stored total.
        */
-      if (table === 'order_lines' || table === 'order_line_allocations') {
+  // Sprint 2026-09-29: the projection is net of refunds, read from payment_events for paid orders.
+      if (table === 'order_lines' || table === 'order_line_allocations' || table === 'payment_events') {
         const empty: Record<string, unknown> = {}
         Object.assign(empty, {
           select: () => empty,
           in: () => empty,
           is: () => empty,
+          eq: () => empty,
+          overlaps: () => empty,
           order: () => empty,
           range: () => empty,
           then: (resolve: (v: unknown) => unknown) =>
