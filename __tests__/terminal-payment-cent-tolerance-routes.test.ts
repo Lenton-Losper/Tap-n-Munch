@@ -146,6 +146,8 @@ jest.mock('@/lib/supabase/server', () => ({
         is: () => b,
         or: () => b,
         order: () => b,
+        // The financial projection pages its reads with .order().range(); both chain.
+        range: () => b,
         limit: () => b,
         single: async () => ({
           data: state.table === 'tabs' ? tabRow : orderRow,

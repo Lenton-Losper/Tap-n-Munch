@@ -26,6 +26,7 @@ import { InfoBanner } from '@/components/receipt/info-banner'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
 import { OrderEditPanel } from '@/components/order-edit-panel'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { displayOrderTotal, voidedTotalsLabel } from '@/lib/orders/voided-totals-label'
 import { deriveIsCounterService, serviceCopy } from '@/lib/customer-copy/service-model'
 
 type Order = {
@@ -39,10 +40,12 @@ type Order = {
   payment_channel?: string | null
   customer_ready_to_pay?: boolean | null
   total: number
+  /** Present only when staff voids moved the order away from its placed total. */
+  original_total?: number
   subtotal?: number
   tax?: number
   table_number?: number
-  items: Array<{ quantity: number; name: string; subtotal: number }>
+  items: Array<{ quantity: number; name: string; subtotal: number; voided?: boolean }>
 }
 
 function mapGuestRowToOrder(row: Record<string, unknown>): Order {
@@ -73,7 +76,13 @@ function mapGuestRowToOrder(row: Record<string, unknown>): Order {
       row.customer_ready_to_pay === true || row.customer_ready_to_pay === false
         ? Boolean(row.customer_ready_to_pay)
         : null,
-    total: Number(row.total || 0),
+    /**
+     * Sprint 2026-09-28: what the order is worth NOW -- the stored total less any lines staff
+     * voided (attached server-side by lib/guest-orders/guest-financials.ts). The stored figure is
+     * kept as `original_total` only when voids have moved it, so the screen can show both.
+     */
+    total: displayOrderTotal(row),
+    original_total: voidedTotalsLabel(row) ? Number(row.total || 0) : undefined,
     subtotal: row.subtotal != null ? Number(row.subtotal) : undefined,
     tax: row.tax != null ? Number(row.tax) : undefined,
     table_number: row.table_number != null ? Number(row.table_number) : undefined,
@@ -93,6 +102,8 @@ function mapGuestRowToOrder(row: Record<string, unknown>): Order {
           size?: unknown
           addons?: unknown
           selectedVariants?: unknown
+          // Sprint 2026-09-28: staff voided this line; shown struck through, not owed.
+          voided?: boolean
         }>)
       : [],
   }
@@ -296,6 +307,7 @@ export default function OrderConfirmationPage() {
       isTabOrder={Boolean(String(orderRow?.tab_id ?? '').trim())}
       items={order.items}
       total={order.total}
+      originalTotal={order.original_total}
       subtotal={order.subtotal}
       tax={order.tax}
       currency={currency}

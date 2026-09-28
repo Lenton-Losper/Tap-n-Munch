@@ -36,6 +36,12 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { isLineReady, type LineRouteTo, type LineState } from '@/lib/orders/order-lines'
 import { toCents } from '@/lib/billing/split-cents'
+import {
+  centsToMajor,
+  financialsWire,
+  loadTabFinancials,
+  type FinancialsWire,
+} from '@/lib/orders/order-financials'
 
 export const dynamic = 'force-dynamic'
 
@@ -241,7 +247,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
      * The 404 still wins over any line data: the tab is checked first below, exactly as before, so
      * a terminal guessing another venue's uuid gets the same answer it always did.
      */
-    const [tabRes, linesRes, allocationsRes] = await Promise.all([
+    const [tabRes, linesRes, allocationsRes, tabFinancials] = await Promise.all([
       supabase
         .from('tabs')
         .select('id, table_number, status, total, opened_by_user_id, created_at')
@@ -281,6 +287,19 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
         .eq('restaurant_id', terminal.restaurantId)
         .eq('tab_id', tabId)
         .is('voided_at', null),
+      /**
+       * C2 -- THE MONEY, FROM THE ONE FINANCIAL PROJECTION (Sprint 2026-09-28).
+       *
+       * `tabs.total` is a cache with several writers and two definitions, and `orders.total` keeps
+       * counting voided lines because amend_order_lines never rewrites an order. The table view
+       * showed a waiter N$1,945 for Riviera #160 after N$1,480 of it had been voided. The figures
+       * below are lib/orders/order-financials.ts's, over EVERY order on the tab (including orders
+       * with no lines). Keyed by tab id, so it joins this wave.
+       *
+       * FAILS CLOSED: a projection that cannot be read fails the request like a failed line read,
+       * rather than serving a bill that may count cancelled food.
+       */
+      loadTabFinancials(supabase, terminal.restaurantId, tabId),
     ])
 
     const { data: tab, error: tabError } = tabRes
@@ -437,12 +456,20 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
       })
     }
 
+    const financialOrders: Record<string, FinancialsWire> = {}
+    for (const order of tabFinancials.orders) financialOrders[order.orderId] = financialsWire(order)
+
     return NextResponse.json({
       tab: {
         id: tab.id,
         table_number: tab.table_number ?? null,
         status: tab.status,
-        total: tab.total,
+        /**
+         * C2: the tab's LIVE value -- every order's stored total less its voided lines, a
+         * reduction counted once (on its replacement), settlement artefacts excluded. NOT the
+         * stale `tabs.total` cache. What is still owed is `financials.tab.outstanding_cents`.
+         */
+        total: centsToMajor(tabFinancials.liveCents),
         opened_at: tab.created_at,
         opened_by_user_id: tab.opened_by_user_id ?? null,
       },
@@ -468,6 +495,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ tabId: s
        * total and simply not claim anything about readiness.
        */
       has_lines: summary.total_lines > 0,
+      /**
+       * C2 (additive). Integer cents. `tab` sums `orders`; an order that is a settlement artefact
+       * is absent from both. `overpaid_cents` is exposed, never clamped away: a void after payment
+       * is money the customer may be owed back.
+       */
+      financials: { tab: financialsWire(tabFinancials), orders: financialOrders },
       server_time: new Date(now).toISOString(),
     })
   } catch (err: unknown) {

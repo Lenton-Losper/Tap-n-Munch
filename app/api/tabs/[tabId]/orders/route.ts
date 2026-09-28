@@ -11,6 +11,12 @@ import {
   isSettlementArtefact,
 } from '@/lib/tabs/tab-outstanding'
 import { buildTabOrderGroups } from '@/lib/tabs/tab-order-groups'
+import {
+  computeOrderFinancials,
+  readProjectionInputs,
+  type FinancialOrderInput,
+  type OrderFinancials,
+} from '@/lib/orders/order-financials'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 
 export const dynamic = 'force-dynamic'
@@ -137,7 +143,8 @@ export async function GET(
     // column list is now the measured one and the error path below no longer looks like empty.
     // Measured against staging: orders and order_requests both carry `placed_at`, neither
     // carries `created_at`.
-    const ORDER_LINE_COLUMNS = `id, status, order_number, items, member_session_id, session_id, placed_at, ${TAB_TOTAL_ORDER_COLUMNS}`
+    // settled_charge_cents is the projection's paid basis for a paid order (20260928140000).
+    const ORDER_LINE_COLUMNS = `id, status, order_number, items, member_session_id, session_id, placed_at, settled_charge_cents, ${TAB_TOTAL_ORDER_COLUMNS}`
     const REQUEST_LINE_COLUMNS = `id, member_session_id, session_id, placed_at, ${TAB_PENDING_REQUEST_COLUMNS}`
 
     const [{ data: orderRows, error: ordersError }, { data: requestRows, error: requestsError }] =
@@ -179,6 +186,41 @@ export async function GET(
     const orders = orderRows ?? []
     const requests = requestRows ?? []
 
+    /**
+     * THE PROJECTION'S OTHER INPUTS (Sprint 2026-09-28): the order_lines, which say what staff
+     * voided, and the item ledger, which says what was already paid item by item. Without them a
+     * voided line reads as owed and a reduction is owed twice -- once on the original order, once
+     * on its replacement. A failed read is treated like a failed order read: no figure, not a
+     * wrong one.
+     */
+    let projection: Awaited<ReturnType<typeof readProjectionInputs>>
+    try {
+      projection = await readProjectionInputs(
+        supabase,
+        (orders as Array<{ id?: unknown }>).map((o) => String(o.id ?? '')).filter(Boolean),
+      )
+    } catch (e) {
+      console.error('[TABS] shared tab projection read failed', e)
+      return NextResponse.json({
+        tab_id: normalizedTabId,
+        tab_status: String(tabRow.status ?? ''),
+        members: null,
+        unattributed: null,
+        totals: { payable: null, pending: null },
+      })
+    }
+    const financials = new Map<string, OrderFinancials>()
+    for (const row of orders as unknown as FinancialOrderInput[]) {
+      financials.set(
+        String(row.id),
+        computeOrderFinancials(
+          row,
+          projection.lines,
+          projection.allocationSettledByOrder.get(String(row.id)) ?? 0,
+        ),
+      )
+    }
+
     /** Derive the member key on the way out. The raw id never reaches buildTabOrderGroups. */
     const mapMemberKey = async (rows: Record<string, unknown>[]) => {
       const out: Record<string, unknown>[] = []
@@ -198,6 +240,7 @@ export async function GET(
       requests: await mapMemberKey(requests as Record<string, unknown>[]),
       owesMoney,
       isSettlementArtefact: (row) => isSettlementArtefact(row as never),
+      financials,
     })
 
     /**
@@ -205,7 +248,7 @@ export async function GET(
      * sum of the member figures: if those two can ever disagree, the disagreement must be
      * visible rather than hidden by deriving one from the other.
      */
-    const figures = computeTabFigures(orders as never, requests as never)
+    const figures = computeTabFigures(orders as never, requests as never, projection)
 
     return NextResponse.json({
       tab_id: normalizedTabId,

@@ -25,13 +25,59 @@
  * #278 class of bug applied to money. If a payment status is added, it is added there and every
  * consumer including this one follows.
  */
-import { owesMoney, roundToCents } from '@/lib/payments/payment-integrity'
+import { roundToCents } from '@/lib/payments/payment-integrity'
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
+import {
+  centsToMajor,
+  computeTabFinancials,
+  type FinancialLineInput,
+  type FinancialOrderInput,
+} from '@/lib/orders/order-financials'
 
+/**
+ * AMENDED TABS (Sprint 2026-09-28). `amend_order_lines` never rewrites an order, so `total` keeps
+ * counting voided lines and a reduction's surviving quantity is owed again on a replacement order.
+ * The figures below are therefore computed through the ONE financial projection
+ * (lib/orders/order-financials.ts) rather than by summing `total`. `owesMoney` still decides what
+ * is owed -- it is applied inside the projection, not restated here.
+ *
+ * A caller that passes the tab's order_lines (and item-ledger settlements) gets voided lines and
+ * part-payments taken off. A caller that cannot -- a row without an `id` cannot be joined to its
+ * lines -- gets the projection's no-coverage answer, which is `total` for an order that owes money:
+ * it fails toward owing, never toward letting a table close over unpaid food.
+ */
 export type TabOrderRow = {
+  id?: unknown
   total?: unknown
+  items?: unknown
+  status?: unknown
   payment_status?: unknown
   tab_settlement_for_tab_id?: unknown
+  settled_charge_cents?: unknown
+}
+
+/** The projection's other two inputs, when the caller has read them. */
+export type TabProjectionInputs = {
+  lines?: readonly FinancialLineInput[]
+  /** Σ item-ledger settlement cents per order id (settledCentsByOrder). */
+  allocationSettledByOrder?: ReadonlyMap<string, number>
+}
+
+function projectTab(rows: readonly TabOrderRow[] | null | undefined, inputs?: TabProjectionInputs) {
+  const list = Array.isArray(rows) ? rows : []
+  const orders: FinancialOrderInput[] = list.map((row, index) => ({
+    // A row read without its id cannot match a line; a synthetic id keeps it a distinct order.
+    id: String(row.id ?? '').trim() || `__row_${index}`,
+    total: row.total,
+    items: row.items,
+    status: row.status == null ? null : String(row.status),
+    payment_status: row.payment_status == null ? null : String(row.payment_status),
+    tab_settlement_for_tab_id:
+      row.tab_settlement_for_tab_id == null ? null : String(row.tab_settlement_for_tab_id),
+    settled_charge_cents:
+      row.settled_charge_cents == null ? null : Number(row.settled_charge_cents),
+  }))
+  return computeTabFinancials(orders, inputs?.lines ?? [], inputs?.allocationSettledByOrder ?? new Map())
 }
 
 /** The columns this module needs. Kept here so callers cannot under-select and get a wrong sum. */
@@ -86,11 +132,6 @@ export function isSettlementArtefact(row: TabOrderRow): boolean {
   return Boolean(String(row.tab_settlement_for_tab_id ?? '').trim())
 }
 
-function amount(row: TabOrderRow): number {
-  const n = Number(row.total)
-  return Number.isFinite(n) ? n : 0
-}
-
 /**
  * STILL OUTSTANDING — the authoritative "what does this table owe right now".
  *
@@ -108,13 +149,11 @@ function amount(row: TabOrderRow): number {
  *     ZERO such orders on staging and ZERO on production, so it changes no row today. It is here
  *     so that the first one to exist cannot silently double a total.
  */
-export function computeTabOutstanding(rows: readonly TabOrderRow[] | null | undefined): number {
-  const list = Array.isArray(rows) ? rows : []
-  return roundToCents(
-    list
-      .filter((row) => !isSettlementArtefact(row) && owesMoney(row.payment_status))
-      .reduce((sum, row) => sum + amount(row), 0),
-  )
+export function computeTabOutstanding(
+  rows: readonly TabOrderRow[] | null | undefined,
+  inputs?: TabProjectionInputs,
+): number {
+  return centsToMajor(projectTab(rows, inputs).outstandingCents)
 }
 
 /**
@@ -124,11 +163,14 @@ export function computeTabOutstanding(rows: readonly TabOrderRow[] | null | unde
  * say so and label it. No customer surface uses it today. If one starts to, the label it renders
  * must not read as "what you owe".
  */
-export function computeTabGrossOrdered(rows: readonly TabOrderRow[] | null | undefined): number {
-  const list = Array.isArray(rows) ? rows : []
-  return roundToCents(
-    list.filter((row) => !isSettlementArtefact(row)).reduce((sum, row) => sum + amount(row), 0),
-  )
+export function computeTabGrossOrdered(
+  rows: readonly TabOrderRow[] | null | undefined,
+  inputs?: TabProjectionInputs,
+): number {
+  // Everything ordered, paid or not, cancelled or not -- LESS what was voided off it. A voided line
+  // was never ordered in any sense a bill cares about; counting it is the #160 defect.
+  const tab = projectTab(rows, inputs)
+  return centsToMajor(tab.orders.reduce((sum, o) => sum + (o.originalCents - o.voidedCents), 0))
 }
 
 export type TabRequestRow = {
@@ -177,8 +219,9 @@ export type TabFigures = {
 export function computeTabFigures(
   orders: readonly TabOrderRow[] | null | undefined,
   requests: readonly TabRequestRow[] | null | undefined,
+  inputs?: TabProjectionInputs,
 ): TabFigures {
-  return { payable: computeTabOutstanding(orders), pending: computeTabPending(requests) }
+  return { payable: computeTabOutstanding(orders, inputs), pending: computeTabPending(requests) }
 }
 
 /**

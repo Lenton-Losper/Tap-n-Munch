@@ -45,17 +45,32 @@ function fakeSupabase(orders: OrderRow[], opts: { ordersReadFails?: boolean } = 
     client: {
       from(table: string) {
         if (table === 'tabs') return { update: tabsUpdate }
-        if (table === 'orders') {
-          return {
-            select: () => ({
-              eq: () =>
-                Promise.resolve(
-                  opts.ordersReadFails
-                    ? { data: null, error: { message: 'boom' } }
-                    : { data: orders, error: null },
-                ),
-            }),
+        /**
+         * The remaining balance is read through the financial projection (Sprint 2026-09-28):
+         * orders by tab (paged with .order().range()), then their lines and item-ledger
+         * allocations. None of these orders has lines or allocations, so each owes its total.
+         */
+        const chain = (result: unknown) => {
+          const c: any = {
+            select: () => c,
+            eq: () => c,
+            in: () => c,
+            is: () => c,
+            order: () => c,
+            range: () => c,
+            then: (res: (v: unknown) => unknown) => Promise.resolve(result).then(res),
           }
+          return c
+        }
+        if (table === 'orders') {
+          return chain(
+            opts.ordersReadFails
+              ? { data: null, error: { message: 'boom' } }
+              : { data: orders, error: null },
+          )
+        }
+        if (table === 'order_lines' || table === 'order_line_allocations') {
+          return chain({ data: [], error: null })
         }
         throw new Error(`unexpected table ${table}`)
       },

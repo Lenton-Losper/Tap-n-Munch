@@ -32,6 +32,7 @@ import {
   paymentMethodWithdrawnCopy,
 } from '@/lib/customer-copy/payment-method-withdrawn'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { VOIDED_LINES_COPY } from '@/lib/customer-copy/voided-lines-copy'
 import { deriveIsCounterService, serviceCopy } from '@/lib/customer-copy/service-model'
 
 type TabOrder = {
@@ -514,14 +515,28 @@ export default function TabSummaryPage() {
                     </div>
                     <div className="mt-1 space-y-0.5 text-sm text-muted-foreground">
                       {order.lines.map((line, lineIndex) => (
-                        <p key={`${order.id}-${lineIndex}`}>
+                        <p
+                          key={`${order.id}-${lineIndex}`}
+                          className={line.voided ? 'line-through' : undefined}
+                        >
                           {line.name} ×{line.quantity} — {currency}
                           {line.total.toFixed(2)}
+                          {/* Sprint 2026-09-28: staff voided it. Visible, struck through, not owed. */}
+                          {line.voided ? (
+                            <span className="ml-1 text-xs">({VOIDED_LINES_COPY.lineVoidedByStaff})</span>
+                          ) : null}
                           {line.configuration ? (
                             <span className="block text-xs">{line.configuration}</span>
                           ) : null}
                         </p>
                       ))}
+                      {order.original_total != null ? (
+                        <p className="text-xs">
+                          {VOIDED_LINES_COPY.originalAndLive
+                            .replace('{original}', `${currency}${order.original_total.toFixed(2)}`)
+                            .replace('{live}', `${currency}${order.total.toFixed(2)}`)}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
                 ))}
@@ -560,9 +575,15 @@ export default function TabSummaryPage() {
                 {unattributed.orders.map((order) => (
                   <div key={order.id} className="space-y-0.5 text-sm text-muted-foreground">
                     {order.lines.map((line, lineIndex) => (
-                      <p key={`${order.id}-${lineIndex}`}>
+                      <p
+                        key={`${order.id}-${lineIndex}`}
+                        className={line.voided ? 'line-through' : undefined}
+                      >
                         {line.name} ×{line.quantity} — {currency}
                         {line.total.toFixed(2)}
+                        {line.voided ? (
+                          <span className="ml-1 text-xs">({VOIDED_LINES_COPY.lineVoidedByStaff})</span>
+                        ) : null}
                       </p>
                     ))}
                   </div>

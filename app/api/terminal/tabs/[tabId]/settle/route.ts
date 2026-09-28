@@ -5,13 +5,20 @@ import { generatePaymentReference } from '@/lib/payment-reference'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import { parseTipCents, recordTip } from '@/lib/payments/tips'
 import { recordGatewaySaleEvent } from '@/lib/payments/record-gateway-sale-event'
-import { chargeableCentsFor, settledCentsByOrder } from '@/lib/payments/settled-cents'
+import {
+  centsToMajor,
+  FINANCIAL_ORDER_COLUMNS,
+  loadTabFinancials,
+  projectOrderRows,
+  type FinancialOrderInput,
+  type OrderFinancials,
+  type TabFinancials,
+} from '@/lib/orders/order-financials'
 import {
   amountsMatch,
   methodUsesGateway,
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
   isCardPaymentStillInFlight,
-  owesMoney,
   secondsSincePush,
   normalizeSettlementPaymentMethod,
   roundToCents,
@@ -146,7 +153,8 @@ export async function POST(
     // Bind order_ids to this tab + restaurant; never trust cross-tab IDs.
     const { data: tabOrders, error: tabOrdersError } = await supabase
       .from('orders')
-      .select('id, total, payment_status, terminal_pushed_at')
+      // The financial columns feed the projection below (what is still owed per order).
+      .select(`${FINANCIAL_ORDER_COLUMNS}, terminal_pushed_at`)
       .eq('tab_id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
       .in('id', orderIds)
@@ -266,14 +274,20 @@ export async function POST(
      * chargeable: order #45 was N$37.00 with N$17.00 already settled, and this would have taken the
      * same N$17.00 again -- on the cash path as readily as the card one.
      *
-     * FAILS CLOSED, deliberately. Not being able to read what has already been collected is not
-     * permission to collect it again.
+     * AND NOT WHAT WAS VOIDED. amend_order_lines never rewrites an order: a voided line stays in
+     * `orders.total`, and a reduction's surviving quantity lives on a replacement order. Summing
+     * `total` refused the terminal's correct line-based figure for every amended tab. Each order's
+     * figure is now its OUTSTANDING amount from the one financial projection
+     * (lib/orders/order-financials.ts): live (original minus voided lines) less the item ledger.
+     *
+     * FAILS CLOSED, deliberately. Not being able to read what has already been collected -- or
+     * what was voided -- is not permission to collect it.
      */
-    let settledByOrder: Map<string, number>
+    let financials: Map<string, OrderFinancials>
     try {
-      settledByOrder = await settledCentsByOrder(
+      financials = await projectOrderRows(
         supabase,
-        (tabOrders ?? []).map((o) => String(o.id)),
+        (tabOrders ?? []) as unknown as FinancialOrderInput[],
       )
     } catch (e) {
       console.error('[terminal/tabs/settle] could not read settled cents', {
@@ -288,11 +302,9 @@ export async function POST(
     // Rounded because this figure is STORED, not only compared: it becomes payments.amount and
     // audit_logs.metadata.amount below, both `numeric` with no scale. The comparison on the
     // next line is unaffected either way -- amountsMatch works in integer cents (#180).
+    const outstandingCentsOf = (id: unknown) => financials.get(String(id))?.outstandingCents ?? 0
     const expectedAmount = roundToCents(
-      (tabOrders ?? []).reduce(
-        (sum, o) => sum + chargeableCentsFor(o.total, settledByOrder.get(String(o.id))) / 100,
-        0,
-      ),
+      centsToMajor((tabOrders ?? []).reduce((sum, o) => sum + outstandingCentsOf(o.id), 0)),
     )
 
     /**
@@ -567,6 +579,37 @@ export async function POST(
       )
     }
 
+    /**
+     * WHAT THIS SETTLEMENT APPLIED TO EACH ORDER (orders.settled_charge_cents, 20260928140000).
+     *
+     * The projection reads `paid` for a paid order from this column. On the gateway paths a trigger
+     * captures it from pending_charge_cents; this route states it EXPLICITLY, per order, because a
+     * cash settlement can land on an order still carrying a dead card attempt's expectation, and a
+     * fully voided order settled here at zero has no attempt at all. An explicit value survives the
+     * trigger.
+     *
+     * After the claim, not inside it: PostgREST cannot write a different value per row in one
+     * statement, and splitting the claim would give up its atomicity. A failed write is logged and
+     * reported -- the money is taken and the orders are paid either way; what is lost is only the
+     * precision of the paid figure (the order then reads on the legacy basis, paid = total).
+     */
+    let settledChargeRecorded = true
+    for (const id of claimedIds) {
+      const { error: settledChargeError } = await supabase
+        .from('orders')
+        .update({ settled_charge_cents: outstandingCentsOf(id) })
+        .eq('id', id)
+        .eq('restaurant_id', terminal.restaurantId)
+      if (settledChargeError) {
+        settledChargeRecorded = false
+        console.error('[terminal/tabs/settle] settled charge not recorded', {
+          order_id: id,
+          settled_charge_cents: outstandingCentsOf(id),
+          error: settledChargeError,
+        })
+      }
+    }
+
     // Gateway-issued merchant order numbers exist only for card. Guarded so a client that
     // sends one alongside a cash settlement cannot stamp a Finatic reference onto it.
     //
@@ -601,44 +644,31 @@ export async function POST(
     // Recalculate tab total from what is still owed. A failed read must not be read as
     // "nothing is owed" -- that would write tabs.total = 0 over genuine debt, so the previous
     // total is left standing and the caller is told the figure is stale.
-    //
-    // Partitioned in JS with owesMoney(), not with `.neq('payment_status', 'paid')` in SQL.
-    // "not paid" is true of a CANCELLED order, so a cancelled order's money kept being
-    // reported as owed -- issue #104, the same defect c362efc fixed in the tables view. SQL
-    // equality is also byte-exact, so a stray 'Paid' would have counted too; owesMoney
-    // normalises before comparing.
-    const { data: tabOrderRows, error: unpaidError } = await supabase
-      .from('orders')
-      .select('total, payment_status')
-      .eq('tab_id', tabId)
+
+    /**
+     * ONE PROJECTION FOR BOTH THE STORED TOTAL AND can_close BELOW.
+     *
+     * Still owed = Σ outstanding over the tab (lib/orders/order-financials.ts): a paid or cancelled
+     * order owes nothing (#104's owesMoney rule lives inside the projection), a voided line owes
+     * nothing, a reduction's surviving quantity is owed once -- on its replacement -- and the item
+     * ledger's collections are subtracted. A failed read leaves the stored total as it was and
+     * reports it stale (#195), and blocks can_close.
+     */
+    let tabFinancials: TabFinancials | null = null
+    try {
+      tabFinancials = await loadTabFinancials(supabase, terminal.restaurantId, tabId)
+    } catch (e) {
+      console.error('[terminal/tabs/settle] tab total recalc failed', {
+        tabId,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
 
     let newTotal: number | null = null
-    if (!unpaidError) {
-      // THREE fixes compose here, from three different branches. Each answers a different
-      // question, none subsumes another, and dropping any one silently reintroduces a defect
-      // that was already fixed once. Each has its own test and its own negative probe.
-      //
-      //   WHAT to sum      -- #104's owesMoney() filter. Partitioning in JS rather than with
-      //     `.neq('payment_status','paid')` in SQL is deliberate: "not paid" is true of a
-      //     CANCELLED order, so a cancelled order's money kept being reported as owed.
-      //     owesMoney also normalises, so a stray 'Paid' cannot slip through byte-exact SQL.
-      //
-      //   HOW to round     -- #191's roundToCents. This figure is STORED, not merely compared:
-      //     tabs.total is `numeric` with no scale, and it is the customer-visible one of the
-      //     three sums in this route -- served on to the guest app and the terminal APK as the
-      //     balance owed. A float sum of line totals can land at 78.35000000000001.
-      //
-      //   WHETHER it landed -- #195's captured totalWriteError. This UPDATE's error was
-      //     discarded entirely, so a failed write left the stored total stale while the
-      //     terminal was handed a figure the database does not hold.
-      //
-      // Rounding is applied at the WRITE and only at the write (ruled): one rounding point, and
-      // the stored value is then the single source for everything that reads it back.
-      const recalculated = roundToCents(
-        (tabOrderRows ?? [])
-          .filter((o) => owesMoney(o.payment_status))
-          .reduce((sum, o) => sum + Number(o.total), 0),
-      )
+    if (tabFinancials) {
+      // Integer cents to major units at the write, the one rounding point (#191): tabs.total is
+      // `numeric` with no scale and is served on as the balance owed.
+      const recalculated = roundToCents(centsToMajor(tabFinancials.outstandingCents))
       const { error: totalWriteError } = await supabase
         .from('tabs')
         .update({ total: recalculated })
@@ -656,8 +686,6 @@ export async function POST(
       } else {
         newTotal = recalculated
       }
-    } else {
-      console.error('[terminal/tabs/settle] tab total recalc failed', unpaidError)
     }
 
     /**
@@ -917,18 +945,10 @@ export async function POST(
       console.error('[terminal/tabs/settle] audit log insert failed', auditError)
     }
 
-    // canClose check. Fails CLOSED: an errored read previously yielded an empty array and so
-    // reported the tab fully settled, letting staff close a table that still owed money.
-    // Same owesMoney() partition as the recalc above, and for the same reason (#104): asked as
-    // `!= 'paid'`, one cancelled order kept a table un-closeable from the terminal for good.
-    const { data: remaining, error: remainingError } = await supabase
-      .from('orders')
-      .select('id, payment_status')
-      .eq('tab_id', tabId)
-
-    if (remainingError) {
-      console.error('[terminal/tabs/settle] can_close check failed', remainingError)
-    }
+    // canClose check. Fails CLOSED: a projection that could not be read blocks it (it used to
+    // yield an empty array and report the tab fully settled). Asked of what is still OWED, not of
+    // payment_status: a pending order whose every line was voided owes nothing and must not keep
+    // the table open, and a cancelled order owes nothing either (#104).
 
     /**
      * #120. `remaining` above reads `orders`, and a round staff have not Accepted yet is not in
@@ -947,8 +967,8 @@ export async function POST(
     const pendingForTab = summarisePendingForTab(pendingRequests, tabId, tab.table_id)
 
     const canClose =
-      !remainingError &&
-      (remaining ?? []).filter((o) => owesMoney(o.payment_status)).length === 0 &&
+      tabFinancials !== null &&
+      tabFinancials.outstandingCents === 0 &&
       !blocksSettlement(pendingForTab)
 
     // Split statements + settled_at guard, both explained in full on the helper. This used to
@@ -977,6 +997,9 @@ export async function POST(
       // The settlement still succeeded, so this is not an error status -- it is a reconciliation
       // flag, and the only thing at the call site that can tell the difference.
       payment_record_written: !paymentInsertError,
+      // Additive. false = the per-order settled charge was not written for at least one order; the
+      // settlement stands, and those orders read on the legacy basis (paid = total).
+      settled_charge_recorded: settledChargeRecorded,
       /**
        * F2. 'recorded' | 'already_recorded' | 'skipped_no_reference' | 'failed'. Either of the
        * first two means the ledger row exists; anything else means this card sale has none and

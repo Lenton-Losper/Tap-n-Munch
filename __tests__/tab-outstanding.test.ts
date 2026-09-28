@@ -164,3 +164,38 @@ describe('computeTabFigures — the two together', () => {
     expect(figures.payable + figures.pending).toBe(132)
   })
 })
+
+describe('amended tabs (Sprint 2026-09-28): through the financial projection', () => {
+  const { AmendFixture, RIVIERA_ITEMS } = require('./helpers/amend-fixture') as typeof import('./helpers/amend-fixture')
+
+  function riviera() {
+    const f = new AmendFixture('t')
+    const o = f.place(RIVIERA_ITEMS, { id: 'riviera-160' })
+    f.amend(o.id, 'Wish You Were Here', 1)
+    f.amend(o.id, 'Double Cheese Burger', 1)
+    f.amend(o.id, 'Seared Salmon', 1)
+    return f
+  }
+
+  it('with the lines, a voided line owes nothing and a reduction is owed once', () => {
+    const f = riviera()
+    expect(computeTabOutstanding(f.orders, { lines: f.lines })).toBe(1205)
+    expect(computeTabFigures(f.orders, [], { lines: f.lines }).payable).toBe(1205)
+  })
+
+  it('WITHOUT the lines it fails toward owing -- never toward a smaller bill', () => {
+    const f = riviera()
+    expect(computeTabOutstanding(f.orders)).toBe(1945 + 190 + 90 + 460)
+  })
+
+  it('gross ordered takes voided lines off too', () => {
+    const f = riviera()
+    expect(computeTabGrossOrdered(f.orders, { lines: f.lines })).toBe(1205)
+  })
+
+  it('item-ledger settlements are subtracted when supplied', () => {
+    const f = riviera()
+    const settled = new Map([[f.orders[1].id, 19000]])
+    expect(computeTabOutstanding(f.orders, { lines: f.lines, allocationSettledByOrder: settled })).toBe(1015)
+  })
+})

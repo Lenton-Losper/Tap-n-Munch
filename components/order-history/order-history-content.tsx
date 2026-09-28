@@ -51,6 +51,9 @@ type HistoryOrder = {
   memberName?: string
   paymentStatus?: 'paid' | 'partially_refunded' | 'refunded' | null
   refundedAmount?: number
+  /** Sprint 2026-09-28: value after staff voids, and how much was voided (null when unknown). */
+  live_amount?: number | null
+  voided_amount?: number | null
   /**
    * The partial-payment breakdown, or null when the server could not read it. Null means "no
    * breakdown available" and NOT "nothing paid" -- the row falls back to the badges it drew
@@ -698,7 +701,18 @@ export function OrderHistoryContent() {
                             <span className="line-clamp-2">{formatItemsSummary(order.items)}</span>
                           </td>
                           <td className="px-4 py-3 font-medium text-[#37352F]">
-                            <div>{currency(Number(order.total) || 0, currencySymbol)}</div>
+                            {/* Sprint 2026-09-28: after staff voids, the live value leads and the
+                                placed total is kept beside it. */}
+                            {Number(order.voided_amount) > 0 && order.live_amount != null ? (
+                              <>
+                                <div>{currency(Number(order.live_amount) || 0, currencySymbol)}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {currency(Number(order.total) || 0, currencySymbol)} original · after voids
+                                </div>
+                              </>
+                            ) : (
+                              <div>{currency(Number(order.total) || 0, currencySymbol)}</div>
+                            )}
                             {Number(order.refundedAmount) > 0 && (
                               <div className="mt-0.5 text-xs font-normal text-[#8A867E]">
                                 -{currency(Number(order.refundedAmount), currencySymbol)} refunded

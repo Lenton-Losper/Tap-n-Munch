@@ -35,6 +35,7 @@
  */
 import { effectiveRequestPricing } from '@/lib/orders/order-request-pricing'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
+import { centsToMajor, type OrderFinancials } from '@/lib/orders/order-financials'
 
 /** One line of food, as another diner at the same table is allowed to see it. */
 export type TabGroupLine = {
@@ -63,6 +64,12 @@ export type TabGroupLine = {
    * only ever renders the words. Empty string when nothing was configured.
    */
   configuration: string
+  /**
+   * Present (true) only when staff voided the line (Sprint 2026-09-28). A voided line stays
+   * VISIBLE -- the customer ordered it and should see it went -- but it owes nothing and is not in
+   * the order's `total`.
+   */
+  voided?: boolean
 }
 
 /**
@@ -82,8 +89,14 @@ export type TabGroupOrder = {
   status: string
   /** null while the order is still a request: no number is allocated until Accept. */
   order_number: number | null
-  /** Order total as stored (orders) or as resolved by precedence (requests). */
+  /**
+   * What the order is worth NOW: the live figure (stored total less voided lines) when the caller
+   * passed the financial projection, else the total as stored (orders) or as resolved by
+   * precedence (requests).
+   */
   total: number
+  /** The total as originally placed, present only when voids have moved it away from `total`. */
+  original_total?: number
   /** True when this order is money the restaurant has not yet agreed to. */
   is_pending: boolean
   lines: TabGroupLine[]
@@ -188,6 +201,13 @@ export type BuildTabOrderGroupsInput = {
   owesMoney: (paymentStatus: unknown) => boolean
   /** Predicate for "this row is a settlement artefact, not a diner's food". */
   isSettlementArtefact?: (row: RawOrderRow) => boolean
+  /**
+   * The financial projection per order id (lib/orders/order-financials.ts). When present an
+   * order's `total` is its LIVE figure, voided lines are marked, and `payable` adds what is still
+   * OUTSTANDING (live less the item ledger) rather than the stored total. Absent, the stored total
+   * is used exactly as before.
+   */
+  financials?: ReadonlyMap<string, OrderFinancials>
 }
 
 export function buildTabOrderGroups(input: BuildTabOrderGroupsInput): TabOrderGroups {
@@ -230,19 +250,29 @@ export function buildTabOrderGroups(input: BuildTabOrderGroupsInput): TabOrderGr
   for (const row of input.orders) {
     if (input.isSettlementArtefact?.(row)) continue
     const group = groupFor(str(row.member_session_id))
-    const total = num(row.total)
+    const fin = input.financials?.get(str(row.id))
+    const lines = toLines(row.items)
+    if (fin) {
+      for (const line of fin.lines) {
+        if (line.voided && lines[line.sourceItemIndex]) lines[line.sourceItemIndex].voided = true
+      }
+    }
+    const total = fin ? centsToMajor(fin.liveCents) : num(row.total)
     group.orders.push({
       id: str(row.id),
       surface: 'orders',
       status: str(row.status),
       order_number: Number.isFinite(Number(row.order_number)) ? Number(row.order_number) : null,
       total,
+      ...(fin && fin.voidedCents > 0 ? { original_total: centsToMajor(fin.originalCents) } : {}),
       is_pending: false,
-      lines: toLines(row.items),
+      lines,
     })
     // Paid orders stay VISIBLE — spec section 29 wants a partially settled tab to read as one —
-    // but only unpaid ones add to what is owed.
-    if (input.owesMoney(row.payment_status)) group.payable += total
+    // but only unpaid ones add to what is owed. With the projection, what is owed is the
+    // outstanding figure, already zero for anything owesMoney says is not owed.
+    if (fin) group.payable = round2(group.payable + centsToMajor(fin.outstandingCents))
+    else if (input.owesMoney(row.payment_status)) group.payable += total
   }
 
   for (const row of input.requests) {

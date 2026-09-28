@@ -48,6 +48,8 @@ function makeChain(result: { data: unknown; error: unknown }) {
   // The allocations read filters voided rows out with is(voided_at, null).
   chain.is = self
   chain.in = self
+  // The C2 financials block reads through the paged financial projection (.range()).
+  chain.range = self
   chain.maybeSingle = () => Promise.resolve(result)
   chain.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
     Promise.resolve(result).then(resolve, reject)

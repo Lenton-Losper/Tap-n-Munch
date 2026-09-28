@@ -34,6 +34,7 @@ import {
   type ProgressLine,
 } from '@/lib/payments/order-payment-progress'
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
+import { computeOrderFinancials, isVoidedLine } from '@/lib/orders/order-financials'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -69,7 +70,10 @@ export async function readOrderPaymentProgress(
 
   const { data: lines, error: lineError } = await supabase
     .from('order_lines')
-    .select('id, order_id, source_item_index')
+    // kitchen_state/bar_state are SELECTED so a voided line can be recognised (Sprint 2026-09-28):
+    // amend_order_lines leaves the voided line and its money on the order, and counting it made
+    // an amended order read as owing for food that was cancelled.
+    .select('id, order_id, source_item_index, kitchen_state, bar_state')
     .in('order_id', ids)
 
   if (lineError) {
@@ -77,7 +81,13 @@ export async function readOrderPaymentProgress(
     return out
   }
 
-  const lineRows = (lines ?? []) as Array<{ id: unknown; order_id: unknown; source_item_index: unknown }>
+  const lineRows = (lines ?? []) as Array<{
+    id: unknown
+    order_id: unknown
+    source_item_index: unknown
+    kitchen_state?: string | null
+    bar_state?: string | null
+  }>
 
   /**
    * VOIDED ALLOCATIONS ARE EXCLUDED. A voided allocation was withdrawn before anyone paid for it,
@@ -109,6 +119,8 @@ export async function readOrderPaymentProgress(
 
   const linesByOrder = new Map<string, Array<{ id: string; index: unknown }>>()
   for (const row of lineRows) {
+    // A voided line is not money the order owes: it is neither paid nor outstanding.
+    if (isVoidedLine({ kitchen_state: row.kitchen_state ?? null, bar_state: row.bar_state ?? null })) continue
     const orderId = String(row.order_id)
     const list = linesByOrder.get(orderId) ?? []
     list.push({ id: String(row.id), index: row.source_item_index })
@@ -123,10 +135,23 @@ export async function readOrderPaymentProgress(
       totalCents: itemTotalCents(order.items, line.index),
       settledCents: settledByLine.get(line.id) ?? 0,
     }))
+    /**
+     * The order's LIVE total -- stored total less its voided lines -- from the one projection, so
+     * the figure this label reports cannot disagree with the bill.
+     */
+    const live = computeOrderFinancials(
+      { id: orderId, total: order.total, items: order.items, payment_status: String(order.payment_status ?? '') },
+      lineRows.map((l) => ({
+        order_id: String(l.order_id),
+        source_item_index: Number(l.source_item_index),
+        kitchen_state: l.kitchen_state ?? null,
+        bar_state: l.bar_state ?? null,
+      })),
+    ).liveCents
     out.set(
       orderId,
       orderPaymentProgress({
-        orderTotal: order.total,
+        orderTotal: live / 100,
         paymentStatus: order.payment_status,
         lines: progressLines,
       }),

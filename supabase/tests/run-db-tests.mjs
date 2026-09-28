@@ -38,6 +38,8 @@ const MIGRATIONS = [
   'supabase/migrations/20260919091000_payment_integrity_constraints.sql',
   'supabase/migrations/20260919092000_settle_lead_merchant_order_no.sql',
   'supabase/migrations/20260919093000_settle_validate_before_write.sql',
+  // Sprint 2026-09-28: the per-order settled charge the financial projection reads for `paid`.
+  'supabase/migrations/20260928140000_orders_settled_charge_cents.sql',
 ]
 
 /**
@@ -264,6 +266,36 @@ const MUTATIONS = {
       out = replaceEvery(out, "    CONTINUE WHEN v_status = 'paid';", '')
       return out
     },
+  },
+  /**
+   * THE PER-ORDER SETTLED CHARGE (20260928140000), removed.
+   *
+   * Without the trigger every paid order keeps settled_charge_cents NULL, the projection falls back
+   * to `paid = total`, and an amended order paid at its live figure reads as underpaid by every
+   * voided line -- or, for a legacy order, a void after payment reads as nothing owed back.
+   */
+  M13: {
+    what: 'the settled-charge trigger is dropped (paid orders record nothing)',
+    expect: ['settled/rpc_records_charge', 'settled/tip_excluded', 'settled/direct_writer_records_live_charge'],
+    sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_record_settled_charge ON public.orders;',
+  },
+  M14: {
+    what: 'the gratuity is recorded as part of the order charge',
+    expect: ['settled/tip_excluded'],
+    apply: (sql) =>
+      sql.replace(
+        'GREATEST(0, OLD.pending_charge_cents - COALESCE(OLD.pending_tip_cents, 0));',
+        'GREATEST(0, OLD.pending_charge_cents);',
+      ),
+  },
+  M15: {
+    what: 'the trigger overwrites an explicitly written settled charge with the card attempt',
+    expect: ['settled/explicit_value_wins'],
+    apply: (sql) =>
+      sql.replace(
+        '    IF NEW.settled_charge_cents IS NOT DISTINCT FROM OLD.settled_charge_cents THEN',
+        '    IF true THEN',
+      ),
   },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',

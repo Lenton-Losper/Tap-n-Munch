@@ -2,6 +2,7 @@ import { chargedLineAmount, formatCurrency, type ReceiptLineItem } from './recei
 import { cn } from '@/lib/utils'
 import { lineConfigurationSummary } from '@/lib/orders/line-configuration'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { VOIDED_LINES_COPY } from '@/lib/customer-copy/voided-lines-copy'
 
 export type OrderSummaryProps = {
   items: ReceiptLineItem[]
@@ -10,6 +11,12 @@ export type OrderSummaryProps = {
   serviceFee?: number
   vat?: number
   total: number
+  /**
+   * The order's total AS PLACED, when staff voids have moved it (Sprint 2026-09-28). `total` is
+   * then the live figure. Shown alongside it, never instead of it: the customer sees both what
+   * they ordered and what they now owe.
+   */
+  originalTotal?: number
   className?: string
 }
 
@@ -20,8 +27,13 @@ export function OrderSummary({
   serviceFee,
   vat,
   total,
+  originalTotal,
   className,
 }: OrderSummaryProps) {
+  // With voids, the stored subtotal/VAT describe the ORIGINAL order and no longer add up to the
+  // live total, so that breakdown is not shown -- a decomposition that does not sum is worse than
+  // none. The original total is shown instead.
+  const amended = originalTotal != null && Math.round(originalTotal * 100) !== Math.round(total * 100)
   const computedSubtotal =
     subtotal ?? items.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0)
 
@@ -35,7 +47,10 @@ export function OrderSummary({
               {item.quantity}×
             </span>
             <span className="flex-1 min-w-0 text-sm text-[#111827]">
-              <span className="block truncate">{item.name}</span>
+              <span className="block truncate">{item.voided ? <s>{item.name}</s> : item.name}</span>
+              {item.voided ? (
+                <span className="block text-xs text-[#6B7280]">{VOIDED_LINES_COPY.lineVoidedByStaff}</span>
+              ) : null}
               {/* #298: the configuration is what tells two same-named lines apart. */}
               {lineConfigurationSummary(item) ? (
                 <span className="block truncate text-xs text-[#6B7280]">
@@ -43,14 +58,26 @@ export function OrderSummary({
                 </span>
               ) : null}
             </span>
-            <span className="text-sm font-medium text-[#111827] tabular-nums shrink-0">
+            <span
+              className={cn(
+                'text-sm font-medium text-[#111827] tabular-nums shrink-0',
+                item.voided && 'line-through text-[#6B7280]',
+              )}
+            >
               {formatCurrency(chargedLineAmount(item), currency)}
             </span>
           </li>
         ))}
       </ul>
 
-      {(serviceFee != null && serviceFee > 0) || (vat != null && vat > 0) ? (
+      {amended ? (
+        <div className="mt-4 pt-4 border-t border-dashed border-[#E5E7EB] space-y-2 text-sm">
+          <div className="flex justify-between text-[#6B7280]">
+            <span>{VOIDED_LINES_COPY.summaryOriginalTotal}</span>
+            <span className="tabular-nums line-through">{formatCurrency(originalTotal ?? 0, currency)}</span>
+          </div>
+        </div>
+      ) : (serviceFee != null && serviceFee > 0) || (vat != null && vat > 0) ? (
         <div className="mt-4 pt-4 border-t border-dashed border-[#E5E7EB] space-y-2 text-sm">
           <div className="flex justify-between text-[#6B7280]">
             <span>Subtotal</span>

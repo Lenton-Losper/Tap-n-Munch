@@ -107,8 +107,14 @@ describe('THE ROUTE ACTUALLY USES IT, AND LOADS WHAT IT NEEDS', () => {
     expect(CODE.length).toBeGreaterThan(1000)
   })
 
-  it('unpaid_total is derived from outstandingTotalFor', () => {
-    expect(statements).toMatch(/outstandingTotalFor\(/)
+  /**
+   * Sprint 2026-09-28: unpaid_total is the financial projection's outstanding figure, which
+   * subtracts the item ledger exactly as outstandingTotalFor did AND takes voided lines off. The
+   * route-level behaviour is pinned in __tests__/terminal-tables-live-outstanding.test.ts.
+   */
+  it('unpaid_total is derived from the financial projection', () => {
+    expect(statements).toMatch(/computeTabFinancials\(/)
+    expect(statements).toMatch(/unpaidTotal = centsToMajor\(tabFinancials\.outstandingCents\)/)
   })
 
   it('and NOT from a bare sum of order totals', () => {
@@ -117,7 +123,8 @@ describe('THE ROUTE ACTUALLY USES IT, AND LOADS WHAT IT NEEDS', () => {
   })
 
   it('it loads settled allocations to subtract', () => {
-    expect(statements).toMatch(/order_line_allocation_settlements/)
+    // Through readProjectionInputs, which reads the item ledger via settledCentsByOrder.
+    expect(statements).toMatch(/readProjectionInputs\(/)
     expect(statements).toMatch(/settledByOrder/)
   })
 })

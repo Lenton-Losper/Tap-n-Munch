@@ -55,6 +55,7 @@ jest.mock('@/lib/session-manager', () => ({
 type Row = Record<string, unknown>
 let tabRows: Row[]
 let orderRows: Row[]
+let lineRows: Row[] = []
 const auditInserts: Row[] = []
 const orderWrites: Row[] = []
 
@@ -73,6 +74,24 @@ jest.mock('@/lib/supabase/server', () => ({
             return { eq: () => ({ eq: async () => ({ data: null, error: null }) }) }
           },
         }
+      }
+      /**
+       * The written-off amount is the financial projection's outstanding figure (Sprint
+       * 2026-09-28), which also reads the orders' lines and item-ledger allocations. None exist
+       * here, so every unpaid order owes its stored total.
+       */
+      if (table === 'order_lines' || table === 'order_line_allocations') {
+        const empty: Record<string, unknown> = {}
+        Object.assign(empty, {
+          select: () => empty,
+          in: () => empty,
+          is: () => empty,
+          order: () => empty,
+          range: () => empty,
+          then: (resolve: (v: unknown) => unknown) =>
+            Promise.resolve({ data: table === 'order_lines' ? lineRows : [], error: null }).then(resolve),
+        })
+        return empty
       }
       if (table === 'audit_logs') {
         return {
@@ -243,6 +262,22 @@ describe('the close itself', () => {
     const res = await call(VALID)
     expect(res.status).toBe(409)
     expect(closeCalls).toHaveLength(0)
+  })
+
+  it('writes off what was still OWED: a voided line is not a loss (Sprint 2026-09-28)', async () => {
+    // order-1 had its only line voided by staff; its stored total still says N$ it cost.
+    orderRows = [
+      { id: 'order-1', total: 120, payment_status: 'pending', items: [{ total: 120, quantity: 1 }] },
+      { id: 'order-2', total: 220, payment_status: 'pending', items: [{ total: 220, quantity: 1 }] },
+    ]
+    lineRows = [
+      { id: 'l1', order_id: 'order-1', source_item_index: 0, kitchen_state: 'voided', bar_state: null },
+      { id: 'l2', order_id: 'order-2', source_item_index: 0, kitchen_state: 'ready', bar_state: null },
+    ]
+    const body = await (await call(VALID)).json()
+    lineRows = []
+    expect(body.amount_written_off).toBe(220)
+    expect(body.unpaid_order_count).toBe(1)
   })
 
   it('a table with nothing owing still closes, and writes off zero', async () => {

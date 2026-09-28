@@ -11,6 +11,7 @@ import {
 } from '@/components/ready-to-pay-terminal'
 import { clearActiveOrderBannerState, heldSessionIds } from '@/lib/tab-storage'
 import { fetchGuestOrderById, GUEST_ORDER_POLL_MS } from '@/lib/guest-orders/client'
+import { displayOrderTotal } from '@/lib/orders/voided-totals-label'
 import {
   isBannerEligibleOrder,
   normalizeOrderStatusForDisplay,
@@ -321,7 +322,8 @@ export function ActiveOrderBanner() {
                 {statusInfo.text}
               </p>
               <p className="text-xs opacity-90">
-                {currentOrder.total && `Total: N$${Number(currentOrder.total).toFixed(2)} • `}
+                {/* Sprint 2026-09-28: the order's value after any staff voids, not its stored total. */}
+                {currentOrder.total && `Total: N$${displayOrderTotal(currentOrder).toFixed(2)} • `}
                 Tap to view receipt
               </p>
             </div>

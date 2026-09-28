@@ -72,6 +72,12 @@ export type ReceiptLineItem = {
   size?: unknown
   addons?: unknown
   selectedVariants?: unknown
+  /**
+   * Staff voided this line after it was ordered (Sprint 2026-09-28). It stays on the order -- and
+   * in the order's stored total -- because amend_order_lines never rewrites an order, so a screen
+   * shows it struck through and does NOT count it in what is owed.
+   */
+  voided?: boolean
 }
 
 /**

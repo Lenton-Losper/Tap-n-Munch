@@ -16,6 +16,11 @@ import {
 } from '@/lib/reports/format-report-datetime'
 import { preLaunchRestaurant } from '@/lib/reporting/pre-launch-restaurants'
 import { readOrderPaymentProgress } from '@/lib/payments/read-order-payment-progress'
+import {
+  computeOrderFinancials,
+  readProjectionInputs,
+  type FinancialOrderInput,
+} from '@/lib/orders/order-financials'
 
 export const dynamic = 'force-dynamic'
 
@@ -89,7 +94,7 @@ async function loadOrderHistory(req: Request): Promise<Response> {
   let query = supabase
     .from('orders')
     .select(
-      'id, order_number, table_number, total, status, payment_method, payment_status, placed_at, items, member_session_id, tab_id',
+      'id, order_number, table_number, total, status, payment_method, payment_status, placed_at, items, member_session_id, tab_id, settled_charge_cents',
       { count: 'exact' },
     )
     .eq('restaurant_id', restaurantUuid)
@@ -146,6 +151,28 @@ async function loadOrderHistory(req: Request): Promise<Response> {
     })),
   )
 
+  /**
+   * WHAT EACH ORDER IS WORTH AFTER STAFF VOIDS (Sprint 2026-09-28). amend_order_lines never
+   * rewrites an order, so `total` -- kept below as `order_amount`, the historical figure -- still
+   * counts voided lines. `live_amount` is the projection's figure. Display only; a failed read
+   * leaves it null and the screen shows the stored total as before. The revenue summary below is
+   * deliberately NOT changed: it reports money collected and awaits an owner ruling.
+   */
+  const liveByOrder = new Map<string, { live: number; voided: number }>()
+  try {
+    const inputs = await readProjectionInputs(supabase, pageOrderIds)
+    for (const order of orders || []) {
+      const fin = computeOrderFinancials(
+        order as unknown as FinancialOrderInput,
+        inputs.lines,
+        inputs.allocationSettledByOrder.get(String(order.id)) ?? 0,
+      )
+      liveByOrder.set(String(order.id), { live: fin.liveCents / 100, voided: fin.voidedCents / 100 })
+    }
+  } catch (e) {
+    console.error('[orders/history] projection unavailable; live amounts omitted', e)
+  }
+
   const enrichedOrders = (orders || []).map((order) => {
     let memberName = '—'
     if (order.member_session_id && order.tab_id) {
@@ -194,6 +221,8 @@ async function loadOrderHistory(req: Request): Promise<Response> {
       paymentStatus: projection?.paymentStatus ?? null,
       refundedAmount: projection?.refundedAmount ?? 0,
       order_amount: orderAmount,
+      live_amount: liveByOrder.get(String(order.id))?.live ?? null,
+      voided_amount: liveByOrder.get(String(order.id))?.voided ?? null,
       gateway_amount: gatewayAmount,
       settlement_amount: projection?.originalAmount ?? null,
       settlement_order_count: projection?.settlementOrderCount ?? null,

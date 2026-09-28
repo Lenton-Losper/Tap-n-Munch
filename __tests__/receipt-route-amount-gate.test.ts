@@ -54,6 +54,22 @@ const order: Row = {
 jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => ({
     from: (table: string) => {
+      /**
+       * The financial projection reads the order's lines and its item-ledger allocations. Neither
+       * exists for this order, which is the ordinary case: it owes its stored total.
+       */
+      if (table === 'order_lines' || table === 'order_line_allocations') {
+        const empty: Record<string, unknown> = {
+          select: () => empty,
+          in: () => empty,
+          is: () => empty,
+          order: () => empty,
+          range: () => empty,
+          then: (resolve: (v: { data: Row[]; error: null }) => unknown) =>
+            Promise.resolve({ data: [], error: null }).then(resolve),
+        }
+        return empty
+      }
       if (table !== 'orders') throw new Error(`unexpected table ${table}`)
       const builder: Record<string, unknown> = {
         select: () => builder,

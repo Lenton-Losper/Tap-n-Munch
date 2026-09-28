@@ -1,9 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import {
-  computeTabOutstanding,
-  TAB_TOTAL_ORDER_COLUMNS,
-  type TabOrderRow,
-} from './tab-outstanding'
+import { centsToMajor, loadTabFinancials } from '@/lib/orders/order-financials'
 
 /**
  * Take a tab OFF the ready-to-pay queue and, if it is still live, reopen it.
@@ -111,20 +107,18 @@ export async function clearReadyToPayAndReopenTab(
    */
   let preserveReadyToPay = false
   if (reason === 'money_taken') {
-    const { data: remainingRows, error: remainingError } = await supabase
-      .from('orders')
-      .select(TAB_TOTAL_ORDER_COLUMNS)
-      .eq('tab_id', tabId)
-
-    if (remainingError) {
+    // What is still owed, through the financial projection (Sprint 2026-09-28): a pending order
+    // whose every line was voided owes nothing and must not keep the ready-to-pay record alive.
+    try {
+      const tab = await loadTabFinancials(supabase, null, tabId)
+      const outstanding = centsToMajor(tab.outstandingCents)
+      preserveReadyToPay = tab.outstandingCents > 0
+      console.log(`${logPrefix} post-settle balance`, { tabId, outstanding, preserveReadyToPay })
+    } catch (remainingError) {
       console.error(`${logPrefix} could not read remaining balance; clearing flags as before`, {
         tabId,
         error: remainingError,
       })
-    } else {
-      const outstanding = computeTabOutstanding(remainingRows as TabOrderRow[])
-      preserveReadyToPay = outstanding > 0
-      console.log(`${logPrefix} post-settle balance`, { tabId, outstanding, preserveReadyToPay })
     }
   }
 

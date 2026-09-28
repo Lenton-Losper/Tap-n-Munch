@@ -22,7 +22,16 @@ import {
   summarisePendingForTab,
 } from '@/lib/tabs/pending-order-requests'
 import { loadTableOwners } from '@/lib/tables/table-owners'
-import { outstandingTotalFor } from '@/lib/tabs/outstanding-total'
+import {
+  centsToMajor,
+  computeOrderFinancials,
+  computeTabFinancials,
+  financialsWire,
+  readProjectionInputs,
+  type FinancialLineInput,
+  type FinancialOrderInput,
+  type OrderFinancials,
+} from '@/lib/orders/order-financials'
 
 export const dynamic = 'force-dynamic'
 
@@ -104,7 +113,9 @@ export async function GET(req: Request) {
             items,
             placed_at,
             member_session_id,
-            session_id
+            session_id,
+            tab_settlement_for_tab_id,
+            settled_charge_cents
           )
         )
       `)
@@ -131,36 +142,33 @@ export async function GET(req: Request) {
     )
 
     /**
-     * HOW MUCH OF EACH ORDER HAS ALREADY BEEN PAID FOR, ITEM BY ITEM.
+     * WHAT EACH ORDER STILL OWES: THE FINANCIAL PROJECTION (Sprint 2026-09-28).
      *
-     * A part-paid order is not fully paid, so it stays in the unpaid set and its FULL total used to
-     * keep counting -- a N$34 tab with a N$6 item settled still read NAD 34.00.
+     * Two things stopped `orders.total` being what an unpaid order owes. Items can be paid for one
+     * by one (a N$34 tab with the N$6 cheese toast settled went on reading NAD 34.00, Digi Cofee,
+     * 2026-09-09), and amend_order_lines never rewrites an order -- a voided line stays in `total`
+     * and a reduction's surviving quantity is owed again on a replacement order. Riviera #160's
+     * tab read N$1,945 plus every replacement against a real bill of N$1,205.
      *
-     * BATCHED, one query for every order on every table, rather than per order: this route renders
-     * the whole floor and a per-order query would be a request per order per poll.
+     * lib/orders/order-financials.ts answers both: live = original − voided lines, outstanding =
+     * live − the item ledger, zero for anything owesMoney says is not owed. Its inputs are read
+     * ONCE for every order on every table -- this route renders the whole floor.
      *
-     * FAILS TOWARDS THE OLD BEHAVIOUR. An unreadable settlements table leaves the map empty, so
-     * nothing is subtracted and the headline is the pre-2026-09-09 figure -- stale, but never
-     * UNDERSTATED. Reporting a tab as owing less than it does is the direction that loses money.
+     * FAILS TOWARD OWING. An unreadable lines or ledger read leaves the projection with no line
+     * coverage and no settlements, so every unpaid order owes its stored total: stale, never
+     * UNDERSTATED, and it can only keep a table open, never close one over unpaid food.
      */
-    const settledByOrder = new Map<string, number>()
+    let projectionLines: FinancialLineInput[] = []
+    let settledByOrder = new Map<string, number>()
     if (allOrderIds.length > 0) {
-      const { data: settledRows, error: settledError } = await supabase
-        .from('order_line_allocation_settlements')
-        .select('amount_cents, order_line_allocations!inner(order_id)')
-        .in('order_line_allocations.order_id', allOrderIds)
-
-      if (settledError) {
-        console.error('[terminal/tables] settled-allocation read failed', settledError)
-      } else {
-        for (const row of settledRows ?? []) {
-          const alloc = (row as { order_line_allocations?: { order_id?: unknown } })
-            .order_line_allocations
-          const orderId = String(alloc?.order_id ?? '')
-          if (!orderId) continue
-          const cents = Math.max(0, Math.round(Number((row as { amount_cents?: unknown }).amount_cents) || 0))
-          settledByOrder.set(orderId, (settledByOrder.get(orderId) ?? 0) + cents)
-        }
+      try {
+        const inputs = await readProjectionInputs(supabase, allOrderIds)
+        projectionLines = inputs.lines
+        settledByOrder = inputs.allocationSettledByOrder
+      } catch (e) {
+        console.error('[terminal/tables] financial projection inputs unreadable; owing totals', {
+          error: e instanceof Error ? e.message : String(e),
+        })
       }
     }
 
@@ -206,8 +214,25 @@ export async function GET(req: Request) {
        */
       const memberNames = buildMemberNameLookup(tab.members)
 
+      const financialsByOrder = new Map<string, OrderFinancials>(
+        (tab.orders ?? []).map((order: any): [string, OrderFinancials] => [
+          String(order.id),
+          computeOrderFinancials(
+            order as FinancialOrderInput,
+            projectionLines,
+            settledByOrder.get(String(order.id)) ?? 0,
+          ),
+        ]),
+      )
+      const tabFinancials = computeTabFinancials(
+        (tab.orders ?? []) as FinancialOrderInput[],
+        projectionLines,
+        settledByOrder,
+      )
+
       const orders = (tab.orders ?? []).map((order: any) => {
         const projection = projections.get(String(order.id)) ?? null
+        const financials = financialsByOrder.get(String(order.id))
         // The raw ids are NOT spread out to the terminal: `...order` below would carry them,
         // so they are stripped and replaced by the name. A session id is a credential
         // (`ownsOrder` makes knowing one the whole authorisation) and staff have no use for it.
@@ -216,6 +241,8 @@ export async function GET(req: Request) {
         void _s
         return {
           ...safeOrder,
+          // Additive (C2's per-order shape): what this order is worth now and what it still owes.
+          financials: financials ? financialsWire(financials) : null,
           member_name: resolveOrderMemberName(order, memberNames),
           // Distinct from orders.payment_status (paid/pending settlement flag).
           payment_status_derived: projection?.paymentStatus ?? null,
@@ -239,7 +266,16 @@ export async function GET(req: Request) {
       // claim. cash_pending, failed and terminal_pending orders are unpaid money; excluding
       // them understated the tab and let can_close report true over genuine debt. Cancelled
       // (and any other terminal status) still correctly falls out.
-      const unpaidOrders = orders.filter((o: any) => owesMoney(o.payment_status))
+      /**
+       * An order OWES when it still has something outstanding -- not merely when its status is an
+       * owing one. A pending order whose every line was voided owes nothing, and counting it kept
+       * a table un-closeable unless somebody paid for cancelled food.
+       */
+      const unpaidOrders = orders.filter(
+        (o: any) =>
+          owesMoney(o.payment_status) &&
+          (financialsByOrder.get(String(o.id))?.outstandingCents ?? 1) > 0,
+      )
       /**
        * ITEMS ALREADY PAID FOR DO NOT STILL COUNT.
        *
@@ -249,13 +285,7 @@ export async function GET(req: Request) {
        * toast already settled went on reading NAD 34.00 -- and a waiter reads that number out to a
        * customer who has already paid part of it. Found on a P5 at Digi Cofee, 2026-09-09.
        */
-      const unpaidTotal = outstandingTotalFor(
-        unpaidOrders.map((o: any) => ({
-          id: String(o.id),
-          total: o.total,
-          settledCents: settledByOrder.get(String(o.id)) ?? 0,
-        })),
-      )
+      const unpaidTotal = centsToMajor(tabFinancials.outstandingCents)
 
       /**
        * ==========================================================================================
@@ -298,7 +328,8 @@ export async function GET(req: Request) {
        * rule the settle route's own can_close check already learned (#104).
        */
       const pendingForTab = summarisePendingForTab(pending, tab.id, table.id)
-      const canClose = unpaidOrders.length === 0 && !blocksSettlement(pendingForTab)
+      const canClose =
+        tabFinancials.outstandingCents === 0 && !blocksSettlement(pendingForTab)
 
       return {
         id: table.id,
@@ -309,6 +340,9 @@ export async function GET(req: Request) {
           status: tab.status,
           total: tab.total,
           unpaid_total: unpaidTotal,
+          // Additive (C2): the tab's projection in integer cents. live is what the table's food is
+          // worth now; outstanding is what unpaid_total reports.
+          financials: financialsWire(tabFinancials),
           /**
            * The three counts that make `unpaid_total: 0` readable. See the block above.
            *   paid > 0, unpaid 0            -> genuinely settled

@@ -52,6 +52,8 @@ export type OrderConfirmationViewProps = {
   isTabOrder?: boolean
   items: ReceiptLineItem[]
   total: number
+  /** The total as placed, when staff voids moved it; `total` is then the live figure. */
+  originalTotal?: number
   subtotal?: number
   tax?: number
   currency?: string
@@ -90,6 +92,7 @@ export function OrderConfirmationView({
   isTabOrder = false,
   items,
   total,
+  originalTotal,
   subtotal,
   tax,
   currency = 'NAD',
@@ -245,6 +248,7 @@ export function OrderConfirmationView({
             subtotal={subtotal}
             vat={tax}
             total={total}
+            originalTotal={originalTotal}
           />
 
           {editSlot ? <div className="mt-6 print:hidden">{editSlot}</div> : null}

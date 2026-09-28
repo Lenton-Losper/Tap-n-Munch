@@ -67,23 +67,28 @@ function makeClient() {
             eq: (col: string, val: unknown) => {
               if (table === 'tabs') tabFilters.push(['eq', col, val])
               if (table === 'orders') orderFilters.push(['eq', col, val])
-              // The orders read is awaited directly off .eq(), so it resolves here.
-              if (table === 'orders') {
-                return Object.assign(
-                  Promise.resolve(
-                    orderReadError
-                      ? { data: null, error: orderReadError }
-                      : { data: orderRows, error: null },
-                  ),
-                  builder,
-                )
-              }
               return builder
             },
             in: (col: string, val: unknown) => {
               if (table === 'tabs') tabFilters.push(['in', col, val])
               return builder
             },
+            /**
+             * Sprint 2026-09-28: the total comes from the financial projection, which pages the
+             * orders read (.order().range()) and then reads order_lines and allocations -- none
+             * exist here, so every order owes its stored total.
+             */
+            is: () => builder,
+            order: () => builder,
+            range: () => builder,
+            then: (resolve: (v: unknown) => unknown) =>
+              Promise.resolve(
+                table === 'orders'
+                  ? orderReadError
+                    ? { data: null, error: orderReadError }
+                    : { data: orderRows, error: null }
+                  : { data: [], error: null },
+              ).then(resolve),
             gte: (col: string, val: unknown) => {
               if (table === 'tabs') tabFilters.push(['gte', col, val])
               return builder
@@ -292,19 +297,27 @@ describe('GET /api/tabs/active — count, not members (#262)', () => {
 
     it('reads the orders scoped to THIS tab', async () => {
       await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)
-      expect(orderFilters).toEqual([['eq', 'tab_id', TAB_ID]])
+      // And to this venue, since the projection read (Sprint 2026-09-28).
+      expect(orderFilters).toEqual([
+        ['eq', 'restaurant_id', RESTAURANT_UUID],
+        ['eq', 'tab_id', TAB_ID],
+      ])
     })
 
-    it('selects NO id column — this is what keeps the route AGGREGATE_NO_IDS', async () => {
+    it('returns NO order id — this is what keeps the route AGGREGATE_NO_IDS', async () => {
       /**
        * The security half. The route was NO_ORDER_READ in the guest-route manifest and is now
        * AGGREGATE_NO_IDS; the whole basis for that reclassification is that no order id can leave.
        * Asserted on the columns actually requested, not on the class label.
        */
+      /**
+       * Sprint 2026-09-28 brief. The orders read now SELECTS id -- the financial projection must
+       * join each order to its order_lines to know what was voided -- inside `loadTabTotals`, which
+       * returns numbers only. So the property is asserted where it lives: the response. The
+       * boundary's own no-id guarantee is asserted in guest-routes-do-not-leak-foreign-order-ids.
+       */
       await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)
-      const columns = selects.orders.split(',').map((c) => c.trim())
-      expect(columns.length).toBeGreaterThan(1)
-      expect(columns.filter((c) => /(^|[^a-z_])id$/.test(c))).toEqual([])
+      expect(selects.orders).toBeDefined()
 
       const wire = JSON.stringify(
         (await call(`restaurantId=${RESTAURANT_UUID}&tableNumber=${TABLE_NUMBER}`)).body,

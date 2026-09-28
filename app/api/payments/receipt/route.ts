@@ -5,6 +5,12 @@ import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaura
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import { assertSessionMatchesResource, requireSessionToken } from '@/lib/session-guard'
 import { amountsMatch, PAYMENT_AMOUNT_TOLERANCE_CENTS, roundToCents } from '@/lib/payments/payment-integrity'
+import {
+  centsToMajor,
+  projectOrderRows,
+  type FinancialOrderInput,
+  type OrderFinancials,
+} from '@/lib/orders/order-financials'
 
 export async function POST(req: Request) {
   const supabase = createServerSupabaseClient()
@@ -72,7 +78,6 @@ export async function POST(req: Request) {
       }
     }
 
-    let sum = 0
     for (const orderId of sortedOrderIds) {
       const data = byId.get(orderId) as Record<string, unknown> | undefined
       if (!data) {
@@ -95,8 +100,48 @@ export async function POST(req: Request) {
           { status: 400 }
         )
       }
-      sum += Number(data.total) || 0
     }
+
+    /**
+     * WHAT IS STILL OWED, NOT orders.total.
+     *
+     * amend_order_lines never rewrites an order, so a voided line stays in `total`, and a
+     * reduction's surviving quantity lives on a replacement order that the guest pays for as well.
+     * Summing `total` charged the guest for food the waiter had cancelled. Each order's figure is its
+     * OUTSTANDING amount from the one financial projection (lib/orders/order-financials.ts).
+     *
+     * FAILS CLOSED: nothing has been charged yet, so a refusal costs a retry.
+     */
+    let financials: Map<string, OrderFinancials>
+    try {
+      financials = await projectOrderRows(
+        supabase,
+        sortedOrderIds.map((id) => byId.get(id)) as unknown as FinancialOrderInput[],
+      )
+    } catch (e) {
+      console.error('[RECEIPT] could not read what is still owed', e)
+      return NextResponse.json(
+        { ok: false, error: 'Could not work out what is still owed. Please try again.' },
+        { status: 503 },
+      )
+    }
+    const owedCents = (orderId: string) => financials.get(orderId)?.outstandingCents ?? 0
+
+    /**
+     * An order that owes nothing (every line voided, or already collected item by item) is left
+     * out of the checkout rather than carried at zero: its expectation could not be recorded
+     * (pending_charge_cents must be NULL or positive), and the gateway's figure must answer for
+     * exactly the orders it pays.
+     */
+    const chargedOrderIds = sortedOrderIds.filter((id) => owedCents(id) > 0)
+    const sumCents = chargedOrderIds.reduce((total, id) => total + owedCents(id), 0)
+    if (sumCents <= 0) {
+      return NextResponse.json(
+        { ok: false, error: 'There is nothing left to pay on these orders.', code: 'NOTHING_LEFT_TO_CHARGE' },
+        { status: 409 },
+      )
+    }
+    const sum = centsToMajor(sumCents)
 
     /**
      * #223. This was `Math.abs(Math.round(sum*100)/100 - Math.round(clientAmount*100)/100) > 0.02`
@@ -133,7 +178,7 @@ export async function POST(req: Request) {
     }
 
     let merchantOrderNo = ''
-    for (const orderId of sortedOrderIds) {
+    for (const orderId of chargedOrderIds) {
       const row = byId.get(orderId) as { paycloud_merchant_order_no?: string | null; payment_reference?: string | null }
       const cand = String(row?.paycloud_merchant_order_no || row?.payment_reference || '').trim()
       if (cand) {
@@ -145,7 +190,15 @@ export async function POST(req: Request) {
       merchantOrderNo = `FT${Date.now()}`.slice(0, 32)
     }
 
-    const leadId = sortedOrderIds[0]
+    const leadId = chargedOrderIds[0]
+    /**
+     * THE EXPECTATION, RECORDED PER ORDER, BEFORE THE CHECKOUT EXISTS.
+     *
+     * The webhook and reconcile gates compare the gateway's figure against pending_charge_cents,
+     * falling back to orders.total when none is recorded. Charging the outstanding figure without
+     * recording it would make every amended order's successful payment a mismatch against its
+     * stale total. Written on every charged order so the sum is exactly what was requested.
+     */
     const leadPatch = {
       payment_status: 'pending' as const,
       payment_provider: 'paycloud' as const,
@@ -159,16 +212,24 @@ export async function POST(req: Request) {
       paycloud_merchant_order_no: null as string | null,
     }
 
-    const leadRes = await supabase.from('orders').update(leadPatch).eq('id', leadId)
+    const leadRes = await supabase
+      .from('orders')
+      .update({ ...leadPatch, pending_charge_cents: owedCents(leadId) })
+      .eq('id', leadId)
     if (leadRes.error) {
       console.error('[RECEIPT] Failed to persist merchant order (lead):', leadRes.error)
       return NextResponse.json({ ok: false, error: leadRes.error.message }, { status: 500 })
     }
 
-    const siblingIds = sortedOrderIds.filter((id) => id !== leadId)
+    const siblingIds = chargedOrderIds.filter((id) => id !== leadId)
     if (siblingIds.length > 0) {
       const sibRes = await Promise.all(
-        siblingIds.map((id) => supabase.from('orders').update(siblingPatch).eq('id', id))
+        siblingIds.map((id) =>
+          supabase
+            .from('orders')
+            .update({ ...siblingPatch, pending_charge_cents: owedCents(id) })
+            .eq('id', id),
+        )
       )
       const sibErr = sibRes.find((r) => r.error)
       if (sibErr?.error) {
@@ -183,7 +244,7 @@ export async function POST(req: Request) {
       orderId: merchantOrderNo,
       merchantNo,
       storeNo,
-      description: `FlashTap receipt - Table ${tableNumber} (${sortedOrderIds.length} order${sortedOrderIds.length > 1 ? 's' : ''})`,
+      description: `FlashTap receipt - Table ${tableNumber} (${chargedOrderIds.length} order${chargedOrderIds.length > 1 ? 's' : ''})`,
       checkoutReturnParams: {
         rid: restaurantId,
         table: String(tableNumber),
@@ -201,7 +262,7 @@ export async function POST(req: Request) {
 
     if (payment.checkoutUrl) {
       await Promise.all(
-        sortedOrderIds.map((id) =>
+        chargedOrderIds.map((id) =>
           supabase.from('orders').update({ payment_checkout_url: payment.checkoutUrl }).eq('id', id)
         )
       )

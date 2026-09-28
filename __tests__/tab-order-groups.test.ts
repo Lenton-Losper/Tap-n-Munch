@@ -263,3 +263,34 @@ describe('#293 line prices are tax-inclusive and sum to the order total', () => 
     expect(groups.members.flatMap((g) => g.orders)[0].lines[0].total).toBe(40)
   })
 })
+
+describe('with the financial projection (Sprint 2026-09-28)', () => {
+  const { AmendFixture } = require('./helpers/amend-fixture') as typeof import('./helpers/amend-fixture')
+  const { computeOrderFinancials } = require('@/lib/orders/order-financials') as typeof import('@/lib/orders/order-financials')
+
+  it('shows the live total, keeps the original, marks the voided line, and owes only what is live', () => {
+    const f = new AmendFixture('t')
+    const o = f.place([
+      { name: 'Steak', quantity: 2, total: 400 },
+      { name: 'Wine', quantity: 1, total: 100 },
+    ])
+    const r = f.amend(o.id, 'Steak', 1)!
+    const financials = new Map(f.orders.map((x) => [x.id, computeOrderFinancials(x, f.lines)]))
+    const groups = buildTabOrderGroups({
+      members: [{ member_key: 'mk', display_name: 'Ada' }],
+      selfMemberKeys: ['mk'],
+      orders: f.orders.map((x) => ({ ...x, member_session_id: 'mk' })),
+      requests: [],
+      owesMoney: (s: unknown) => s === 'pending',
+      financials,
+    })
+    const member = groups.members[0]
+    const original = member.orders.find((x) => x.id === o.id)!
+    expect(original.total).toBe(100)
+    expect(original.original_total).toBe(500)
+    expect(original.lines[0].voided).toBe(true)
+    expect(original.lines[1].voided).toBeUndefined()
+    expect(member.orders.find((x) => x.id === r.id)!.total).toBe(200)
+    expect(member.payable).toBe(300)
+  })
+})
