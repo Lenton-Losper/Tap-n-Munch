@@ -98,6 +98,7 @@ import {
 } from '@/lib/order-routing'
 import { usePermissions } from '@/hooks/use-permissions'
 import { PERMISSIONS } from '@/lib/permissions'
+import { orderLineDisplayName, orderLineMoney } from '@/lib/orders/line-display'
 
 async function markFirstPaymentSetupComplete() {
   try {
@@ -2545,9 +2546,9 @@ export function OrdersDashboard() {
               {orders.map((order) => {
                 const items = Array.isArray(order.items) ? order.items : []
                 const line = items
-                  .map((item: { quantity?: number; name?: string; display_name?: string }) => {
+                  .map((item: { quantity?: number; name?: string; display_name?: string; displayName?: string }) => {
                     const q = item?.quantity ?? 1
-                    const n = item?.display_name || item?.name || 'Item'
+                    const n = orderLineDisplayName(item)
                     return `${q}× ${n}`
                   })
                   .join(', ')
@@ -2784,8 +2785,16 @@ export function OrdersDashboard() {
                     normalizedOrder.items.map((item: any, index: number) => (
                       <div key={index} className="text-sm">
                         <span className="font-medium">
-                          {item?.quantity ?? 1}× {item?.display_name || item?.name || 'Unknown Item'}
+                          {item?.quantity ?? 1}× {orderLineDisplayName(item, 'Unknown Item')}
                         </span>
+                        {orderLineMoney(item) && (
+                          <span className="text-muted-foreground ml-2 tabular-nums">
+                            {(item?.quantity ?? 1) > 1
+                              ? `${restaurant?.currency || 'N$'}${orderLineMoney(item)!.unitPrice.toFixed(2)} ea · `
+                              : ''}
+                            {restaurant?.currency || 'N$'}{orderLineMoney(item)!.total.toFixed(2)}
+                          </span>
+                        )}
                         {item?.selected_variants && typeof item.selected_variants === 'object' && (
                           <span className="text-muted-foreground ml-2">
                             {Object.values(item.selected_variants).filter(Boolean).join(' / ')}

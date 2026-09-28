@@ -50,6 +50,14 @@ export interface CreateOrderParams {
     tax: number
     total: number
   } | null
+  /**
+   * Sprint 2026-09-28 (C6): passed straight to calculateOrderPricing. Set ONLY by the two terminal
+   * order routes; every other caller omits it and prices exactly as before. Has no effect with
+   * `preauthorizedPricing`, which does not re-price.
+   */
+  requireCompleteVariantSelection?: boolean
+  /** Sprint 2026-09-28 (C6): passed straight to calculateOrderPricing. Terminal routes only. */
+  auditMissingRequiredVariants?: boolean
 }
 
 export interface CreateOrderResult {
@@ -77,7 +85,10 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
   if (params.preauthorizedPricing) {
     pricing = params.preauthorizedPricing
   } else {
-    const computed = await calculateOrderPricing(supabase, params.restaurantId, params.items)
+    const computed = await calculateOrderPricing(supabase, params.restaurantId, params.items, {
+      requireCompleteVariantSelection: params.requireCompleteVariantSelection === true,
+      auditMissingRequiredVariants: params.auditMissingRequiredVariants === true,
+    })
     for (const warning of computed.warnings) {
       console.warn('[ORDERS] pricing warning:', warning)
     }

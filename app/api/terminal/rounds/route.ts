@@ -63,6 +63,8 @@ import { resolveOrderRestaurantScope } from '@/lib/supabase/restaurants'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { createOrder } from '@/lib/orders/create-order'
+import { UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
+import { requestDeclaresVariantProtocol } from '@/lib/orders/variant-protocol'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 import {
@@ -216,6 +218,7 @@ export async function POST(request: Request) {
     // station filters (orderMatchesStation) behave the same on a waiter round as on a POS order.
     // The LINE stations are resolved separately and differently -- see lib/orders/order-lines.ts.
     const enrichedItems = await enrichOrderItemsWithRouteTo(supabase, items)
+    const variantProtocol = requestDeclaresVariantProtocol(request)
 
     const result = await createOrder({
       restaurantId: orderRestaurantScope.restaurantId,
@@ -243,6 +246,10 @@ export async function POST(request: Request) {
       idempotencyKey,
       // Stays on the tab -- the table is not closed by taking a round.
       isClosed: false,
+      // C6: strict only for a build that declares the variant protocol; older P5s are priced as
+      // before and the gap is logged. See lib/orders/variant-protocol.ts.
+      requireCompleteVariantSelection: variantProtocol,
+      auditMissingRequiredVariants: !variantProtocol,
     })
 
     /**
@@ -352,6 +359,14 @@ export async function POST(request: Request) {
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
+    // C5: a pricing refusal is a 400 the terminal must NOT retry. As a 500 it was retried
+    // forever -- the same unpriceable round, re-sent until somebody cleared the queue.
+    if (err instanceof UnmatchedMenuItemError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code, unavailableItems: err.items },
+        { status: 400 },
+      )
+    }
     const message = err instanceof Error ? err.message : 'Internal server error'
     console.error('[TERMINAL/ROUNDS POST]', message)
     return NextResponse.json({ error: message }, { status: 500 })

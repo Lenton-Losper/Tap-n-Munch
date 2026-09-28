@@ -3,6 +3,7 @@ import { supabase } from './client'
 import { resolveRestaurantUuid } from './restaurants'
 import { buildMenuItemDbPayload } from '@/lib/menu-item-db-payload'
 import { isCustomerVisibleMenuStatus } from '@/lib/menu/menu-item-status'
+import { resolvedVariantGroupsForWire } from '@/lib/menu/variant-groups'
 
 /** Map Supabase column names to fields expected by menu-management UI. */
 export function normalizeMenuItemForClient(row: Record<string, any>) {
@@ -171,7 +172,35 @@ function normalizeCustomerMenuItem(item: Record<string, any>) {
     ...item,
     base_price: Number(item.base_price ?? 0),
     status: item.status || 'available',
+    // C6: the server's own resolution of this item's variants, so the terminal offers exactly
+    // what calculateOrderPricing will price. Always present; [] when the item has none.
+    resolved_variant_groups: resolvedVariantGroupsForWire(item),
   }
+}
+
+/**
+ * C6 for a payload that may have come out of the menu cache, written before
+ * `resolved_variant_groups` existed or before the item's variants were last edited. Recomputed
+ * from the row's own `variants`/`variant_groups` every time rather than trusted from the cache,
+ * so the field is always present and always the current resolution of the stored columns.
+ */
+export function withResolvedVariantGroups<T>(grouped: T): T {
+  if (!grouped || typeof grouped !== 'object') return grouped
+  const out: Record<string, unknown> = {}
+  for (const [key, group] of Object.entries(grouped as Record<string, any>)) {
+    out[key] =
+      group && Array.isArray(group.items)
+        ? {
+            ...group,
+            items: group.items.map((item: Record<string, any>) =>
+              item && typeof item === 'object'
+                ? { ...item, resolved_variant_groups: resolvedVariantGroupsForWire(item) }
+                : item,
+            ),
+          }
+        : group
+  }
+  return out as T
 }
 
 export async function getSupabaseMenuItemsByCategory(
