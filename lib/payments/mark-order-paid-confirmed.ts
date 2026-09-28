@@ -41,6 +41,12 @@ export type MarkOrderPaidConfirmedParams = {
 export type MarkOrderPaidConfirmedResult =
   | { claimed: true; orderId: string; tabId: string | null }
   | { claimed: false; reason: 'already_paid' | 'claim_conflict' }
+  /**
+   * 20260929120000. The order changed after its card charge was prepared, so the database refused
+   * to mark it paid (FTCHG). The order has been HELD (`amount_mismatch_hold`) and the two figures
+   * recorded; the money was taken and a human must reconcile it. Never retried into `paid`.
+   */
+  | { claimed: false; reason: 'order_changed' }
 
 /**
  * Single source of truth for "an order is now confirmed paid" (payment_status=paid,
@@ -96,6 +102,31 @@ export async function markOrderPaidConfirmed(
     .select('id, tab_id, payment_status')
     .maybeSingle()
 
+  /**
+   * THE ORDER IS NOT THE ONE THAT WAS CHARGED (Sprint 2026-09-29 brief, task 5).
+   *
+   * `orders_refuse_paid_on_changed_charge` raises FTCHG when a non-cash payment would mark paid an
+   * order whose items, voids or item settlements moved after the charge was prepared -- a guest edit
+   * that got in after the in-flight window, say, followed by the device's success callback. Every
+   * caller of this function learns of a payment the gateway has already taken, so the refusal must
+   * not disappear into a thrown error and a retry: the order is held where Held-for-review shows it,
+   * and the audit row carries both figures. Same outcome settle_order_payment's block 6d produces.
+   */
+  if (updateError && String((updateError as { code?: unknown }).code ?? '') === 'FTCHG') {
+    await holdChangedOrder(supabase, {
+      orderId,
+      restaurantId,
+      reference,
+      amount,
+      gatewayAmount,
+      paymentMethod,
+      terminalId,
+      source,
+      extraAuditMetadata,
+      fromPaymentStatuses,
+    })
+    return { claimed: false, reason: 'order_changed' }
+  }
   if (updateError) throw updateError
 
   if (!claimed) {
@@ -213,4 +244,61 @@ export async function markOrderPaidConfirmed(
   await safeIssueReceiptForOrder(orderId, source)
 
   return { claimed: true, orderId, tabId }
+}
+
+/**
+ * The FTCHG outcome, written. Best effort on the audit row (the hold is what keeps the order out of
+ * every claimable set; the row is how a human finds out why), and conditional on the order still
+ * owing, so a concurrent resolution is never overwritten.
+ */
+async function holdChangedOrder(
+  supabase: Supabase,
+  params: MarkOrderPaidConfirmedParams & { paymentMethod: string; terminalId: string | null },
+): Promise<void> {
+  const { data: current } = await supabase
+    .from('orders')
+    .select('total, pending_charge_cents, pending_charge_at, payment_status')
+    .eq('id', params.orderId)
+    .eq('restaurant_id', params.restaurantId)
+    .maybeSingle()
+
+  const { error: holdError } = await supabase
+    .from('orders')
+    .update({ payment_status: 'amount_mismatch_hold' })
+    .eq('id', params.orderId)
+    .eq('restaurant_id', params.restaurantId)
+    .in('payment_status', [...(params.fromPaymentStatuses ?? CLAIMABLE_PAYMENT_STATUSES)])
+  if (holdError) {
+    console.error(`[markOrderPaidConfirmed:${params.source}] could not hold a changed order`, {
+      orderId: params.orderId,
+      error: holdError.message,
+    })
+  }
+
+  const { error: auditError } = await supabase.from('audit_logs').insert({
+    restaurant_id: params.restaurantId,
+    action: 'payment.held_order_changed_since_charge_prepared',
+    entity_type: 'order',
+    entity_id: params.orderId,
+    metadata: {
+      source: params.source,
+      reason: 'order_changed_since_preparation',
+      attemptedReference: params.reference,
+      attemptedMethod: params.paymentMethod,
+      amount: params.amount,
+      gatewayAmount: params.gatewayAmount ?? null,
+      orderChargeCents: current?.pending_charge_cents ?? null,
+      orderTotalNow: current?.total ?? null,
+      chargePreparedAt: current?.pending_charge_at ?? null,
+      terminalId: params.terminalId,
+      note:
+        'The order changed after the card charge was prepared. The gateway charged the prepared ' +
+        'figure; the order was not marked paid and is held for review. Check what the customer ' +
+        'owes against what was charged and refund or collect the difference.',
+      ...params.extraAuditMetadata,
+    },
+  })
+  if (auditError) {
+    console.error(`[markOrderPaidConfirmed:${params.source}] held-order audit failed`, auditError)
+  }
 }

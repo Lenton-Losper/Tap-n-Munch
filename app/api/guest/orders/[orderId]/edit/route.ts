@@ -72,7 +72,7 @@ type LoadedTarget = {
  * types itself.
  */
 const ORDER_COLUMNS =
-  'id, restaurant_id, tab_id, session_id, member_session_id, status, payment_status, payment_checkout_url, items, subtotal, tax, total, order_instructions, edit_lock_token, edit_lock_session_id, edit_lock_expires_at, customer_edit_count, customer_edited_at, edit_history, total_before_edit'
+  'id, restaurant_id, tab_id, session_id, member_session_id, status, payment_status, payment_checkout_url, items, subtotal, tax, total, order_instructions, edit_lock_token, edit_lock_session_id, edit_lock_expires_at, customer_edit_count, customer_edited_at, edit_history, total_before_edit, pending_charge_cents, pending_charge_at'
 
 const REQUEST_COLUMNS =
   'id, restaurant_id, tab_id, session_id, member_session_id, status, order_instructions, items, subtotal, tax, total, items_customer, subtotal_customer, tax_customer, total_customer, items_reviewed, subtotal_reviewed, tax_reviewed, total_reviewed, edit_lock_token, edit_lock_session_id, edit_lock_expires_at, customer_edit_count, customer_edited_at, edit_history, total_before_edit'
@@ -750,6 +750,15 @@ export async function PATCH(req: Request, { params }: RouteParams) {
       .select('id, status, total, requires_reacceptance, total_before_edit, customer_edit_count')
       .maybeSingle()
 
+    /**
+     * THE DATABASE'S IN-FLIGHT LOCK (FTINF, 20260929120000). The read-side gate above refuses an
+     * order with a card charge in flight, but prepare-payment can land between that read and this
+     * write; the trigger is what actually decides, and this is that decision told to the customer
+     * in the words the read-side gate would have used. Nothing was written.
+     */
+    if (writeError && String((writeError as { code?: unknown }).code ?? '') === 'FTINF') {
+      return refuse('payment_in_flight')
+    }
     if (writeError) {
       console.error('[guest/orders/:id/edit] commit failed:', writeError)
       return NextResponse.json({ error: writeError.message }, { status: 500 })

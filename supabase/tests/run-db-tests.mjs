@@ -51,6 +51,12 @@ const MIGRATIONS = [
   'supabase/migrations/20260928150000_amend_order_lines_refuse_paid.sql',
   // Sprint 2026-09-29 task 7: a device-reported sale row is marked as one (origin, device_amount_check).
   'supabase/migrations/20260929110000_payment_events_origin.sql',
+  // Sprint 2026-09-29 task 5: a card charge settles against the order version it was prepared on.
+  // The basis + in-flight guards first; the two redefinitions copy 20260928160000 / 20260928150000
+  // and must apply after them.
+  'supabase/migrations/20260929120000_order_charge_basis.sql',
+  'supabase/migrations/20260929120100_settle_holds_order_changed_since_charge.sql',
+  'supabase/migrations/20260929120200_amend_refuses_payment_in_flight.sql',
   // record_terminal_refund_event caps refunds at a VERIFIED figure (needs 20260929110000).
   'supabase/migrations/20260929130100_refund_cap_is_verified_amount.sql',
 ]
@@ -461,19 +467,121 @@ const MUTATIONS = {
         '          true\n          AND device_amount_check IN (',
       ),
   },
-  MR1: {
+  MF1: {
     what: "a device row's refund cap is its own reported amount, not the intent's",
     expect: ['refund/device_capped_at_intent'],
     apply: (sql) =>
       sql.replace('        v_cap := v_intent_cents::numeric / 100;', '        v_cap := v_sale.amount;'),
   },
-  MR2: {
+  MF2: {
     what: 'an unverified device row (mismatch, no intent) is refundable up to its reported amount',
     expect: ['refund/device_unverified_refused'],
     apply: (sql) =>
       sql.replace(
         "        RAISE EXCEPTION 'SALE_AMOUNT_UNVERIFIED:%', v_sale.amount\n          USING ERRCODE = 'P0001';",
         '        v_cap := v_sale.amount;',
+      ),
+  },
+  /**
+   * Sprint 2026-09-29 task 5: A PAYMENT CHARGES AND SETTLES AGAINST THE SAME VERSION OF THE ORDER
+   * (20260929120000 / 120100 / 120200). Each guard is removed alone, and each is also proven in two
+   * real sessions by charge-edit-race.test.sh (the `r` variants).
+   */
+  MR1: {
+    what: 'a guest edit is allowed while a card charge is in flight (the FTINF edit lock removed)',
+    expect: ['inflight_edit/refused_ftinf', 'inflight_edit/total_unchanged'],
+    apply: (sql) =>
+      sql.replace(
+        '  IF (NEW.total IS DISTINCT FROM OLD.total OR NEW.items IS DISTINCT FROM OLD.items)\n     AND OLD.pending_charge_cents IS NOT NULL',
+        '  IF false AND (NEW.total IS DISTINCT FROM OLD.total OR NEW.items IS DISTINCT FROM OLD.items)\n     AND OLD.pending_charge_cents IS NOT NULL',
+      ),
+  },
+  MR1r: {
+    what: 'as MR1, in two sessions: the edit lands while the charge is being prepared',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.MR1.apply(sql),
+  },
+  MR2: {
+    what: 'settle_order_payment no longer checks the order against the basis its charge was prepared on (6d removed)',
+    /**
+     * With 6d gone the paid-guard trigger (C) still refuses the claim -- so the order is NOT paid,
+     * but the RPC raises instead of holding: no hold, no evidence, a charged card with nothing
+     * recorded. These are the assertions that see that. MR2b removes both layers.
+     */
+    expect: ['changed_held/reason', 'changed_held/order_held', 'changed_held/evidence_recorded', 'void_held/reason'],
+    apply: (sql) => sql.replace('  IF jsonb_array_length(v_changed) > 0 THEN', '  IF false THEN'),
+  },
+  MR2b: {
+    what: 'both settle-time checks removed (6d and the paid guard): the order is paid at the stale figure',
+    expect: ['changed_held/refused', 'changed_held/nothing_paid', 'void_held/nothing_paid'],
+    apply: (sql) => MUTATIONS.MR2.apply(sql),
+    sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_charge_basis_paid_guard ON public.orders;',
+  },
+  MR2r: {
+    what: 'as MR2b, in two sessions: a late confirmation racing a guest edit is applied',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.MR2.apply(sql),
+    sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_charge_basis_paid_guard ON public.orders;',
+  },
+  MR3: {
+    what: 'a direct paid-writer (markOrderPaidConfirmed) may mark a changed order paid by card (paid guard dropped)',
+    expect: ['paid_guard/card_refused'],
+    sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_charge_basis_paid_guard ON public.orders;',
+  },
+  MR3b: {
+    what: 'the paid guard exempts only cash again (PayToday / Mark-as-Paid refused on a dead card attempt)',
+    expect: ['paid_guard/paytoday_allowed', 'paid_guard/explicit_live_figure_allowed'],
+    apply: (sql) =>
+      sql
+        .replace(
+          "     AND lower(btrim(COALESCE(NEW.payment_method, ''))) NOT IN ('cash', 'paytoday')\n",
+          "     AND lower(btrim(COALESCE(NEW.payment_method, ''))) <> 'cash'\n",
+        )
+        .replace('     AND NEW.settled_charge_cents IS NOT DISTINCT FROM OLD.settled_charge_cents\n', ''),
+  },
+  MR4: {
+    what: "prepare-payment's stale read is accepted (the read-basis check removed)",
+    expect: ['prepare_read/stale_read_refused'],
+    apply: (sql) =>
+      sql.replace(
+        '  IF NEW.pending_charge_read_basis IS NOT NULL AND NEW.pending_charge_read_basis <> v_current THEN',
+        '  IF false THEN',
+      ),
+  },
+  MR4r: {
+    what: 'as MR4, in two sessions: a prepare computed before a committing edit/void is recorded',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.MR4.apply(sql),
+  },
+  MR5: {
+    what: 'amend_order_lines voids a line while its order is being charged (payment_in_flight removed)',
+    expect: ['amend_inflight/refused', 'amend_inflight/line_untouched'],
+    apply: (sql) =>
+      sql.replace(
+        '        IF FOUND AND v_pending_charge IS NOT NULL\n',
+        '        IF false AND v_pending_charge IS NOT NULL\n',
+      ),
+  },
+  MR5r: {
+    what: 'as MR5, in two sessions: the void lands while the charge is being prepared',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.MR5.apply(sql),
+  },
+  MR6: {
+    what: 'the charge basis ignores voided lines (a staff void mid-charge is invisible to settlement)',
+    expect: ['void_held/reason', 'void_held/nothing_paid'],
+    apply: (sql) =>
+      sql.replace(
+        "            AND COALESCE(ol.bar_state, 'voided') = 'voided'), '')",
+        "            AND COALESCE(ol.bar_state, 'voided') = 'voided' AND false), '')",
       ),
   },
   M8: {
@@ -584,6 +692,8 @@ function runSuite() {
   // Reuses the same helpers; the payment_events origin columns (20260929110000).
   psql(readRepo('supabase/tests/payment-events-origin.test.sql'))
   psql(readRepo('supabase/tests/refund-cap.test.sql'))
+  // Third: reuses amend-rpc's _seed_amend() / _amend() as its fixture (Sprint 2026-09-29 task 5).
+  psql(readRepo('supabase/tests/charge-edit-race.test.sql'))
   const total = Number(psqlValue('SELECT count(*) FROM public._test_results;'))
   const failed = psqlValue(
     "SELECT string_agg(name || '  ::  ' || COALESCE(detail,''), E'\\n') " +
@@ -604,7 +714,7 @@ function runSuite() {
 function runConcurrencyProbe(script = 'supabase/tests/concurrency.test.sh') {
   // The amend probe seeds through amend-rpc.test.sql's _seed_amend(), which a concurrency-only
   // mutation run (no runSuite) would not have defined yet.
-  if (script.includes('amend-race')) runSuite()
+  if (script.includes('amend-race') || script.includes('charge-edit-race')) runSuite()
   try {
     const out = execFileSync('bash', [join(REPO, script)], {
       encoding: 'utf8',
@@ -670,6 +780,15 @@ if (!baseAmend.passed) {
   process.exit(1)
 }
 console.log('  amend-race probe: one winner per line, paid-in-flight refused, no deadlock with a settlement')
+
+// A card charge and an order edit/void in two sessions (Sprint 2026-09-29 task 5).
+const baseCharge = runConcurrencyProbe('supabase/tests/charge-edit-race.test.sh')
+if (!baseCharge.passed) {
+  console.error('FAIL: the charge/edit race probe did not pass on unmutated code.')
+  console.error(baseCharge.out.split('\n').slice(-30).join('\n'))
+  process.exit(1)
+}
+console.log('  charge-edit-race probe: edits and voids refused mid-charge, stale prepares refused, late settlement held')
 
 if (!which) process.exit(0)
 

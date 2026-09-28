@@ -236,6 +236,23 @@ export async function POST(
         },
       })
 
+      if (!result.claimed && result.reason === 'order_changed') {
+        /**
+         * The order changed after this charge was prepared (Sprint 2026-09-29, task 5). Not a
+         * second payment: markOrderPaidConfirmed has already held the order and recorded both
+         * figures. The device is told plainly so staff do not retry or re-charge.
+         */
+        return NextResponse.json(
+          {
+            error:
+              'The card was charged, but the bill changed while it was being paid. The order is ' +
+              'held for review so the difference can be refunded or collected. Do not charge again.',
+            code: 'ORDER_CHANGED_DURING_PAYMENT',
+          },
+          { status: 409 },
+        )
+      }
+
       if (!result.claimed) {
         /**
          * #329 follow-up, 2026-08-24. THIS BRANCH USED TO RETURN AND WRITE NOTHING.

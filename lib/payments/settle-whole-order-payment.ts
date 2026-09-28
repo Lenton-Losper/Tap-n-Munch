@@ -145,6 +145,12 @@ export type SettleWholeOrderResult =
          * evidence; nothing was applied. Not retryable.
          */
         | 'paid_elsewhere'
+        /**
+         * 20260929120100. An order changed (guest edit, staff void, items paid separately) after
+         * this charge was prepared. The RPC has held the set (`amount_mismatch_hold`) and recorded
+         * both figures; nothing was applied. Not retryable.
+         */
+        | 'order_changed'
         | 'intent_conflict'
         | 'rpc_failed'
       detail?: unknown
@@ -357,9 +363,11 @@ export async function settleWholeOrderPayment(
             ? 'amount_mismatch'
             : result.reason === 'order_paid_by_other_payment'
               ? 'paid_elsewhere'
-              : result.reason === 'orders_missing'
-                ? 'target_unreadable'
-                : 'intent_conflict'
+              : result.reason === 'order_changed_since_preparation'
+                ? 'order_changed'
+                : result.reason === 'orders_missing'
+                  ? 'target_unreadable'
+                  : 'intent_conflict'
     return { ok: false, reason, detail: result, target }
   }
 
