@@ -125,17 +125,20 @@ function makeClient() {
 
 jest.mock('@/lib/supabase/server', () => ({ createServerSupabaseClient: () => makeClient() }))
 
-function orderReq(items: unknown[]) {
+/** Strict enforcement is opt-in per request: a build with the variant picker sends this. */
+const PROTOCOL = { 'X-FlashTap-Variant-Protocol': '1' }
+
+function orderReq(items: unknown[], extra: Record<string, string> = PROTOCOL) {
   return new Request('https://example.test/api/terminal/orders', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...extra },
     body: JSON.stringify({ restaurantId: RESTAURANT, items, subtotal: 1, total: 1 }),
   })
 }
-function roundReq(items: unknown[]) {
+function roundReq(items: unknown[], extra: Record<string, string> = PROTOCOL) {
   return new Request('https://example.test/api/terminal/rounds', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-idempotency-key': 'key-1' },
+    headers: { 'Content-Type': 'application/json', 'x-idempotency-key': 'key-1', ...extra },
     body: JSON.stringify({ tab_id: TAB_ID, items, subtotal: 1, total: 1 }),
   })
 }
@@ -153,7 +156,51 @@ const routes: Array<[string, (items: unknown[]) => Promise<Response>]> = [
   ['POST /api/terminal/rounds', (items) => postRound(roundReq(items))],
 ]
 
-describe.each(routes)('%s', (_name, send) => {
+/** The same two routes WITHOUT the protocol header: a P5 still on 2.39. */
+const legacyRoutes: Array<[string, (items: unknown[], extra?: Record<string, string>) => Promise<Response>]> = [
+  ['POST /api/terminal/orders', (items, extra = {}) => postOrder(orderReq(items, extra))],
+  ['POST /api/terminal/rounds', (items, extra = {}) => postRound(roundReq(items, extra))],
+]
+
+describe.each(legacyRoutes)('%s without X-FlashTap-Variant-Protocol (legacy terminal)', (_name, send) => {
+  it('a missing required variant is priced exactly as before (base_price), not refused, and the gap is logged naming the item', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const res = await send([{ menuItemId: LATTE.id, name: 'Latte', quantity: 2 }])
+    expect(res.status).toBe(200)
+    const items = insertedOrder!.items as Array<Record<string, unknown>>
+    expect(items[0].unitPrice).toBe(0)
+    expect(items[0].name).toBe('Latte')
+    expect(items[0]).not.toHaveProperty('variantResolution')
+    expect(insertedOrder!.total).toBe(0)
+    const gap = warn.mock.calls.find((c) => c[0] === '[TERMINAL VARIANT GAP]')
+    expect(gap).toBeDefined()
+    expect(gap![1]).toMatchObject({ menuItemId: LATTE.id, itemName: 'Latte', missingRequired: ['Size'] })
+  })
+
+  it('an unknown group is still ignored as before', async () => {
+    const res = await send([
+      { menuItemId: LATTE.id, name: 'Latte', quantity: 1, selectedVariants: { Size: 'Large', Syrup: 'Vanilla' } },
+    ])
+    expect(res.status).toBe(200)
+    expect(insertedOrder!.total).toBe(40)
+    expect((insertedOrder!.items as Array<Record<string, unknown>>)[0].name).toBe('Latte')
+  })
+
+  it('any header value other than "1" is legacy', async () => {
+    const res = await send([{ menuItemId: LATTE.id, quantity: 1 }], { 'X-FlashTap-Variant-Protocol': '0' })
+    expect(res.status).toBe(200)
+  })
+
+  it('a pricing refusal that predates C6 is still a 400, not a 500', async () => {
+    const res = await send([{ menuItemId: LATTE.id, quantity: 1, selectedVariants: { Size: 'Medium' } }])
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.code).toBe('MENU_ITEM_UNPRICEABLE_SELECTION')
+    expect(body.unavailableItems).toEqual([{ menuItemId: LATTE.id, name: 'Latte' }])
+  })
+})
+
+describe.each(routes)('%s with X-FlashTap-Variant-Protocol: 1', (_name, send) => {
   it('refuses a missing required variant with 400 MENU_ITEM_VARIANT_REQUIRED, and writes nothing', async () => {
     const res = await send([{ menuItemId: LATTE.id, name: 'Latte', quantity: 1, price: 0 }])
     expect(res.status).toBe(400)

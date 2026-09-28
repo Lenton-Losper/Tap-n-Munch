@@ -64,6 +64,7 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { createOrder } from '@/lib/orders/create-order'
 import { UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
+import { requestDeclaresVariantProtocol } from '@/lib/orders/variant-protocol'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 import {
@@ -217,6 +218,7 @@ export async function POST(request: Request) {
     // station filters (orderMatchesStation) behave the same on a waiter round as on a POS order.
     // The LINE stations are resolved separately and differently -- see lib/orders/order-lines.ts.
     const enrichedItems = await enrichOrderItemsWithRouteTo(supabase, items)
+    const variantProtocol = requestDeclaresVariantProtocol(request)
 
     const result = await createOrder({
       restaurantId: orderRestaurantScope.restaurantId,
@@ -244,8 +246,10 @@ export async function POST(request: Request) {
       idempotencyKey,
       // Stays on the tab -- the table is not closed by taking a round.
       isClosed: false,
-      // C6: a variant item must arrive fully chosen; never priced at base (often N$0) by default.
-      requireCompleteVariantSelection: true,
+      // C6: strict only for a build that declares the variant protocol; older P5s are priced as
+      // before and the gap is logged. See lib/orders/variant-protocol.ts.
+      requireCompleteVariantSelection: variantProtocol,
+      auditMissingRequiredVariants: !variantProtocol,
     })
 
     /**

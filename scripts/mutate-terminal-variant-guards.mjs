@@ -53,6 +53,34 @@ const MUTATIONS = [
     from: 'if (err instanceof UnmatchedMenuItemError) {',
     to: 'if (false && err instanceof UnmatchedMenuItemError) {',
   },
+  {
+    id: 'M4a',
+    what: 'protocol gate always OFF (a declaring terminal is never strict)',
+    file: 'lib/orders/variant-protocol.ts',
+    from: "=== '1'",
+    to: "=== '1' && false",
+  },
+  {
+    id: 'M4b',
+    what: 'protocol gate always ON (a 2.39 P5 without the header is refused)',
+    file: 'lib/orders/variant-protocol.ts',
+    from: "=== '1'",
+    to: "=== '1' || true",
+  },
+  {
+    id: 'M4c',
+    what: 'legacy-terminal gap audit not requested by the orders route',
+    file: 'app/api/terminal/orders/route.ts',
+    from: 'auditMissingRequiredVariants: !variantProtocol,',
+    to: 'auditMissingRequiredVariants: false,',
+  },
+  {
+    id: 'M4d',
+    what: 'legacy-terminal gap audit not requested by the rounds route',
+    file: 'app/api/terminal/rounds/route.ts',
+    from: 'auditMissingRequiredVariants: !variantProtocol,',
+    to: 'auditMissingRequiredVariants: false,',
+  },
 ]
 
 const wanted = process.argv.slice(2)

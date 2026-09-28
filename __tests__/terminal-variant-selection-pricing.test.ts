@@ -303,6 +303,14 @@ describe('QR / customer channel (flag absent) — exactly as before', () => {
     expect(line.price).toBe(40)
   })
 
+  it('the customer channel does not emit the terminal variant-gap audit', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const out = await qr([{ menuItemId: LATTE.id, quantity: 1 }])
+    expect(out.warnings).toEqual([])
+    expect(warn.mock.calls.some((c) => c[0] === '[TERMINAL VARIANT GAP]')).toBe(false)
+    warn.mockRestore()
+  })
+
   it('the F6 refusal body is unchanged: no `groups` key', async () => {
     const err = await refusal(
       qr([{ menuItemId: LATTE.id, quantity: 1, selectedVariants: { Size: 'Medium' } }]),

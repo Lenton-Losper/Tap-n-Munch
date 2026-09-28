@@ -4,6 +4,7 @@ import { resolveOrderRestaurantScope } from '@/lib/supabase/restaurants'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { createOrder } from '@/lib/orders/create-order'
 import { UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
+import { requestDeclaresVariantProtocol } from '@/lib/orders/variant-protocol'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-orders'
@@ -121,6 +122,7 @@ export async function POST(request: Request) {
     const orderRestaurantScope = await resolveOrderRestaurantScope(terminal.restaurantId)
 
     const enrichedItems = await enrichOrderItemsWithRouteTo(supabase, items)
+    const variantProtocol = requestDeclaresVariantProtocol(request)
 
     const result = await createOrder({
       restaurantId: orderRestaurantScope.restaurantId,
@@ -142,8 +144,10 @@ export async function POST(request: Request) {
       customerName: null,
       idempotencyKey: request.headers.get('x-idempotency-key') || null,
       isClosed: true,
-      // C6: a variant item must arrive fully chosen; never priced at base (often N$0) by default.
-      requireCompleteVariantSelection: true,
+      // C6: strict only for a build that declares the variant protocol; older P5s are priced as
+      // before and the gap is logged. See lib/orders/variant-protocol.ts.
+      requireCompleteVariantSelection: variantProtocol,
+      auditMissingRequiredVariants: !variantProtocol,
     })
 
     return NextResponse.json({

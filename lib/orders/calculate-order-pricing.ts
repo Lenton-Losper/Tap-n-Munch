@@ -109,6 +109,13 @@ export type CalculateOrderPricingOptions = {
    * Off (the default) is the customer channel and every repricer, whose behaviour is unchanged.
    */
   requireCompleteVariantSelection?: boolean
+  /**
+   * Sprint 2026-09-28 (C6). For a terminal that has NOT declared the variant protocol (see
+   * lib/orders/variant-protocol.ts): price exactly as before, but log every line whose required
+   * group was left unanswered, naming the item, so the N$0/base-price gap is measurable. Changes
+   * no price and refuses nothing. Ignored when `requireCompleteVariantSelection` is set.
+   */
+  auditMissingRequiredVariants?: boolean
 }
 
 export class UnmatchedMenuItemError extends Error {
@@ -451,6 +458,7 @@ export async function calculateOrderPricing(
   options: CalculateOrderPricingOptions = {},
 ): Promise<OrderPricingResult> {
   const requireComplete = options.requireCompleteVariantSelection === true
+  const auditMissing = !requireComplete && options.auditMissingRequiredVariants === true
   const warnings: string[] = []
   const rawItems = (Array.isArray(items) ? items : []) as Record<string, unknown>[]
 
@@ -554,6 +562,17 @@ export async function calculateOrderPricing(
         })
       }
       unknownHere.push(...check.unknownGroups, ...check.unknownOptions.map((u) => u.groupName))
+    } else if (auditMissing) {
+      // Legacy terminal: measured, not refused. Pricing below is untouched by this branch.
+      const { missingRequired } = checkCompleteVariantSelection(menuItem, extractVariantSelection(item))
+      if (missingRequired.length > 0) {
+        const itemName = String(menuItem.name || '').trim() || cartLineName(item)
+        warnings.push(
+          `menu item ${menuItemId} (${itemName}): required variant group(s) ${missingRequired.join(', ')} ` +
+            'left unselected by a terminal without the variant protocol; priced as before',
+        )
+        console.warn('[TERMINAL VARIANT GAP]', { restaurantId, menuItemId, itemName, missingRequired })
+      }
     }
 
     if (unpriceableHere.length > 0 || unknownHere.length > 0) {
