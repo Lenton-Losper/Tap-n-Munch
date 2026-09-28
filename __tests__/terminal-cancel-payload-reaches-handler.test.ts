@@ -85,6 +85,11 @@ jest.mock('@/lib/supabase/server', () => ({
 jest.mock('@/lib/payments/mark-order-paid-confirmed', () => ({
   markOrderPaidConfirmed: async () => ({ claimed: true, tabId: null }),
 }))
+// The paid-order cancel guard (Sprint 2026-09-29) reads the payment ledgers; this suite is about the
+// handler boundary, so the order is stated to carry no money (the guard has its own suites).
+jest.mock('@/lib/orders/paid-order-cancellation', () => ({
+  checkPaidOrderCancellation: async () => ({ allowed: true, fullyRefunded: false }),
+}))
 // There is deliberately no mock for @/lib/tabs/settle-tab-state -- but not for the reason
 // 2f76f9e gave when it removed one.
 //

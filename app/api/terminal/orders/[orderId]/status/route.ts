@@ -4,6 +4,7 @@ import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 import { staffStatusRefusal } from '@/lib/orders/staff-status-refusal'
 import { cancelOrderWithTrail } from '@/lib/orders/cancel-order-with-trail'
+import { checkPaidOrderCancellation } from '@/lib/orders/paid-order-cancellation'
 
 export const dynamic = 'force-dynamic'
 
@@ -117,6 +118,61 @@ export async function PATCH(
       ).trim()
       const cancellationReason = callerReason || 'terminal_cancelled'
       const merchantOrderNo = String(order.paycloud_merchant_order_no || '').trim()
+
+      /**
+       * A PAID ORDER IS NOT CANCELLED OVER ITS PAYMENT (Sprint 2026-09-29 brief, F-MANUAL task 2).
+       *
+       * Both branches below write payment_status 'cancelled'. The pre-gateway one ran with
+       * `guard: 'none'` and so cancelled an order paid in cash; the gateway one asks Finatic about
+       * the CARD attempt, which says nothing about cash taken since. Money on the order -- paid, a
+       * settled item, a ledger row -- is refused here with the refund path named. A card sale
+       * refunded in full may be cancelled, keeping its payment_status and its history.
+       */
+      const moneyCheck = await checkPaidOrderCancellation(supabase, {
+        restaurantId: terminal.restaurantId,
+        orderId,
+        paymentStatus: order.payment_status,
+      })
+      if (!moneyCheck.allowed) {
+        return NextResponse.json(
+          {
+            error: moneyCheck.error,
+            code: moneyCheck.code,
+            refund_path: moneyCheck.refundPath,
+            payment_status: order.payment_status ?? null,
+          },
+          { status: moneyCheck.status },
+        )
+      }
+      if (moneyCheck.fullyRefunded) {
+        // The refund already settled the money with the gateway: there is no attempt left to
+        // verify, and the payment_status must survive the cancel.
+        try {
+          const refundedCancel = await cancelOrderWithTrail(supabase, {
+            orderId,
+            restaurantId: terminal.restaurantId,
+            cancellationReason,
+            basis: 'terminal_pre_gateway',
+            guard: 'none',
+            preservePaymentStatus: true,
+            actorKind: 'terminal',
+            actorUserId: null,
+            metadata: {
+              terminalId: terminal.terminalId ?? null,
+              requestedStatus: newStatus,
+              payment_fully_refunded: true,
+              payment_status_preserved: true,
+            },
+          })
+          if (!refundedCancel.cancelled) {
+            return NextResponse.json({ error: 'Order changed; refresh and try again' }, { status: 409 })
+          }
+          return NextResponse.json({ success: true, outcome: 'cancelled', order: refundedCancel.order })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          return NextResponse.json({ error: message }, { status: 500 })
+        }
+      }
 
       if (merchantOrderNo) {
         let failedResult

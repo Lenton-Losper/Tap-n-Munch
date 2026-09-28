@@ -17,6 +17,12 @@ jest.mock('@/lib/api/require-staff-permission', () => ({
 jest.mock('@/lib/receipts/safeIssueReceipt', () => ({
   safeIssueReceiptForOrder: jest.fn(async () => undefined),
 }))
+// The paid-order cancel guard (Sprint 2026-09-29) reads the payment ledgers; this suite is about
+// something else, so the order is stated to carry no money. The guard has its own suites
+// (paid-order-cancellation.test.ts, orders-status-paid-cancel.test.ts).
+jest.mock('@/lib/orders/paid-order-cancellation', () => ({
+  checkPaidOrderCancellation: async () => ({ allowed: true, fullyRefunded: false }),
+}))
 
 type Line = { id: string; kitchen_state: string | null; bar_state: string | null; name_snapshot: string; quantity: number }
 let lines: Line[]
