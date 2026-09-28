@@ -267,6 +267,48 @@ describe('the fingerprint', () => {
     expect(sameRoundItems([{ menuItemId: PASTA, quantity: '2' }], [pasta({ quantity: 2 })])).toBe(true)
   })
 
+  // The terminal omits selectedVariants when a line has no selection (like `note`), so an APK
+  // upgrade or a client that sends {} or null must still replay rather than 409.
+  it('(a) absent, null and {} selectedVariants are identical', () => {
+    const absent = [pasta()]
+    expect(sameRoundItems(absent, [pasta({ selectedVariants: null })])).toBe(true)
+    expect(sameRoundItems(absent, [pasta({ selectedVariants: {} })])).toBe(true)
+    expect(sameRoundItems([pasta({ selectedVariants: null })], [pasta({ selected_variants: {} })])).toBe(true)
+    // Entries the server drops (empty / non-string) do not make a selection either.
+    expect(sameRoundItems(absent, [pasta({ selectedVariants: { Size: '' , Extra: 3 } })])).toBe(true)
+  })
+
+  it('(b) selections compare order-insensitively by group key', () => {
+    // web-var stores the canonical map in the SERVER's group order.
+    expect(
+      sameRoundItems(
+        [pasta({ selectedVariants: { Sauce: 'Cream', Size: 'Large' } })],
+        [pasta({ selectedVariants: { Size: 'Large', Sauce: 'Cream' } })],
+      ),
+    ).toBe(true)
+    // An array value reads as its first element, the way pricing reads it.
+    expect(sameRoundItems([pasta({ selectedVariants: { Size: ['Large'] } })], [pasta({ selectedVariants: { Size: 'Large' } })])).toBe(true)
+  })
+
+  it('(c) compares against persisted items by menuItemId/quantity/note/variants -- never name or price', () => {
+    const request = [pasta({ note: 'no parmesan', selectedVariants: { size: 'large', sauce: 'cream' } })]
+    // What the server persists under the variant protocol: canonical labels in server group order,
+    // name/displayName rewritten to "Item - A / B", price overwritten, variantResolution added.
+    const stored = [
+      {
+        menuItemId: PASTA, quantity: 1, note: 'no parmesan',
+        name: 'Modena Pasta - Large / Cream', displayName: 'Modena Pasta - Large / Cream',
+        price: 145, unitPrice: 145, selectedVariants: { Size: 'Large', Sauce: 'Cream' },
+        variantResolution: { resolved: true },
+      },
+    ]
+    expect(sameRoundItems(request, stored)).toBe(true)
+    // A different name alone is never a mismatch...
+    expect(sameRoundItems([pasta({ name: 'Anything' })], [pasta({ name: 'Modena Pasta - Large' })])).toBe(true)
+    // ...but a different selection is.
+    expect(sameRoundItems(request, [{ ...stored[0], selectedVariants: { Size: 'Small', Sauce: 'Cream' } }])).toBe(false)
+  })
+
   it('counts duplicates: two separate pasta lines are not one', () => {
     expect(roundItemFingerprint([pasta(), pasta()])).toHaveLength(2)
     expect(sameRoundItems([pasta(), pasta()], [pasta()])).toBe(false)
