@@ -154,7 +154,11 @@ export async function POST(
     const { data: tabOrders, error: tabOrdersError } = await supabase
       .from('orders')
       // The financial columns feed the projection below (what is still owed per order).
-      .select(`${FINANCIAL_ORDER_COLUMNS}, terminal_pushed_at`)
+      // The payment columns the claim below overwrites are read too, so a claim that has to be
+      // undone (a partial claim -- see SETTLE_CLAIM_CONFLICT) can be put back exactly as it was.
+      .select(
+        `${FINANCIAL_ORDER_COLUMNS}, terminal_pushed_at, payment_method, payment_reference, payment_voucher_no, paid_at, completed_at`,
+      )
       .eq('tab_id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
       .in('id', orderIds)
@@ -517,6 +521,11 @@ export async function POST(
     // would put a card-shaped reference on a payment no card was used for.
     const paymentVoucherNo = usesGateway ? voucherNo || gatewayReference || null : null
 
+    // The rows as READ, copied before the claim, so a partial claim can be undone exactly.
+    const priorById = new Map(
+      (tabOrders ?? []).map((o) => [String(o.id), { ...(o as Record<string, unknown>) }]),
+    )
+
     // Atomic claim: only rows still settleable by THIS method flip to paid. Cash may claim
     // cash_pending/failed orders; card keeps its original narrower set.
     let claimQuery = supabase
@@ -563,6 +572,93 @@ export async function POST(
 
     const claimedIds = (claimed ?? []).map((o) => String(o.id))
     if (claimedIds.length !== orderIds.length) {
+      /**
+       * ALL OR NOTHING (Sprint 2026-09-28 brief, N2).
+       *
+       * The claim is one UPDATE, but it matches row by row: an order another payment took between
+       * the validation above and this statement simply does not match, and the rest DO. This used
+       * to answer 409 and stop -- leaving the claimed orders paid with no payments row, no ledger
+       * row, no receipt, no audit and no tab total recompute, which is a partial settlement with no
+       * trail. On the card path the reader has already charged the customer by now.
+       *
+       * So the orders this request claimed are put back exactly as they were read, conditioned on
+       * THIS request's own payment_reference (generated above, unique) so nothing another writer
+       * did since is touched. A 409 now leaves nothing paid by this request -- and the conflict,
+       * including whether a card was charged, is written down for staff to refund or reconcile.
+       */
+      const revertedIds: string[] = []
+      const revertFailedIds: string[] = []
+      for (const id of claimedIds) {
+        const prior = priorById.get(id) as Record<string, unknown> | undefined
+        const { data: reverted, error: revertError } = await supabase
+          .from('orders')
+          .update({
+            payment_status: prior?.payment_status ?? null,
+            payment_method: prior?.payment_method ?? null,
+            payment_reference: prior?.payment_reference ?? null,
+            payment_voucher_no: prior?.payment_voucher_no ?? null,
+            status: prior?.status ?? null,
+            paid_at: prior?.paid_at ?? null,
+            completed_at: prior?.completed_at ?? null,
+            terminal_pushed_at: prior?.terminal_pushed_at ?? null,
+            // The settled-charge trigger stamped this on the way INTO paid; undo that too.
+            settled_charge_cents: prior?.settled_charge_cents ?? null,
+          })
+          .eq('id', id)
+          .eq('restaurant_id', terminal.restaurantId)
+          .eq('payment_reference', paymentReference)
+          .select('id')
+        if (revertError || !reverted || reverted.length === 0) {
+          revertFailedIds.push(id)
+          console.error('[terminal/tabs/settle] could not undo a partial claim', {
+            order_id: id,
+            payment_reference: paymentReference,
+            error: revertError,
+          })
+        } else {
+          revertedIds.push(id)
+        }
+      }
+      const claimedSet = new Set(claimedIds)
+      const lostToAnotherPayment = orderIds.filter((id) => !claimedSet.has(id))
+
+      const { error: conflictAuditError } = await supabase.from('audit_logs').insert({
+        restaurant_id: terminal.restaurantId,
+        action: 'payment.settle_claim_conflict',
+        entity_type: 'tabs',
+        entity_id: tabId,
+        metadata: {
+          requested_order_ids: orderIds,
+          claimed_then_reverted_order_ids: revertedIds,
+          // Non-empty means orders are left PAID by this request with nothing else recorded.
+          revert_failed_order_ids: revertFailedIds,
+          lost_to_another_payment_order_ids: lostToAnotherPayment,
+          method,
+          // THE FLAG STAFF NEED. On the card path the reader charged the customer before this
+          // request arrived; nothing in this system now records that money except this row.
+          card_charged: usesGateway,
+          amount: expectedAmount,
+          client_amount: Number.isFinite(amount) ? amount : null,
+          tip_cents: tipCents,
+          business_order_no: businessOrderNo || null,
+          voucher_no: voucherNo || null,
+          gateway_reference: gatewayReference || null,
+          payment_reference: paymentReference,
+          terminal_id: terminal.terminalId,
+          device_serial: terminal.deviceSerial,
+          staff_user_id: attributedStaffUserId,
+          note: usesGateway
+            ? 'A card was charged for these orders, but another payment took some of them first. ' +
+              'Nothing was settled by this charge. Check the gateway and refund or reconcile it.'
+            : 'Another payment took some of these orders first. Nothing was settled; no money ' +
+              'is recorded against this attempt.',
+          recorded_at: new Date().toISOString(),
+        },
+      })
+      if (conflictAuditError) {
+        console.error('[terminal/tabs/settle] claim conflict audit insert failed', conflictAuditError)
+      }
+
       return NextResponse.json(
         {
           error:
@@ -573,7 +669,12 @@ export async function POST(
             claimedIds.length === 0
               ? 'ALREADY_PAID'
               : 'SETTLE_CLAIM_CONFLICT',
+          // Unchanged meaning for existing builds: what this request's claim matched. Every one of
+          // them has since been put back unless it is also in revert_failed_order_ids.
           claimed_order_ids: claimedIds,
+          reverted_order_ids: revertedIds,
+          revert_failed_order_ids: revertFailedIds,
+          card_charged: usesGateway,
         },
         { status: 409 },
       )
