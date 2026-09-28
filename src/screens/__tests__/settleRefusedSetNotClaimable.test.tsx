@@ -74,6 +74,7 @@ import {
   PREPARE_REFUSAL_CANCELLED,
   PREPARE_REFUSAL_HELD,
   PREPARE_REFUSAL_NOTHING_OWED,
+  PREPARE_REFUSAL_ORDER_CHANGED,
   PREPARE_REFUSAL_PAID,
   PREPARE_REFUSAL_TITLE,
   SETTLE_NOTHING_LEFT_AFTER_CARD,
@@ -296,6 +297,23 @@ describe('SETTLEMENT_SET_NOT_CLAIMABLE on a card tab settle', () => {
     expect(lastAlert()).toEqual([PREPARE_REFUSAL_TITLE, PREPARE_REFUSAL_NOTHING_OWED]);
     expect(mockCompletePaymentReliably).not.toHaveBeenCalled();
     expect(mockSettleTab).not.toHaveBeenCalled();
+  });
+
+  it('ORDER_CHANGED_DURING_PREPARE: the bill-changed sentence, refreshed, nothing reported or retried', async () => {
+    const {tree} = await renderScreen(twoRoundTab());
+    const refreshesBefore = mockGetTablesWithMeta.mock.calls.length;
+    mockProcessPaymentIntent.mockResolvedValueOnce({
+      success: false,
+      outcomeKind: 'not_started',
+      prepareRefusal: {code: 'ORDER_CHANGED_DURING_PREPARE', notClaimable: [], orderIdsOwingNothing: []},
+    });
+    await press(tree, 'Settle Entire Tab');
+    expect(lastAlert()).toEqual([PREPARE_REFUSAL_TITLE, PREPARE_REFUSAL_ORDER_CHANGED]);
+    expect(mockProcessPaymentIntent).toHaveBeenCalledTimes(1);
+    expect(mockResolveAmbiguous).not.toHaveBeenCalled();
+    expect(mockCompletePaymentReliably).not.toHaveBeenCalled();
+    expect(mockSettleTab).not.toHaveBeenCalled();
+    expect(mockGetTablesWithMeta.mock.calls.length).toBeGreaterThan(refreshesBefore);
   });
 
   it('POSITIVE CONTROL: a plain not_started (no typed refusal) still takes the failure path', async () => {

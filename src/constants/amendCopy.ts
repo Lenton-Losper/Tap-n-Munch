@@ -63,6 +63,10 @@ export const AMEND_REFUSAL_REASON: Record<string, string> = {
     'That quantity was not accepted — NOT changed. It is still on the bill as it was.',
   order_paid: 'This order is already paid — NOT removed. It is still on the bill.',
   line_settled: 'This item has already been paid for — NOT removed. It is still on the bill.',
+  // Sprint 2026-09-29 (F-TERMPAY follow-up). DRAFTED, NOT YET SIGNED. A card charge for this order
+  // was prepared within the last few minutes; changing the bill under it would make the charge wrong.
+  payment_in_flight:
+    'A card payment for this order is in progress — NOT removed. It is still on the bill. Try again after the payment finishes.',
 };
 
 /** A reason this build has never heard of. Says plainly that we do not know, and what to do. */

@@ -16,6 +16,7 @@ const mockGetTerminalInfo = jest.fn();
 const mockGetOrder = jest.fn();
 const mockProcessPaymentIntent = jest.fn();
 const mockCompletePaymentReliably = jest.fn(async () => true);
+const mockCompletePayment = jest.fn();
 const mockResolveAmbiguous = jest.fn(async (_i: string, r: unknown) => r);
 
 jest.mock('../../lib/api', () => {
@@ -27,7 +28,7 @@ jest.mock('../../lib/api', () => {
     getTabLines: jest.fn(async () => null),
     getHeldOrphanPayments: jest.fn(async () => []),
     getStrandedOrderRequests: jest.fn(async () => []),
-    completePayment: jest.fn(async () => ({success: true, canClose: false})),
+    completePayment: (...a: unknown[]) => mockCompletePayment(...(a as [])),
     completePaymentReliably: (...a: unknown[]) => mockCompletePaymentReliably(...(a as [])),
     recordSaleEvent: jest.fn(async () => ({ok: true})),
     closeTable: jest.fn(async () => ({})),
@@ -61,7 +62,11 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 
 import PaymentScreen from '../PaymentScreen';
+import {ApiRequestError} from '../../lib/api';
 import {
+  PAYMENT_HELD_BODY,
+  PAYMENT_HELD_TITLE,
+  PREPARE_REFUSAL_ORDER_CHANGED,
   PREPARE_REFUSAL_CANCELLED,
   PREPARE_REFUSAL_HELD,
   PREPARE_REFUSAL_PAID,
@@ -125,8 +130,14 @@ async function pressCharge(tree: renderer.ReactTestRenderer) {
   });
 }
 
+function byTestId(tree: renderer.ReactTestRenderer, id: string): string | null {
+  const hits = tree.root.findAll(n => n.props?.testID === id && typeof n.type !== 'string');
+  return hits.length ? renderedText(hits[0].props.children) : null;
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCompletePayment.mockResolvedValue({success: true, canClose: false});
   mockGetTerminalInfo.mockResolvedValue({cardPaymentEnabled: true, cashPaymentEnabled: false});
   // A tab-less order: charges its total, so the refusal is the only thing under test.
   mockGetOrder.mockResolvedValue({
@@ -149,6 +160,7 @@ describe('a typed prepare refusal on the Charge screen', () => {
       [{orderId: ORDER_ID, orderNumber: 160, reason: 'held'}],
       PREPARE_REFUSAL_HELD,
     ],
+    ['ORDER_CHANGED_DURING_PREPARE', [], PREPARE_REFUSAL_ORDER_CHANGED],
   ])('%s: the reason in words, the order re-read, nothing reported or retried', async (code, notClaimable, sentence) => {
     mockProcessPaymentIntent.mockResolvedValueOnce({
       success: false,
@@ -180,5 +192,49 @@ describe('a typed prepare refusal on the Charge screen', () => {
     const tree = await mount();
     await pressCharge(tree);
     expect(mockCompletePaymentReliably).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('409 ORDER_CHANGED_DURING_PAYMENT: the card WAS charged and the order is held', () => {
+  const charged = {
+    success: true,
+    reference: 'GW-REF-1',
+    voucherNo: 'V-77',
+    businessOrderNo: 'FT-1',
+  };
+
+  it('says the payment was taken and held, shows the reference, and never reports failure or retries', async () => {
+    mockProcessPaymentIntent.mockResolvedValueOnce(charged);
+    mockCompletePayment.mockRejectedValue(
+      new ApiRequestError('The card was charged, but the bill changed.', 409, {
+        code: 'ORDER_CHANGED_DURING_PAYMENT',
+      }),
+    );
+    const tree = await mount();
+    await pressCharge(tree);
+
+    expect(byTestId(tree, 'payment-success-title')).toBe(PAYMENT_HELD_TITLE);
+    expect(byTestId(tree, 'payment-held-note')).toBe(PAYMENT_HELD_BODY);
+    expect(byTestId(tree, 'payment-held-reference')).toContain('V-77');
+    // Reported once, as a success; never as a failure, never re-verified, never charged again.
+    expect(mockCompletePayment).toHaveBeenCalledTimes(1);
+    expect(mockCompletePaymentReliably).not.toHaveBeenCalled();
+    expect(mockResolveAmbiguous).not.toHaveBeenCalled();
+    expect(mockProcessPaymentIntent).toHaveBeenCalledTimes(1);
+    const text = renderedText(tree.toJSON());
+    expect(text).not.toContain('FAILED');
+    expect(text).not.toContain('Try again');
+    expect(text).not.toContain('Process Payment');
+  });
+
+  it('POSITIVE CONTROL: an unrelated 409 on the success report still goes to recovery, not the held screen', async () => {
+    mockProcessPaymentIntent.mockResolvedValueOnce(charged);
+    mockCompletePayment.mockRejectedValue(
+      new ApiRequestError('The order may already be paid.', 409, {code: 'PAYMENT_CLAIM_CONFLICT'}),
+    );
+    const tree = await mount();
+    await pressCharge(tree);
+    expect(mockResolveAmbiguous).toHaveBeenCalled();
+    expect(byTestId(tree, 'payment-held-note')).toBeNull();
   });
 });

@@ -10,6 +10,7 @@
  *   409 ORDER_NOTHING_OWED            the lead order owes nothing (its items were voided or collected)
  *   409 NOTHING_LEFT_TO_CHARGE        the whole set owes nothing
  *   400 ALREADY_PAID / ORDER_CANCELLED the lead order itself is paid / cancelled
+ *   409 ORDER_CHANGED_DURING_PREPARE  the bill changed while the charge was being set up
  *
  * Every one of them means THE SCREEN IS STALE. The answer is always the same: say what happened in
  * words, refresh from the server, and let the waiter choose again. NEVER retry the same set -- it is
@@ -22,6 +23,7 @@ import {
   PREPARE_REFUSAL_CHANGED,
   PREPARE_REFUSAL_HELD,
   PREPARE_REFUSAL_NOTHING_OWED,
+  PREPARE_REFUSAL_ORDER_CHANGED,
   PREPARE_REFUSAL_ORDERS_PREFIX,
   PREPARE_REFUSAL_PAID,
   PREPARE_REFUSAL_REASON_WORD,
@@ -42,6 +44,8 @@ export const PREPARE_REFUSAL_CODES = [
   'NOTHING_LEFT_TO_CHARGE',
   'ALREADY_PAID',
   'ORDER_CANCELLED',
+  // Sprint 2026-09-29 follow-up: the bill changed between reading it and recording the charge.
+  'ORDER_CHANGED_DURING_PREPARE',
 ] as const;
 export type PrepareRefusalCode = (typeof PREPARE_REFUSAL_CODES)[number];
 
@@ -120,6 +124,9 @@ export function prepareRefusalFromError(err: unknown): PrepareRefusal | null {
  * The one sentence for this refusal, plus the orders it names when the server named any.
  */
 export function prepareRefusalMessage(refusal: PrepareRefusal): {title: string; body: string} {
+  if (refusal.code === 'ORDER_CHANGED_DURING_PREPARE') {
+    return {title: PREPARE_REFUSAL_TITLE, body: PREPARE_REFUSAL_ORDER_CHANGED};
+  }
   let reason: NotClaimableReason | 'nothing_owed';
   switch (refusal.code) {
     case 'ALREADY_PAID':
