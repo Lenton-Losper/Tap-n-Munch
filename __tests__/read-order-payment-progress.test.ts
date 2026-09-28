@@ -14,7 +14,13 @@
  */
 import { readOrderPaymentProgress } from '@/lib/payments/read-order-payment-progress'
 
-type LineRow = { id: string; order_id: string; source_item_index: number }
+type LineRow = {
+  id: string
+  order_id: string
+  source_item_index: number
+  kitchen_state?: string | null
+  bar_state?: string | null
+}
 type AllocRow = { order_line_id: string; amount_cents: unknown; settled_at: string | null }
 
 /**
@@ -228,5 +234,40 @@ describe('readOrderPaymentProgress — degrades to SILENCE, never to a wrong fig
       [],
     )
     expect(out.size).toBe(0)
+  })
+})
+
+describe('voided lines (Sprint 2026-09-28)', () => {
+  /**
+   * amend_order_lines leaves a voided line and its money on the order. The reader must neither
+   * count it as a line still to pay nor keep its cents in the order's total: two lines paid of a
+   * four-line order whose other two were VOIDED is fully paid, not "2/4".
+   */
+  it('a voided line is neither outstanding nor in the total', async () => {
+    const lines: LineRow[] = [
+      { id: 'l0', order_id: 'o1', source_item_index: 0, kitchen_state: 'outstanding' },
+      { id: 'l1', order_id: 'o1', source_item_index: 1, kitchen_state: 'outstanding' },
+      { id: 'l2', order_id: 'o1', source_item_index: 2, kitchen_state: 'voided' },
+      { id: 'l3', order_id: 'o1', source_item_index: 3, kitchen_state: 'voided' },
+    ]
+    const out = await readOrderPaymentProgress(
+      db({ lines, allocations: [settled('l0', 1000), settled('l1', 1000)] }),
+      [ORDER],
+    )
+    const p = out.get('o1')!
+    expect(p.totalLines).toBe(2)
+    expect(p.remainingCents).toBe(0)
+    expect(p.state).toBe('paid')
+  })
+
+  it('an unpaid order with one voided line owes only the live lines', async () => {
+    const lines: LineRow[] = [
+      { id: 'l0', order_id: 'o1', source_item_index: 0, kitchen_state: 'outstanding' },
+      { id: 'l1', order_id: 'o1', source_item_index: 1, kitchen_state: 'voided' },
+      { id: 'l2', order_id: 'o1', source_item_index: 2, kitchen_state: 'outstanding' },
+      { id: 'l3', order_id: 'o1', source_item_index: 3, kitchen_state: 'outstanding' },
+    ]
+    const out = await readOrderPaymentProgress(db({ lines }), [ORDER])
+    expect(out.get('o1')!.remainingCents).toBe(3000)
   })
 })

@@ -368,6 +368,18 @@ async function readAllocationSettled(
   }
 }
 
+/** The projection's other two inputs for orders the caller has already read. Throws on failure. */
+export async function readProjectionInputs(
+  supabase: FinancialsSupabase,
+  orderIds: readonly string[],
+): Promise<{ lines: FinancialLineInput[]; allocationSettledByOrder: Map<string, number> }> {
+  const [lines, allocationSettledByOrder] = await Promise.all([
+    readFinancialLines(supabase, orderIds),
+    readAllocationSettled(supabase, orderIds),
+  ])
+  return { lines, allocationSettledByOrder }
+}
+
 /**
  * The projection for rows the CALLER has already read (with at least FINANCIAL_ORDER_COLUMNS).
  * Reads only the lines and the ledger -- for routes that keep their own order read, such as
@@ -417,28 +429,63 @@ export async function loadOrderFinancials(
   return { rows, byId: await projectOrderRows(supabase, rows) }
 }
 
-/** Every order on one tab, projected and summed. Settlement artefacts are excluded from the sum. */
+/**
+ * Every order on one tab, projected and summed. Settlement artefacts are excluded from the sum.
+ *
+ * `restaurantId` scopes the read whenever the caller has one; null is for internal server helpers
+ * that hold only a tab id (a tab id is a uuid and belongs to one venue).
+ */
 export async function loadTabFinancials(
   supabase: FinancialsSupabase,
-  restaurantId: string,
+  restaurantId: string | null,
   tabId: string,
 ): Promise<TabFinancials> {
-  const rows = await readAllPages<FinancialOrderInput>(
-    () =>
-      supabase
-        .from('orders')
-        .select(FINANCIAL_ORDER_COLUMNS)
-        .eq('restaurant_id', restaurantId)
-        .eq('tab_id', tabId)
-        .order('id', { ascending: true }),
-    'orders',
-  )
+  const rows = await readAllPages<FinancialOrderInput>(() => {
+    let query = supabase.from('orders').select(FINANCIAL_ORDER_COLUMNS)
+    if (restaurantId) query = query.eq('restaurant_id', restaurantId)
+    return query.eq('tab_id', tabId).order('id', { ascending: true })
+  }, 'orders')
   const ids = rows.map((r) => String(r.id))
   const [lines, settled] = await Promise.all([
     readFinancialLines(supabase, ids),
     readAllocationSettled(supabase, ids),
   ])
   return computeTabFinancials(rows, lines, settled)
+}
+
+/**
+ * A tab's figures and NOTHING ELSE -- no order ids, no rows. For the guest routes classified
+ * AGGREGATE_NO_IDS (__tests__/guest-routes-do-not-leak-foreign-order-ids.test.ts): the projection
+ * has to read order ids to join lines to their orders, and this is the boundary that keeps every
+ * one of them inside the server. Built field by field, never spread, so a field added to
+ * TabFinancials later cannot start travelling.
+ */
+export type TabTotals = {
+  originalCents: number
+  /** Σ (original − voided) over every non-artefact order, paid or cancelled included: "ordered". */
+  grossOrderedCents: number
+  voidedCents: number
+  liveCents: number
+  paidCents: number
+  outstandingCents: number
+  overpaidCents: number
+}
+
+export async function loadTabTotals(
+  supabase: FinancialsSupabase,
+  restaurantId: string | null,
+  tabId: string,
+): Promise<TabTotals> {
+  const t = await loadTabFinancials(supabase, restaurantId, tabId)
+  return {
+    originalCents: t.originalCents,
+    grossOrderedCents: t.orders.reduce((sum, o) => sum + (o.originalCents - o.voidedCents), 0),
+    voidedCents: t.voidedCents,
+    liveCents: t.liveCents,
+    paidCents: t.paidCents,
+    outstandingCents: t.outstandingCents,
+    overpaidCents: t.overpaidCents,
+  }
 }
 
 /** The C2 wire shape, for one order or a tab. Integer cents throughout. */

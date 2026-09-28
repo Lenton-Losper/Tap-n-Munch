@@ -239,7 +239,16 @@ describe('guest-reachable routes do not hand order ids to sessions that do not o
       if (!file) return
       const source = codeOnly(readFileSync(file, 'utf8'))
 
-      expect(source).toMatch(/TAB_TOTAL_ORDER_COLUMNS|TAB_PENDING_REQUEST_COLUMNS/)
+      /**
+       * Sprint 2026-09-28 brief (the financial projection switch-over): `loadTabTotals` joins the
+       * third mechanism. The projection has to read order ids to join each order to its
+       * order_lines -- that is how a voided line is known to be voided -- so an id-free select can
+       * no longer produce the payable figure. `loadTabTotals` keeps every id inside the server and
+       * returns numbers only; the assertion below this `it.each` holds it to that at runtime.
+       */
+      expect(source).toMatch(/TAB_TOTAL_ORDER_COLUMNS|TAB_PENDING_REQUEST_COLUMNS|loadTabTotals/)
+      // The richer projection readers carry order ids and are NOT permitted in this class.
+      expect(source).not.toMatch(/loadTabFinancials|loadOrderFinancials|projectOrderRows/)
 
       /**
        * Scoped to ORDER reads, not to every select in the file. These routes legitimately select
@@ -258,6 +267,26 @@ describe('guest-reachable routes do not hand order ids to sessions that do not o
       }
     },
   )
+
+  it('loadTabTotals, the AGGREGATE boundary, returns numbers and never an id (Sprint 2026-09-28)', async () => {
+    const { loadTabTotals } = await import('@/lib/orders/order-financials')
+    const { InMemoryDb } = await import('./helpers/in-memory-postgrest')
+    const db = new InMemoryDb({
+      orders: [
+        { id: 'o-secret-1', restaurant_id: 'r', tab_id: 't', total: 50, items: [{ total: 50, quantity: 1 }], payment_status: 'pending' },
+        { id: 'o-secret-2', restaurant_id: 'r', tab_id: 't', total: 20, items: [], payment_status: 'paid' },
+      ],
+      order_lines: [
+        { id: 'l-1', order_id: 'o-secret-1', source_item_index: 0, kitchen_state: 'outstanding', bar_state: null },
+      ],
+      order_line_allocations: [],
+      order_line_allocation_settlements: [],
+    })
+    const totals = await loadTabTotals(db.client(), 'r', 't')
+    for (const value of Object.values(totals)) expect(typeof value).toBe('number')
+    expect(JSON.stringify(totals)).not.toMatch(/o-secret|l-1/)
+    expect(totals.outstandingCents).toBe(5000)
+  })
 
   it('never lets an id into the shared order-column constants the tab view sums with', () => {
     // The direct form of the property, and the one with real teeth: AGGREGATE_NO_IDS holds only

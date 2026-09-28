@@ -91,6 +91,11 @@ jest.mock('@/lib/supabase/server', () => ({
               return builder
             },
             in: () => builder,
+            // Sprint 2026-09-28: the payable figure is the financial projection's, which pages its
+            // orders read (.order().range()) and then reads order_lines and allocations.
+            is: () => builder,
+            order: () => builder,
+            range: () => builder,
             /**
              * `restaurant_tables` was added to this mock on 2026-08-18 with the SESSION BOUNDARY
              * check. The route now refuses with 410 when the tab's `session_version` does not
@@ -116,7 +121,14 @@ jest.mock('@/lib/supabase/server', () => ({
             // The orders read is awaited directly rather than via maybeSingle.
             then: (resolve: (v: unknown) => unknown) =>
               resolve({
-                data: table === 'orders' ? orderRows : table === 'order_requests' ? requestRows : tabRow,
+                data:
+                  table === 'orders'
+                    ? orderRows
+                    : table === 'order_requests'
+                      ? requestRows
+                      : table === 'order_lines' || table === 'order_line_allocations'
+                        ? []
+                        : tabRow,
                 error: null,
               }),
           }
@@ -243,7 +255,11 @@ describe('GET /api/tabs/[tabId]/view — the redacting seam (#262)', () => {
     expect(requestsSelected).toContain('total_reviewed')
     expect(requestsSelected).toContain('total_customer')
     expect(ordersSelected).toContain('tab_settlement_for_tab_id')
-    expect(orderFilters).toEqual([['eq', 'tab_id', TAB_ID]])
+    // Scoped to the venue as well as the tab since the projection read (Sprint 2026-09-28).
+    expect(orderFilters).toEqual([
+      ['eq', 'restaurant_id', RESTAURANT_UUID],
+      ['eq', 'tab_id', TAB_ID],
+    ])
   })
 
   it('returns 0 for a tab with no orders — absence of debt, not absence of an answer', async () => {

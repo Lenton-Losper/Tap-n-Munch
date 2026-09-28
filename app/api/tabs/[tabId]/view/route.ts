@@ -5,9 +5,15 @@ import { createTabMemberKeyDeriver, redactTabMembers } from '@/lib/tab-member-ke
 import {
   TAB_PENDING_REQUEST_COLUMNS,
   TAB_PENDING_REQUEST_STATUSES,
-  TAB_TOTAL_ORDER_COLUMNS,
-  computeTabFigures,
+  computeTabPending,
 } from '@/lib/tabs/tab-outstanding'
+/**
+ * The payable figure is the projection's (Sprint 2026-09-28): voided lines owe nothing and a
+ * reduction is owed once, on its replacement. `loadTabTotals` returns NUMBERS ONLY -- it reads
+ * order ids to join lines to their orders, and none of them leaves it -- which is what keeps this
+ * route AGGREGATE_NO_IDS.
+ */
+import { centsToMajor, loadTabTotals } from '@/lib/orders/order-financials'
 
 export const dynamic = 'force-dynamic'
 
@@ -151,22 +157,23 @@ export async function GET(
      * the figure, so the error is surfaced as a NULL rather than swallowed as a zero -- a zero
      * is a number a customer would believe.
      */
-    const [{ data: tabOrders, error: ordersError }, { data: tabRequests, error: requestsError }] =
-      await Promise.all([
-        supabase.from('orders').select(TAB_TOTAL_ORDER_COLUMNS).eq('tab_id', normalizedTabId),
-        supabase
-          .from('order_requests')
-          .select(TAB_PENDING_REQUEST_COLUMNS)
-          .eq('tab_id', normalizedTabId)
-          .in('status', [...TAB_PENDING_REQUEST_STATUSES]),
-      ])
+    const [totalsResult, { data: tabRequests, error: requestsError }] = await Promise.all([
+      loadTabTotals(supabase, restaurantId, normalizedTabId).then(
+        (totals) => ({ totals, error: null as unknown }),
+        (error: unknown) => ({ totals: null, error }),
+      ),
+      supabase
+        .from('order_requests')
+        .select(TAB_PENDING_REQUEST_COLUMNS)
+        .eq('tab_id', normalizedTabId)
+        .in('status', [...TAB_PENDING_REQUEST_STATUSES]),
+    ])
 
-    if (ordersError) console.error('[TABS] payable total query failed', ordersError)
+    if (totalsResult.error) console.error('[TABS] payable total query failed', totalsResult.error)
     if (requestsError) console.error('[TABS] pending total query failed', requestsError)
 
-    const figures = computeTabFigures(tabOrders, tabRequests)
-    const payableTotal = ordersError ? null : figures.payable
-    const pendingTotal = requestsError ? null : figures.pending
+    const payableTotal = totalsResult.totals ? centsToMajor(totalsResult.totals.outstandingCents) : null
+    const pendingTotal = requestsError ? null : computeTabPending(tabRequests)
 
     return NextResponse.json({
       tab: {

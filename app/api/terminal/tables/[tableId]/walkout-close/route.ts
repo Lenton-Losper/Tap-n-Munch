@@ -50,6 +50,12 @@ import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authoriza
 import { guardTableClose } from '@/lib/tabs/pending-order-requests'
 import { closeTableSession } from '@/lib/session-manager'
 import { owesMoney } from '@/lib/payments/payment-integrity'
+import {
+  centsToMajor,
+  FINANCIAL_ORDER_COLUMNS,
+  projectOrderRows,
+  type FinancialOrderInput,
+} from '@/lib/orders/order-financials'
 
 export const dynamic = 'force-dynamic'
 
@@ -173,15 +179,32 @@ export async function POST(req: Request, { params }: { params: Promise<{ tableId
     if (tabIds.length > 0) {
       const { data: orders, error: ordersError } = await supabase
         .from('orders')
-        .select('id, total, payment_status')
+        .select(FINANCIAL_ORDER_COLUMNS)
         .in('tab_id', tabIds)
       if (ordersError) {
         console.error('[terminal/tables/walkout-close] could not read orders', ordersError)
         return NextResponse.json({ error: 'Could not read this table' }, { status: 500 })
       }
-      const unpaid = (orders ?? []).filter((o) => owesMoney(o.payment_status))
-      unpaidOrderIds = unpaid.map((o) => String(o.id))
-      unpaidTotal = unpaid.reduce((sum, o) => sum + Number(o.total ?? 0), 0)
+      /**
+       * WHAT IS WRITTEN OFF IS WHAT WAS STILL OWED (Sprint 2026-09-28): the financial projection's
+       * outstanding figure. `orders.total` keeps counting voided lines and a reduction's surviving
+       * quantity is owed again on its replacement, so summing it recorded cancelled food as a loss.
+       * Same fail-closed answer as a failed order read.
+       */
+      let financials: Awaited<ReturnType<typeof projectOrderRows>>
+      try {
+        financials = await projectOrderRows(supabase, (orders ?? []) as unknown as FinancialOrderInput[])
+      } catch (e) {
+        console.error('[terminal/tables/walkout-close] could not read what is owed', e)
+        return NextResponse.json({ error: 'Could not read this table' }, { status: 500 })
+      }
+      const owed = (orders ?? []).filter(
+        (o) => owesMoney(o.payment_status) && (financials.get(String(o.id))?.outstandingCents ?? 0) > 0,
+      )
+      unpaidOrderIds = owed.map((o) => String(o.id))
+      unpaidTotal = centsToMajor(
+        owed.reduce((sum, o) => sum + (financials.get(String(o.id))?.outstandingCents ?? 0), 0),
+      )
     }
 
     /**

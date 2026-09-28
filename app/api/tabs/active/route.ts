@@ -5,14 +5,10 @@ import { ACTIVE_TAB_STATUSES, isActiveTabStatus } from '@/lib/tab-status'
 /**
  * F7. The figure is DERIVED from the orders, never read off `tabs.total`.
  *
- * `TAB_TOTAL_ORDER_COLUMNS` selects NO `id`, which is what keeps this route inside the
+ * `loadTabTotals` returns numbers and no order id, which is what keeps this route inside the
  * AGGREGATE_NO_IDS class in the guest-route manifest — see the note at the query below.
  */
-import {
-  computeTabGrossOrdered,
-  TAB_TOTAL_ORDER_COLUMNS,
-  type TabOrderRow,
-} from '@/lib/tabs/tab-outstanding'
+import { centsToMajor, loadTabTotals } from '@/lib/orders/order-financials'
 
 export const dynamic = 'force-dynamic'
 
@@ -128,11 +124,11 @@ export async function GET(req: Request) {
      * caller is authorised. The tab view sums a bill this way."
      *
      * The property #305 is about is that no guest-reachable route hands an order id to a session
-     * that does not own it. `TAB_TOTAL_ORDER_COLUMNS` selects `total, payment_status,
-     * tab_settlement_for_tab_id` and no id, and the only thing that leaves this function is a
-     * NUMBER. That constant is enforced id-free by its own assertion in
-     * guest-routes-do-not-leak-foreign-order-ids, which is a stronger guarantee than a grep for
-     * `from('orders')`.
+     * that does not own it. Since Sprint 2026-09-28 the orders are read by `loadTabTotals`
+     * (lib/orders/order-financials.ts), which must read order ids to join each order to its lines
+     * but returns a TabTotals of numbers only, built field by field; the only thing that leaves
+     * this function is a NUMBER. guest-routes-do-not-leak-foreign-order-ids asserts both that this
+     * route reads orders only through that boundary and that the boundary returns no id.
      *
      * NOTHING NEW IS EXPOSED. The response keeps EXACTLY the five keys this route's contract names
      * — the docblock above says "do not widen it", and it is not widened. Only the provenance of
@@ -146,21 +142,23 @@ export async function GET(req: Request) {
      * rather than falling back to the stale column. The alternative is to keep serving a number
      * that is neither definition reliably, which is the defect.
      */
-    const { data: tabOrders, error: tabOrdersError } = await supabase
-      .from('orders')
-      .select(TAB_TOTAL_ORDER_COLUMNS)
-      .eq('tab_id', String(row.id))
-
-    if (tabOrdersError) {
+    /**
+     * Sprint 2026-09-28: through the financial projection, so a voided line is no longer "ordered"
+     * and a reduction is counted once. `loadTabTotals` returns numbers only (it joins lines to
+     * orders by id internally and no id leaves it), which is what keeps this route
+     * AGGREGATE_NO_IDS; `grossOrderedCents` is computeTabGrossOrdered's question -- everything
+     * ordered, paid or not -- less what was voided.
+     */
+    let derivedTotal = 0
+    try {
+      const totals = await loadTabTotals(supabase, restaurantUuid, String(row.id))
+      derivedTotal = centsToMajor(totals.grossOrderedCents)
+    } catch (e) {
       console.error('[TABS] active tab: could not derive the tab total', {
         tabId: String(row.id),
-        error: tabOrdersError.message,
+        error: e instanceof Error ? e.message : String(e),
       })
     }
-
-    const derivedTotal = tabOrdersError
-      ? 0
-      : computeTabGrossOrdered((tabOrders ?? []) as TabOrderRow[])
 
     // Same normalisations the landing page used to apply to the raw row, so its rendered
     // state is unchanged by the move.
