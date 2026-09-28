@@ -20,8 +20,10 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const CONTAINER = 'ft-harden-pg'
-const DB = 'flashtap_test'
+const CONTAINER = process.env.FT_TEST_CONTAINER || 'ft-harden-pg'
+// Overridable so parallel worktrees can use separate databases in the SAME local container. A
+// database NAME inside a docker-exec'd container, never a connection string -- the safety note holds.
+const DB = process.env.FT_TEST_DB || 'flashtap_test'
 const REPO = new URL('../..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
 
 /**
