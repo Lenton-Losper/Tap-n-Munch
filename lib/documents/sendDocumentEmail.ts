@@ -40,7 +40,10 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getResend } from '@/lib/email/resend'
-import { generateDocumentPdfBytes } from '@/lib/documents/generate-document-pdf'
+import {
+  generateDocumentPdfBytes,
+  type DocumentPaymentLine,
+} from '@/lib/documents/generate-document-pdf'
 import { toBusinessDocumentRow } from '@/lib/documents/business-document-row'
 
 const FROM = 'FlashTap <noreply@flashtap.app>'
@@ -114,15 +117,31 @@ export function renderDocumentEmailHtml(doc: {
   bank_account_name: string | null
   bank_account_number: string | null
   bank_branch_code: string | null
+  /**
+   * The invoice's balance. OMITTED, the email is the copy signed 2026-09-05, byte for byte. When it
+   * is given and some of the total has been paid (an invoice raised from a tab already settled at
+   * the table -- Sprint 2026-09-28 brief), the email says what was paid and what is outstanding,
+   * and a fully paid invoice does not carry "How to pay": asking a customer to pay an invoice they
+   * have paid is how they pay it twice. That wording is NEW copy and is not yet signed.
+   */
+  balance?: number | null
 }): string {
   const noun = documentNoun(doc.document_type)
   const venue = doc.business_name?.trim() || 'FlashTap'
   const greeting = doc.bill_to_name?.trim() ? `Hi ${escapeHtml(doc.bill_to_name.trim())},` : 'Hello,'
   const due = formatDate(doc.due_date)
 
-  const hasBank = Boolean(
-    doc.bank_name || doc.bank_account_name || doc.bank_account_number || doc.bank_branch_code,
-  )
+  const totalCents = Math.round((Number(doc.total) || 0) * 100)
+  const balanceCents =
+    doc.document_type === 'invoice' && doc.balance != null && Number.isFinite(Number(doc.balance))
+      ? Math.max(0, Math.round(Number(doc.balance) * 100))
+      : totalCents
+  const paidCents = Math.max(0, totalCents - balanceCents)
+  const fullyPaid = totalCents > 0 && balanceCents === 0
+
+  const hasBank =
+    !fullyPaid &&
+    Boolean(doc.bank_name || doc.bank_account_name || doc.bank_account_number || doc.bank_branch_code)
   const bankRows: Array<[string, string | null]> = [
     ['Bank', doc.bank_name],
     ['Account name', doc.bank_account_name],
@@ -158,7 +177,9 @@ export function renderDocumentEmailHtml(doc: {
           <td style="padding:2px 16px 2px 0;color:#6b7280;">Amount</td>
           <td style="padding:2px 0;font-weight:600;">${escapeHtml(formatMoney(doc.total, doc.currency))}</td>
         </tr>
-        ${due ? `<tr><td style="padding:2px 16px 2px 0;color:#6b7280;">Due</td><td style="padding:2px 0;font-weight:600;">${escapeHtml(due)}</td></tr>` : ''}
+        ${paidCents > 0 ? `<tr><td style="padding:2px 16px 2px 0;color:#6b7280;">Paid</td><td style="padding:2px 0;font-weight:600;">${escapeHtml(formatMoney(paidCents / 100, doc.currency))}</td></tr>` : ''}
+        ${paidCents > 0 ? `<tr><td style="padding:2px 16px 2px 0;color:#6b7280;">Outstanding</td><td style="padding:2px 0;font-weight:600;">${escapeHtml(formatMoney(balanceCents / 100, doc.currency))}</td></tr>` : ''}
+        ${due && !fullyPaid ? `<tr><td style="padding:2px 16px 2px 0;color:#6b7280;">Due</td><td style="padding:2px 0;font-weight:600;">${escapeHtml(due)}</td></tr>` : ''}
       </table>
       ${bankBlock}
     </div>
@@ -171,6 +192,7 @@ export async function sendDocumentEmail(
   row: Record<string, unknown>,
   to: string,
   actorUserId: string,
+  options: { payments?: DocumentPaymentLine[] } = {},
 ): Promise<SendDocumentResult> {
   const documentId = String(row.id)
   const restaurantId = String(row.restaurant_id)
@@ -181,7 +203,7 @@ export async function sendDocumentEmail(
   let result: SendDocumentResult
 
   try {
-    const parsed = toBusinessDocumentRow(row)
+    const parsed = toBusinessDocumentRow(row, undefined, { payments: options.payments })
     const pdfBytes = await generateDocumentPdfBytes(parsed)
     const pdfBase64 = Buffer.from(pdfBytes).toString('base64')
 
@@ -197,6 +219,7 @@ export async function sendDocumentEmail(
       bank_account_name: parsed.bank_account_name,
       bank_account_number: parsed.bank_account_number,
       bank_branch_code: parsed.bank_branch_code,
+      balance: parsed.balance,
     })
 
     const venue = parsed.business_name?.trim() || 'FlashTap'

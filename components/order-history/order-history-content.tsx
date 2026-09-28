@@ -38,6 +38,8 @@ type OrderItem = {
 
 type HistoryOrder = {
   id: string
+  /** Selected by /api/orders/history and spread onto every row; the invoice action needs it. */
+  tab_id?: string | null
   order_number?: number | null
   table_number?: number | null
   total?: number | null
@@ -717,6 +719,7 @@ export function OrderHistoryContent() {
                           <td className="px-4 py-3">
                             <CreateInvoiceAction
                               orderId={order.id}
+                              tabId={order.tab_id ?? null}
                               restaurantId={restaurantId}
                               orderStatus={order.status}
                               orderNumber={order.order_number}

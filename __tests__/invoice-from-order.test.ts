@@ -25,9 +25,10 @@
 import { InMemoryDb, testUuid } from './helpers/in-memory-postgrest'
 import {
   createInvoiceFromOrder,
-  orderLinesToInvoiceLines,
   requiredBillingFieldsFor,
 } from '@/lib/documents/create-invoice-from-order'
+import { toInvoiceLine } from '@/lib/documents/invoice-projection'
+import { computeOrderFinancials } from '@/lib/orders/order-financials'
 
 const RESTAURANT_ID = testUuid('aa01')
 const OTHER_RESTAURANT_ID = testUuid('aa02')
@@ -109,6 +110,9 @@ function makeDb(seed: Seed = {}) {
     ],
     business_documents: seed.documents ?? [],
     payment_events: seed.paymentEvents ?? [],
+  }, {
+    // `status text NOT NULL DEFAULT 'draft'` (20260722140000) -- the engine never writes it.
+    business_documents: { defaults: { status: 'draft', currency: 'NAD' } },
   })
 
   rpcCalls = []
@@ -138,25 +142,35 @@ const run = (client: Parameters<typeof createInvoiceFromOrder>[0], overrides = {
 
 // ── pure mapping ─────────────────────────────────────────────────────────────
 
-describe('order lines -> invoice lines', () => {
+/**
+ * The mapping now goes THROUGH the financial projection (Sprint 2026-09-28 brief): the previous
+ * `orderLinesToInvoiceLines(orders.items)` billed voided lines and was deleted with the defect.
+ */
+function projectedInvoiceLines(items: unknown[]) {
+  const f = computeOrderFinancials({ id: 'o', total: 0, items }, [])
+  return f.lines.map((line) => toInvoiceLine(line, items[line.sourceItemIndex])).filter(Boolean)
+}
+
+describe('projection lines -> invoice lines', () => {
   test('carries name, quantity, unit price and tax rate across', () => {
-    expect(orderLinesToInvoiceLines(ORDER_ITEMS)).toEqual([
+    expect(projectedInvoiceLines(ORDER_ITEMS)).toEqual([
       { description: 'Salad with ribs', quantity: 1, unit_price: 60, tax_rate_id: VAT_RATE_ID },
       { description: 'Can Juice', quantity: 1, unit_price: 18, tax_rate_id: VAT_RATE_ID },
     ])
   })
 
   test('a line with no name is still billed, never dropped', () => {
-    const [line] = orderLinesToInvoiceLines([{ quantity: 2, unitPrice: 5 }])
+    const [line] = projectedInvoiceLines([{ quantity: 2, unitPrice: 5 }])
     expect(line).toEqual({ description: 'Item', quantity: 2, unit_price: 5, tax_rate_id: null })
   })
 
   test('junk lines are skipped rather than priced as zero', () => {
-    expect(orderLinesToInvoiceLines([null, 'x', { quantity: 0, unitPrice: 5 }, { quantity: 1 }])).toEqual([])
+    expect(projectedInvoiceLines([null, 'x', { quantity: 0, unitPrice: 5 }])).toEqual([])
   })
 
-  test('a non-array items column yields no lines rather than throwing', () => {
-    expect(orderLinesToInvoiceLines(null)).toEqual([])
+  test('a line total that does not divide by its quantity is billed at its total, not rounded', () => {
+    const [line] = projectedInvoiceLines([{ name: 'Wine', quantity: 3, unitPrice: 33.33, total: 100 }])
+    expect(line).toEqual({ description: '3 × Wine', quantity: 1, unit_price: 100, tax_rate_id: null })
   })
 
   test('vat_number is required only when the sale carried VAT', () => {
@@ -275,10 +289,15 @@ describe('eligibility', () => {
     expect(rpcCalls).toHaveLength(0)
   })
 
+  /**
+   * Sprint 2026-09-28 brief: the rule is no longer "status is completed" but "can the total still
+   * change" (lib/documents/invoice-projection.ts). An UNPAID in-flight order with no item-level
+   * record cannot show that it cannot, so it is still refused...
+   */
   test.each(['pending', 'preparing', 'ready', 'confirmed'])(
-    'an in-flight order (%s) is refused — its total can still change',
+    'an unpaid in-flight order (%s) with no line record is refused — its total can still change',
     async (status) => {
-      const { db, client } = makeDb({ order: { status } })
+      const { db, client } = makeDb({ order: { status, payment_status: 'pending' } })
 
       const result = await run(client)
 
@@ -286,6 +305,33 @@ describe('eligibility', () => {
       expect(db.rows('business_documents')).toHaveLength(0)
     },
   )
+
+  test('...and so is one whose items the kitchen has not started — they can still be voided', async () => {
+    const { db, client } = makeDb({ order: { status: 'preparing', payment_status: 'pending' } })
+    db.rows('order_lines').push(
+      { id: testUuid('aa0a'), order_id: ORDER_ID, source_item_index: 0, kitchen_state: 'ready', bar_state: null },
+      { id: testUuid('aa0b'), order_id: ORDER_ID, source_item_index: 1, kitchen_state: null, bar_state: 'outstanding' },
+    )
+    const result = await run(client)
+    expect(result).toMatchObject({ ok: false, code: 'ORDER_NOT_FINAL' })
+    if (!result.ok) expect(result.message).toMatch(/1 item nobody has started/)
+  })
+
+  test('an unpaid order whose every item has been started IS invoiceable — nothing can leave the bill', async () => {
+    const seeded = makeDb({ order: { status: 'preparing', payment_status: 'pending' } })
+    seeded.db.rows('order_lines').push(
+      { id: testUuid('aa0c'), order_id: ORDER_ID, source_item_index: 0, kitchen_state: 'cooked', bar_state: null },
+      { id: testUuid('aa0d'), order_id: ORDER_ID, source_item_index: 1, kitchen_state: null, bar_state: 'collected' },
+    )
+    const result = await run(seeded.client)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.document).toMatchObject({ total: 78, balance: 78, status: 'draft' })
+  })
+
+  test('a PAID order is final whatever its kitchen status — money was collected against the figure', async () => {
+    const { client } = makeDb({ order: { status: 'pending', payment_status: 'paid' } })
+    expect((await run(client)).ok).toBe(true)
+  })
 
   test('an order awaiting re-acceptance is refused', async () => {
     const { client } = makeDb({ order: { requires_reacceptance: true } })

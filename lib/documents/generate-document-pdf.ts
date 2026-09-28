@@ -1,4 +1,5 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
+import { formatPaymentLabel } from '@/lib/receipts/formatPaymentLabel'
 
 // Portrait A4 (points)
 const PAGE_WIDTH = 595.28
@@ -60,6 +61,24 @@ export type DocumentLineItem = {
   line_total: number
 }
 
+/** `business_documents.cancelled_line_items` (20260928140000): ordered, then not charged. */
+export type DocumentCancelledLine = {
+  description: string
+  quantity: number
+  unit_price: number
+  line_total: number
+  order_number: number | null
+  reason: 'voided' | 'order_cancelled'
+}
+
+/** One `document_payments` row, as the renderer prints it. Loaded by the caller. */
+export type DocumentPaymentLine = {
+  amount: number
+  method: string
+  reference: string | null
+  paid_at: string | null
+}
+
 /** Matches public.business_documents columns (see 20260705280000_business_documents.sql
  *  and 20260725200000_document_engine_credit_notes_lineage.sql for credit_note support). */
 export type BusinessDocumentRow = {
@@ -98,6 +117,10 @@ export type BusinessDocumentRow = {
   /** credit_note only: document_number of the replacement invoice issued alongside
    *  this credit note (the original invoice's corrected_by_id), resolved by the caller. */
   replacement_invoice_number?: string | null
+  /** Invoice only: lines shown under "Cancelled — not charged". Never part of any total. */
+  cancelled_line_items?: DocumentCancelledLine[]
+  /** Invoice only: the document_payments rows, resolved by the caller (not a column). */
+  payments?: DocumentPaymentLine[]
 }
 
 function formatCurrency(amount: number, currency = 'NAD'): string {
@@ -271,6 +294,12 @@ function drawHeaderBlock(
   drawRightText(page, docTypeLabel, rightX, yTop - DOC_TYPE_SIZE, fonts.bold, DOC_TYPE_SIZE, BRAND_BLUE)
 
   let metaY = yTop - DOC_TYPE_SIZE - 14
+  if (document.document_type === 'invoice') {
+    // PAID / PARTIALLY PAID / UNPAID under the title -- Sprint 2026-09-28 brief.
+    const state = invoicePaymentState(document).label
+    drawRightText(page, state, rightX, metaY, fonts.bold, DOC_META_SIZE + 1, BRAND_BLUE)
+    metaY -= 14
+  }
   const metaLines = [`#${document.document_number}`, `Issued: ${formatDate(document.issued_at)}`]
   if (document.document_type === 'invoice' && document.due_date) {
     metaLines.push(`Due: ${formatDate(document.due_date)}`)
@@ -363,32 +392,60 @@ function drawPartyColumns(
   return y - 12
 }
 
+/**
+ * WHERE THE PEN IS. A document can now run past one page -- a tab invoice lists every round, plus
+ * a cancelled section and the payments received -- so the drawing functions share the current page
+ * and ask for room before each row instead of drawing into the footer.
+ */
+type Cursor = {
+  pdfDoc: PDFDocument
+  page: PDFPage
+  pages: PDFPage[]
+  fonts: { regular: PDFFont; bold: PDFFont }
+}
+
+const CONTENT_FLOOR = MARGIN + FOOTER_AREA + 20
+
+function newPage(cursor: Cursor): number {
+  cursor.page = cursor.pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT])
+  cursor.pages.push(cursor.page)
+  return PAGE_HEIGHT - MARGIN
+}
+
+/** `y` if `height` more fits above the footer, else the top of a fresh page. */
+function ensureRoom(cursor: Cursor, y: number, height: number): number {
+  return y - height < CONTENT_FLOOR ? newPage(cursor) : y
+}
+
+type TableRow = { quantity: string; description: string; unit: string; total: string }
+
 type TableRowLayout = {
-  item: DocumentLineItem
+  row: TableRow
   rowIndex: number
   height: number
   descriptionLines: string[]
 }
 
-function layoutTableRows(
-  items: DocumentLineItem[],
-  font: PDFFont,
-  descriptionWidth: number,
-): TableRowLayout[] {
-  return items.map((item, rowIndex) => {
-    const descriptionLines = wrapText(item.description, font, BODY_SIZE, descriptionWidth - 4)
+function layoutTableRows(rows: TableRow[], font: PDFFont, descriptionWidth: number): TableRowLayout[] {
+  return rows.map((row, rowIndex) => {
+    const descriptionLines = wrapText(row.description, font, BODY_SIZE, descriptionWidth - 4)
     const maxLines = Math.max(1, descriptionLines.length)
     const height = Math.max(MIN_ROW_HEIGHT, maxLines * ROW_LINE_HEIGHT + ROW_PADDING_Y * 2)
-    return { item, rowIndex, height, descriptionLines }
+    return { row, rowIndex, height, descriptionLines }
   })
 }
 
-function drawLineItemsTable(
-  page: PDFPage,
-  document: BusinessDocumentRow,
-  fonts: { regular: PDFFont; bold: PDFFont },
+function drawTable(
+  cursor: Cursor,
+  options: {
+    headers: [string, string, string, string]
+    headerColor: ReturnType<typeof rgb>
+    rows: TableRow[]
+    textColor: ReturnType<typeof rgb>
+  },
   yTop: number,
 ): number {
+  const { fonts } = cursor
   const contentWidth = PAGE_WIDTH - MARGIN * 2
   const qtyWidth = 36
   const unitWidth = 72
@@ -401,89 +458,72 @@ function drawLineItemsTable(
   const totalX = unitX + unitWidth
   const rightX = MARGIN + contentWidth
 
-  let y = yTop - TABLE_HEADER_HEIGHT
-  page.drawRectangle({
-    x: MARGIN,
-    y,
-    width: contentWidth,
-    height: TABLE_HEADER_HEIGHT,
-    color: BRAND_BLUE,
-  })
-
-  const headers = [
-    { label: 'Qty', x: qtyX + 4 },
-    { label: 'Description', x: descX + 4 },
-    { label: 'Unit Price', x: unitX + 4 },
-    { label: 'Total', x: totalX + 4 },
-  ]
-  for (const header of headers) {
-    page.drawText(header.label, {
-      x: header.x,
-      y: y + 6,
-      size: TABLE_HEADER_SIZE,
-      font: fonts.bold,
-      color: WHITE,
+  const drawHeader = (top: number): number => {
+    const y = top - TABLE_HEADER_HEIGHT
+    cursor.page.drawRectangle({
+      x: MARGIN,
+      y,
+      width: contentWidth,
+      height: TABLE_HEADER_HEIGHT,
+      color: options.headerColor,
     })
+    const xs = [qtyX, descX, unitX, totalX]
+    options.headers.forEach((label, i) => {
+      cursor.page.drawText(label, {
+        x: xs[i] + 4,
+        y: y + 6,
+        size: TABLE_HEADER_SIZE,
+        font: fonts.bold,
+        color: WHITE,
+      })
+    })
+    return y - 1
   }
 
-  y -= 1
-  const rows = layoutTableRows(document.line_items, fonts.regular, descWidth)
-  const currency = document.currency || 'NAD'
+  let y = drawHeader(ensureRoom(cursor, yTop, TABLE_HEADER_HEIGHT + MIN_ROW_HEIGHT))
+  const rows = layoutTableRows(options.rows, fonts.regular, descWidth)
 
-  for (const row of rows) {
-    const yBottom = y - row.height
+  for (const layout of rows) {
+    if (y - layout.height < CONTENT_FLOOR) {
+      y = drawHeader(newPage(cursor))
+    }
+    const page = cursor.page
+    const yBottom = y - layout.height
 
-    if (row.rowIndex % 2 === 1) {
+    if (layout.rowIndex % 2 === 1) {
       page.drawRectangle({
         x: MARGIN,
         y: yBottom,
         width: contentWidth,
-        height: row.height,
+        height: layout.height,
         color: ROW_ALT_BG,
         borderColor: ROW_ALT_BG,
       })
     }
 
-    const qtyText = String(row.item.quantity)
-    page.drawText(qtyText, {
+    const baseline = y - ROW_PADDING_Y - BODY_SIZE
+    page.drawText(layout.row.quantity, {
       x: qtyX + 4,
-      y: y - ROW_PADDING_Y - BODY_SIZE,
+      y: baseline,
       size: BODY_SIZE,
       font: fonts.regular,
-      color: TEXT_DARK,
+      color: options.textColor,
     })
 
-    let descY = y - ROW_PADDING_Y - BODY_SIZE
-    for (const line of row.descriptionLines) {
+    let descY = baseline
+    for (const line of layout.descriptionLines) {
       page.drawText(line, {
         x: descX + 4,
         y: descY,
         size: BODY_SIZE,
         font: fonts.regular,
-        color: TEXT_DARK,
+        color: options.textColor,
       })
       descY -= ROW_LINE_HEIGHT
     }
 
-    const unitText = formatCurrency(row.item.unit_price, currency)
-    const unitTextWidth = fonts.regular.widthOfTextAtSize(unitText, BODY_SIZE)
-    page.drawText(unitText, {
-      x: unitX + unitWidth - unitTextWidth - 4,
-      y: y - ROW_PADDING_Y - BODY_SIZE,
-      size: BODY_SIZE,
-      font: fonts.regular,
-      color: TEXT_DARK,
-    })
-
-    const lineTotalText = formatCurrency(row.item.line_total, currency)
-    const lineTotalWidth = fonts.regular.widthOfTextAtSize(lineTotalText, BODY_SIZE)
-    page.drawText(lineTotalText, {
-      x: totalX + totalWidth - lineTotalWidth - 4,
-      y: y - ROW_PADDING_Y - BODY_SIZE,
-      size: BODY_SIZE,
-      font: fonts.regular,
-      color: TEXT_DARK,
-    })
+    drawRightText(page, layout.row.unit, unitX + unitWidth - 4, baseline, fonts.regular, BODY_SIZE, options.textColor)
+    drawRightText(page, layout.row.total, totalX + totalWidth - 4, baseline, fonts.regular, BODY_SIZE, options.textColor)
 
     page.drawLine({
       start: { x: MARGIN, y: yBottom },
@@ -498,12 +538,85 @@ function drawLineItemsTable(
   return y - 16
 }
 
-function drawTotalsBlock(
-  page: PDFPage,
-  document: BusinessDocumentRow,
-  fonts: { regular: PDFFont; bold: PDFFont },
-  yTop: number,
-): number {
+function drawLineItemsTable(cursor: Cursor, document: BusinessDocumentRow, yTop: number): number {
+  const currency = document.currency || 'NAD'
+  return drawTable(
+    cursor,
+    {
+      headers: ['Qty', 'Description', 'Unit Price', 'Total'],
+      headerColor: BRAND_BLUE,
+      textColor: TEXT_DARK,
+      rows: document.line_items.map((item) => ({
+        quantity: String(item.quantity),
+        description: item.description,
+        unit: formatCurrency(item.unit_price, currency),
+        total: formatCurrency(item.line_total, currency),
+      })),
+    },
+    yTop,
+  )
+}
+
+/**
+ * "CANCELLED — NOT CHARGED". Lines that were ordered and then voided, or belonged to a cancelled
+ * order, in their own table with their own heading, muted, and with a charged column that says
+ * 0.00. They are never in `line_items`, so nothing here can reach the subtotal, the VAT or the total;
+ * the section exists so a customer comparing the invoice with what they remember ordering can see
+ * the dish was taken off, rather than wondering where it went.
+ */
+function drawCancelledSection(cursor: Cursor, document: BusinessDocumentRow, yTop: number): number {
+  const cancelled = document.cancelled_line_items ?? []
+  if (cancelled.length === 0) return yTop
+  const currency = document.currency || 'NAD'
+
+  let y = ensureRoom(cursor, yTop, SECTION_TITLE_SIZE + 8 + TABLE_HEADER_HEIGHT + MIN_ROW_HEIGHT)
+  cursor.page.drawText('Cancelled — not charged', {
+    x: MARGIN,
+    y: y - SECTION_TITLE_SIZE,
+    size: SECTION_TITLE_SIZE,
+    font: cursor.fonts.bold,
+    color: TEXT_DARK,
+  })
+  y -= SECTION_TITLE_SIZE + 6
+
+  return drawTable(
+    cursor,
+    {
+      headers: ['Qty', 'Item', 'Value', 'Charged'],
+      headerColor: TEXT_MUTED,
+      textColor: TEXT_MUTED,
+      rows: cancelled.map((line) => {
+        const why = line.reason === 'order_cancelled' ? 'order cancelled' : 'voided'
+        const order = line.order_number != null ? ` · order #${line.order_number}` : ''
+        return {
+          quantity: String(line.quantity),
+          description: `${line.description} (${why}${order})`,
+          unit: formatCurrency(line.line_total, currency),
+          total: formatCurrency(0, currency),
+        }
+      }),
+    },
+    y,
+  )
+}
+
+/** paid / partially paid / unpaid, from the document's own total and balance. */
+export function invoicePaymentState(document: Pick<BusinessDocumentRow, 'total' | 'balance'>): {
+  label: 'PAID' | 'PARTIALLY PAID' | 'UNPAID'
+  amountPaid: number
+  outstanding: number
+} {
+  const totalCents = Math.round((Number(document.total) || 0) * 100)
+  const balanceCents = Math.round((Number(document.balance) || 0) * 100)
+  const outstandingCents = Math.max(0, balanceCents)
+  const paidCents = Math.max(0, totalCents - balanceCents)
+  const label =
+    totalCents > 0 && outstandingCents === 0 ? 'PAID' : paidCents > 0 ? 'PARTIALLY PAID' : 'UNPAID'
+  return { label, amountPaid: paidCents / 100, outstanding: outstandingCents / 100 }
+}
+
+function drawTotalsBlock(cursor: Cursor, document: BusinessDocumentRow, yTop: number): number {
+  const { fonts } = cursor
   const contentWidth = PAGE_WIDTH - MARGIN * 2
   const rightX = MARGIN + contentWidth
   const labelX = rightX - 160
@@ -523,32 +636,102 @@ function drawTotalsBlock(
     grand: true,
   })
   if (document.document_type === 'invoice') {
+    /**
+     * TOTAL, PAID, OUTSTANDING -- Sprint 2026-09-28 brief (answers open question 4 of the
+     * 2026-09-13 decisions). All three derive from the row's own total and balance, and balance is
+     * the document engine's (total − recorded payments), so they cannot disagree with each other.
+     */
+    const state = invoicePaymentState(document)
+    lines.push({ label: 'Amount paid', value: formatCurrency(state.amountPaid, currency) })
     lines.push({
-      label: 'Balance',
-      value: formatCurrency(document.balance, currency),
+      label: 'Amount outstanding',
+      value: formatCurrency(state.outstanding, currency),
       bold: true,
     })
   }
 
-  let y = yTop
+  let y = ensureRoom(cursor, yTop, lines.length * (TOTAL_GRAND_SIZE + 10))
   for (const line of lines) {
     const size = line.grand ? TOTAL_GRAND_SIZE : line.bold ? TOTAL_VALUE_SIZE : TOTAL_LABEL_SIZE
     const font = line.bold ? fonts.bold : fonts.regular
-    page.drawText(line.label, {
+    cursor.page.drawText(line.label, {
       x: labelX,
       y: y - size,
       size,
       font,
       color: TEXT_DARK,
     })
-    drawRightText(page, line.value, rightX, y - size, font, size, TEXT_DARK)
+    drawRightText(cursor.page, line.value, rightX, y - size, font, size, TEXT_DARK)
     y -= size + (line.grand ? 10 : 8)
   }
 
   return y - 8
 }
 
-function drawFooter(page: PDFPage, document: BusinessDocumentRow, font: PDFFont) {
+/**
+ * PAYMENTS RECEIVED: method and reference, the way a receipt prints them (formatPaymentLabel:
+ * cash shows no reference, a gateway reference is masked to its last four). Amounts are the
+ * document_payments rows, which were written from the financial projection -- never a gateway
+ * event's amount split across the orders it covered.
+ */
+function drawPaymentsSection(cursor: Cursor, document: BusinessDocumentRow, yTop: number): number {
+  const payments = document.document_type === 'invoice' ? document.payments ?? [] : []
+  if (payments.length === 0) return yTop
+  const { fonts } = cursor
+  const currency = document.currency || 'NAD'
+  const rightX = PAGE_WIDTH - MARGIN
+
+  let y = ensureRoom(cursor, yTop, SECTION_TITLE_SIZE + 8 + ROW_LINE_HEIGHT * Math.min(payments.length, 3))
+  cursor.page.drawText('Payments received', {
+    x: MARGIN,
+    y: y - SECTION_TITLE_SIZE,
+    size: SECTION_TITLE_SIZE,
+    font: fonts.bold,
+    color: TEXT_DARK,
+  })
+  y -= SECTION_TITLE_SIZE + 8
+
+  for (const payment of payments) {
+    y = ensureRoom(cursor, y, ROW_LINE_HEIGHT + 2)
+    const reference = String(payment.reference ?? '').trim()
+    const label = formatPaymentLabel(payment.method, reference ? maskPaymentReference(reference) : '')
+    const date = payment.paid_at ? ` · ${formatDate(payment.paid_at)}` : ''
+    cursor.page.drawText(`${label}${date}`, {
+      x: MARGIN,
+      y: y - BODY_SIZE,
+      size: BODY_SIZE,
+      font: fonts.regular,
+      color: TEXT_DARK,
+    })
+    drawRightText(
+      cursor.page,
+      formatCurrency(payment.amount, currency),
+      rightX,
+      y - BODY_SIZE,
+      fonts.regular,
+      BODY_SIZE,
+      TEXT_DARK,
+    )
+    y -= ROW_LINE_HEIGHT + 2
+  }
+
+  return y - 8
+}
+
+/** Last four visible -- the same masking receipts apply, so a customer sees one reference shape. */
+export function maskPaymentReference(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length <= 4) return '*'.repeat(trimmed.length)
+  return '*'.repeat(trimmed.length - 4) + trimmed.slice(-4)
+}
+
+function drawFooter(
+  page: PDFPage,
+  document: BusinessDocumentRow,
+  font: PDFFont,
+  pageNumber: number,
+  pageCount: number,
+) {
   const contentWidth = PAGE_WIDTH - MARGIN * 2
   const rightX = MARGIN + contentWidth
   let y = MARGIN + FOOTER_AREA - 10
@@ -562,8 +745,14 @@ function drawFooter(page: PDFPage, document: BusinessDocumentRow, font: PDFFont)
 
   const bankName = document.bank_name?.trim()
   const bankAccountNumber = document.bank_account_number?.trim()
-  // A credit note isn't asking for payment -- never show payment instructions on one.
-  if (document.document_type !== 'credit_note' && bankName && bankAccountNumber) {
+  /**
+   * A credit note isn't asking for payment -- never show payment instructions on one. Nor is an
+   * invoice with nothing outstanding: "Kindly make payment" on a PAID invoice invites paying twice.
+   */
+  const asksForPayment =
+    document.document_type === 'quote' ||
+    (document.document_type === 'invoice' && invoicePaymentState(document).outstanding > 0)
+  if (asksForPayment && bankName && bankAccountNumber) {
     const branch = document.bank_branch_code?.trim() || '—'
     const paymentLine = `Kindly make payment to: ${bankName}, Account ${bankAccountNumber}, Branch ${branch}, Reference: ${document.document_number}`
     const wrapped = wrapText(paymentLine, font, FOOTER_SIZE, contentWidth)
@@ -587,7 +776,31 @@ function drawFooter(page: PDFPage, document: BusinessDocumentRow, font: PDFFont)
     font,
     color: TEXT_FOOTER,
   })
-  drawRightText(page, 'Page 1 of 1', rightX, y, font, FOOTER_SIZE, TEXT_FOOTER)
+  drawRightText(page, `Page ${pageNumber} of ${pageCount}`, rightX, y, font, FOOTER_SIZE, TEXT_FOOTER)
+}
+
+/**
+ * The table/order/tab reference on an INVOICE ("FlashTap tab · table 4 · orders #154, #155"). Quotes
+ * and credit notes already print their reference_note in the header meta; an invoice never did, so
+ * an invoice raised from a tab could not be tied back to the table it billed. Wrapped across the
+ * full width, because a tab's list of orders is longer than the header column.
+ */
+function drawReferenceLine(cursor: Cursor, document: BusinessDocumentRow, yTop: number): number {
+  const note = document.reference_note?.trim()
+  if (document.document_type !== 'invoice' || !note) return yTop
+  const lines = wrapText(`Reference: ${note}`, cursor.fonts.regular, BODY_SIZE, PAGE_WIDTH - MARGIN * 2)
+  let y = yTop
+  for (const line of lines) {
+    cursor.page.drawText(line, {
+      x: MARGIN,
+      y: y - BODY_SIZE,
+      size: BODY_SIZE,
+      font: cursor.fonts.regular,
+      color: TEXT_MUTED,
+    })
+    y -= ROW_LINE_HEIGHT
+  }
+  return y - 8
 }
 
 export async function generateDocumentPdfBytes(
@@ -599,23 +812,18 @@ export async function generateDocumentPdfBytes(
   const fonts = { regular, bold }
 
   const page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT])
+  const cursor: Cursor = { pdfDoc, page, pages: [page], fonts }
   let y = PAGE_HEIGHT - MARGIN
 
   y = drawHeaderBlock(page, document, fonts, y)
   y = drawPartyColumns(page, document, fonts, y)
-  y = drawLineItemsTable(page, document, fonts, y)
-  y = drawTotalsBlock(page, document, fonts, y)
+  y = drawReferenceLine(cursor, document, y)
+  y = drawLineItemsTable(cursor, document, y)
+  y = drawCancelledSection(cursor, document, y)
+  y = drawTotalsBlock(cursor, document, y)
+  drawPaymentsSection(cursor, document, y)
 
-  const minContentY = MARGIN + FOOTER_AREA + 20
-  if (y < minContentY) {
-    console.error('[generateDocumentPdfBytes] content may have overflowed the page', {
-      documentId: document.id,
-      documentNumber: document.document_number,
-      finalY: y,
-    })
-  }
-
-  drawFooter(page, document, regular)
+  cursor.pages.forEach((p, index) => drawFooter(p, document, regular, index + 1, cursor.pages.length))
 
   return pdfDoc.save()
 }

@@ -38,6 +38,8 @@ type DocumentListItem = {
   total: number
   balance: number
   status: DocumentStatus
+  /** Null until the send route delivered it. An invoice raised already paid is never 'draft'. */
+  sent_at?: string | null
 }
 
 function formatMoney(value: number) {
@@ -413,7 +415,11 @@ export function DocumentsListContent() {
                                 {editLoadingId === doc.id ? 'Loading...' : 'Edit'}
                               </Button>
                             ) : null}
-                            {canWrite && doc.status === 'draft' ? (
+                            {canWrite &&
+                            (doc.status === 'draft' ||
+                              (doc.type === 'invoice' &&
+                                !doc.sent_at &&
+                                (doc.status === 'paid' || doc.status === 'partially_paid'))) ? (
                               <Button
                                 type="button"
                                 variant="outline"

@@ -8,13 +8,15 @@ import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
 import {
   createInvoiceFromOrder,
+  createInvoiceFromTab,
   type InvoiceFromOrderRefusalCode,
 } from '@/lib/documents/create-invoice-from-order'
 
 export const dynamic = 'force-dynamic'
 
 /**
- * POST /api/admin/documents/from-order — raise a FORMAL INVOICE from an existing FlashTap order.
+ * POST /api/admin/documents/from-order — raise a FORMAL INVOICE from an existing FlashTap order,
+ * or from a whole tab (every order on it, voided lines shown as not charged).
  *
  * ================================================================================================
  * THIS ENDPOINT MOVES NO MONEY
@@ -31,7 +33,8 @@ export const dynamic = 'force-dynamic'
  * WHAT THE CLIENT MAY SEND
  * ================================================================================================
  *
- *   order_id        which order to bill for
+ *   order_id        which order to bill for          } exactly one of these two
+ *   tab_id          which tab to bill for            }
  *   restaurant_id   whose venue — checked against the caller's memberships, never trusted
  *   bill_to         who the invoice is addressed to (free text, see below)
  *   due_date        optional
@@ -56,7 +59,14 @@ export const dynamic = 'force-dynamic'
 
 const REFUSAL_STATUS: Record<InvoiceFromOrderRefusalCode, number> = {
   ORDER_NOT_FOUND: 404,
+  TAB_NOT_FOUND: 404,
   ORDER_CANCELLED: 409,
+  ORDER_IS_SETTLEMENT_RECORD: 409,
+  PAYMENT_UNRESOLVED: 409,
+  PAYMENT_STATE_UNRECOGNISED: 409,
+  OVERPAID: 409,
+  DOCUMENT_BALANCE_DISAGREES: 409,
+  PAYMENT_LEDGER_DISAGREES: 409,
   ORDER_NOT_FINAL: 409,
   ORDER_AWAITING_REACCEPTANCE: 409,
   ORDER_REFUNDED: 409,
@@ -98,6 +108,7 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json().catch(() => ({}))) as {
       order_id?: unknown
+      tab_id?: unknown
       restaurant_id?: unknown
       bill_to?: unknown
       due_date?: unknown
@@ -105,8 +116,15 @@ export async function POST(request: Request) {
     }
 
     const orderId = String(body.order_id ?? '').trim()
-    if (!isUuid(orderId)) {
-      return NextResponse.json({ error: 'order_id must be a valid UUID' }, { status: 400 })
+    const tabId = String(body.tab_id ?? '').trim()
+    if (orderId && tabId) {
+      return NextResponse.json({ error: 'Send order_id or tab_id, not both' }, { status: 400 })
+    }
+    if (tabId ? !isUuid(tabId) : !isUuid(orderId)) {
+      return NextResponse.json(
+        { error: tabId ? 'tab_id must be a valid UUID' : 'order_id must be a valid UUID' },
+        { status: 400 },
+      )
     }
 
     const requestedRestaurantId = String(body.restaurant_id ?? '').trim()
@@ -127,8 +145,7 @@ export async function POST(request: Request) {
     const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.DOCUMENTS_WRITE)
     if (denied) return denied
 
-    const result = await createInvoiceFromOrder(supabase, {
-      orderId,
+    const common = {
       restaurantId,
       createdBy: user.id,
       billTo: trimParty(body.bill_to),
@@ -137,7 +154,10 @@ export async function POST(request: Request) {
         typeof body.reference_note === 'string' && body.reference_note.trim()
           ? body.reference_note.trim()
           : null,
-    })
+    }
+    const result = tabId
+      ? await createInvoiceFromTab(supabase, { ...common, tabId })
+      : await createInvoiceFromOrder(supabase, { ...common, orderId })
 
     if (!result.ok) {
       return NextResponse.json(

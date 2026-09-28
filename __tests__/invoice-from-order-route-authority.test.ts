@@ -44,6 +44,10 @@ jest.mock('@/lib/documents/create-invoice-from-order', () => ({
     createCalls.push(args)
     return createResult
   },
+  createInvoiceFromTab: async (_db: unknown, args: Record<string, unknown>) => {
+    createCalls.push({ ...args, __scope: 'tab' })
+    return createResult
+  },
 }))
 
  
@@ -179,4 +183,40 @@ test('a successful call answers 201 with the document', async () => {
   const res = await route.POST(post({ order_id: ORDER_ID, restaurant_id: RESTAURANT_ID }))
   expect(res.status).toBe(201)
   expect((await res.json()).document.document_number).toBe('1')
+})
+
+describe('a TAB invoice goes through the same boundary', () => {
+  const TAB_ID = '44444444-4444-4444-8444-444444444444'
+
+  test('tab_id reaches createInvoiceFromTab with the AUTHORIZED restaurant and no money fields', async () => {
+    callerRestaurantId = RESTAURANT_ID
+    const res = await route.POST(
+      post({ tab_id: TAB_ID, restaurant_id: OTHER_RESTAURANT_ID, total: 1, line_items: [] }),
+    )
+    expect(res.status).toBe(201)
+    expect(createCalls).toHaveLength(1)
+    expect(createCalls[0]).toMatchObject({ __scope: 'tab', tabId: TAB_ID, restaurantId: RESTAURANT_ID })
+    expect(Object.keys(createCalls[0]).sort()).toEqual(
+      ['__scope', 'billTo', 'createdBy', 'dueDate', 'referenceNote', 'restaurantId', 'tabId'].sort(),
+    )
+  })
+
+  test('order_id AND tab_id together is refused -- one scope per invoice', async () => {
+    const res = await route.POST(post({ order_id: ORDER_ID, tab_id: TAB_ID, restaurant_id: RESTAURANT_ID }))
+    expect(res.status).toBe(400)
+    expect(createCalls).toHaveLength(0)
+  })
+
+  test('a non-UUID tab id is refused', async () => {
+    const res = await route.POST(post({ tab_id: 'nope', restaurant_id: RESTAURANT_ID }))
+    expect(res.status).toBe(400)
+    expect(createCalls).toHaveLength(0)
+  })
+
+  test('a missing tab answers 404, an unfinished one 409', async () => {
+    createResult = { ok: false, code: 'TAB_NOT_FOUND', message: 'gone' }
+    expect((await route.POST(post({ tab_id: TAB_ID, restaurant_id: RESTAURANT_ID }))).status).toBe(404)
+    createResult = { ok: false, code: 'ORDER_NOT_FINAL', message: 'not yet' }
+    expect((await route.POST(post({ tab_id: TAB_ID, restaurant_id: RESTAURANT_ID }))).status).toBe(409)
+  })
 })

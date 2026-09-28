@@ -8,10 +8,13 @@
  * downloaded one stop being the same document. There is one parser and both callers use it.
  */
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type {
   BusinessDocumentRow,
+  DocumentCancelledLine,
   DocumentLineItem,
   DocumentParty,
+  DocumentPaymentLine,
 } from '@/lib/documents/generate-document-pdf'
 
 export function parseParty(value: unknown): DocumentParty {
@@ -54,9 +57,55 @@ export function parseLineItems(value: unknown): DocumentLineItem[] {
     })
 }
 
+/** `cancelled_line_items` (20260928140000). Absent/NULL on every document that predates it. */
+export function parseCancelledLines(value: unknown): DocumentCancelledLine[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+    .map((item) => {
+      const row = item as Record<string, unknown>
+      return {
+        description: String(row.description ?? ''),
+        quantity: Number(row.quantity) || 0,
+        unit_price: Number(row.unit_price) || 0,
+        line_total: Number(row.line_total) || 0,
+        order_number: row.order_number != null && Number.isFinite(Number(row.order_number))
+          ? Number(row.order_number)
+          : null,
+        reason: row.reason === 'order_cancelled' ? 'order_cancelled' : 'voided',
+      }
+    })
+}
+
+/**
+ * The `document_payments` rows of an invoice, for the renderer's "Payments received" block. The
+ * download and the send route both call this, so the emailed PDF and the downloaded one print the
+ * same payments. A read failure THROWS: an invoice rendered without its payments would print the
+ * right totals beside no explanation of them, and a failed download is recoverable.
+ */
+export async function loadDocumentPayments(
+  supabase: Pick<SupabaseClient, 'from'>,
+  row: { id?: unknown; document_type?: unknown },
+): Promise<DocumentPaymentLine[]> {
+  if (String(row.document_type ?? '') !== 'invoice') return []
+  const { data, error } = await supabase
+    .from('document_payments')
+    .select('amount, method, reference, paid_at')
+    .eq('document_id', String(row.id))
+    .order('paid_at', { ascending: true })
+  if (error) throw error
+  return ((data ?? []) as Array<Record<string, unknown>>).map((p) => ({
+    amount: Number(p.amount) || 0,
+    method: String(p.method ?? 'unknown'),
+    reference: p.reference != null ? String(p.reference) : null,
+    paid_at: p.paid_at != null ? String(p.paid_at) : null,
+  }))
+}
+
 export function toBusinessDocumentRow(
   row: Record<string, unknown>,
   lineage?: { originalInvoiceNumber?: string | null; replacementInvoiceNumber?: string | null },
+  extras?: { payments?: DocumentPaymentLine[] },
 ): BusinessDocumentRow {
   const documentType = String(row.document_type ?? '')
   if (documentType !== 'quote' && documentType !== 'invoice' && documentType !== 'credit_note') {
@@ -97,6 +146,8 @@ export function toBusinessDocumentRow(
     created_at: String(row.created_at),
     original_invoice_number: lineage?.originalInvoiceNumber ?? null,
     replacement_invoice_number: lineage?.replacementInvoiceNumber ?? null,
+    cancelled_line_items: parseCancelledLines(row.cancelled_line_items),
+    payments: extras?.payments ?? [],
   }
 }
 
