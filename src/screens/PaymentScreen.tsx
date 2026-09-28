@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -38,6 +38,8 @@ import {
   classifyFailureReport,
   classifySuccessReportError,
 } from '../lib/paymentReportOutcome';
+import {resolveOrderMoney, type OrderMoneyState} from '../lib/orderLiveMoney';
+import {LIVE_TOTAL_AFTER_VOIDS, LIVE_TOTAL_UNAVAILABLE} from '../constants/liveTotalCopy';
 import {
   isUnclassifiedNotPaid,
   unconfirmedMessageForVerdict,
@@ -101,7 +103,11 @@ function formatAmountPaid(amount: number): string {
 
 export default function PaymentScreen({route, navigation}: Props) {
   const insets = useSafeAreaInsets();
-  const {orderId, tableId, tableNumber, total, orderNumber, placedAt} =
+  /**
+   * `storedTotal` is orders.total as the caller had it: the ORIGINAL, which keeps counting voided
+   * lines. It is never charged or displayed as what is owed -- see `amountDue`. Sprint 2026-09-28.
+   */
+  const {orderId, tableId, tableNumber, total: storedTotal, orderNumber, placedAt} =
     route.params;
   const {
     machineState,
@@ -176,6 +182,29 @@ export default function PaymentScreen({route, navigation}: Props) {
     null,
   );
 
+  /**
+   * WHAT THIS ORDER STILL OWES, resolved from the tab's live money (lib/orderLiveMoney). Null while
+   * loading or when it cannot be known -- and then every action that would take money is disabled
+   * and the screen says "Amount unavailable — refresh". Never the stored total, which counts voids.
+   */
+  const [liveMoney, setLiveMoney] = useState<OrderMoneyState>({kind: 'loading'});
+  const amountDue =
+    liveMoney.kind === 'known' ? liveMoney.money.outstandingCents / 100 : null;
+  /**
+   * The figure a success/failure REPORT carries, once money may have moved. The last known live
+   * amount; the stored total only if none was ever known (a payment restored across an app restart
+   * before the bill was read). The server compares it with what it actually charged and records
+   * any disagreement -- refusing to report a charge that happened would be worse.
+   */
+  const reportAmountRef = useRef<number | null>(null);
+  if (amountDue != null) {
+    reportAmountRef.current = amountDue;
+  }
+  const reportAmount = useCallback(
+    () => reportAmountRef.current ?? storedTotal,
+    [storedTotal],
+  );
+
   const resolvedTableId = order?.table_id ?? tableId;
   /**
    * COUNTED, NOT PAIRED. `bothMethodsEnabled` was a two-method assumption: with PayToday, "show the
@@ -200,8 +229,8 @@ export default function PaymentScreen({route, navigation}: Props) {
     const n = Number(cleaned);
     return Number.isFinite(n) ? n : 0;
   })();
-  const changeDue = Math.max(0, tenderedAmount - total);
-  const canConfirmCash = tenderedAmount >= total && total >= 0;
+  const changeDue = amountDue == null ? 0 : Math.max(0, tenderedAmount - amountDue);
+  const canConfirmCash = amountDue != null && tenderedAmount >= amountDue && amountDue >= 0;
 
   const applyPaymentMethodAvailability = useCallback(
     (cardEnabled: boolean, cashEnabled: boolean, paytodayEnabled = false) => {
@@ -244,15 +273,20 @@ export default function PaymentScreen({route, navigation}: Props) {
 
   const loadOrder = useCallback(async () => {
     setLoadingOrder(true);
+    setLiveMoney({kind: 'loading'});
     try {
       const token = await getTerminalToken();
       if (!token) {
+        setLiveMoney({kind: 'unavailable'});
         return;
       }
       const fetched = await getOrder(orderId, token);
       setOrder(fetched);
+      setLiveMoney(await resolveOrderMoney(fetched, token));
     } catch {
-      // Summary still works from route params
+      // The item summary still works from route params. The AMOUNT does not: the stored total
+      // counts voided lines, so it is not offered as a stand-in.
+      setLiveMoney({kind: 'unavailable'});
     } finally {
       setLoadingOrder(false);
     }
@@ -511,7 +545,7 @@ export default function PaymentScreen({route, navigation}: Props) {
           reference: opts.reference,
           voucherNo: opts.voucherNo,
           businessOrderNo: opts.businessOrderNo,
-          amount: total,
+          amount: reportAmount(),
           paymentMethod: opts.paymentMethod,
         });
       } catch (err) {
@@ -540,7 +574,7 @@ export default function PaymentScreen({route, navigation}: Props) {
             orderIds: [orderId],
             businessOrderNo: opts.businessOrderNo,
             transactionId: opts.voucherNo,
-            amount: total,
+            amount: reportAmount(),
           },
           token,
         ).then(saleRecord => {
@@ -561,7 +595,7 @@ export default function PaymentScreen({route, navigation}: Props) {
           order_number: orderNumber ?? 0,
           status: 'ready',
           items: [],
-          total,
+          total: reportAmount(),
           placed_at: placedAt ?? new Date().toISOString(),
           channel: 'table',
         };
@@ -584,12 +618,17 @@ export default function PaymentScreen({route, navigation}: Props) {
       orderNumber,
       placedAt,
       tableNumber,
-      total,
+      reportAmount,
       paymentSuccess,
     ],
   );
 
   const handleProcessPayment = async () => {
+    if (amountDue == null || amountDue <= 0) {
+      // The button is disabled too; this is the guard where the money is counted.
+      return;
+    }
+    const total = amountDue;
     startPayment(orderId, total);
     let token: string | null = null;
     /**
@@ -949,10 +988,10 @@ export default function PaymentScreen({route, navigation}: Props) {
   };
 
   const handleConfirmCash = async () => {
-    if (!canConfirmCash) {
+    if (!canConfirmCash || amountDue == null || amountDue <= 0) {
       return;
     }
-    startPayment(orderId, total);
+    startPayment(orderId, amountDue);
     try {
       const token = await getTerminalToken();
       if (!token) {
@@ -988,6 +1027,10 @@ export default function PaymentScreen({route, navigation}: Props) {
    * check that exists is the waiter reading the question and answering it.
    */
   const handleConfirmPaytoday = () => {
+    if (amountDue == null || amountDue <= 0) {
+      return;
+    }
+    const total = amountDue;
     Alert.alert(PAYTODAY_CONFIRM_TITLE, PAYTODAY_CONFIRM_BODY, [
       {text: 'Cancel', style: 'cancel'},
       {
@@ -1100,7 +1143,12 @@ export default function PaymentScreen({route, navigation}: Props) {
    * this button.
    */
   const paymentActionsBlocked =
-    state === 'PAYMENT_IN_PROGRESS' || state === 'PAYMENT_UNCONFIRMED';
+    state === 'PAYMENT_IN_PROGRESS' ||
+    state === 'PAYMENT_UNCONFIRMED' ||
+    // Nothing that takes money while what is owed is unknown -- or when nothing is owed, which is
+    // what a fully voided order is. Sprint 2026-09-28.
+    amountDue == null ||
+    amountDue <= 0;
 
   /**
    * The tick. Deliberately a wall-clock delta rather than a counter incremented each interval:
@@ -1146,7 +1194,7 @@ export default function PaymentScreen({route, navigation}: Props) {
               color={Colors.green}
             />
             <Text style={styles.successTitle}>Payment successful</Text>
-            <Text style={styles.successAmount}>{formatAmountPaid(total)}</Text>
+            <Text style={styles.successAmount}>{formatAmountPaid(reportAmount())}</Text>
 
             {/*
               #326. Still a success screen — the money is there — but this attempt is not what put
@@ -1432,8 +1480,27 @@ export default function PaymentScreen({route, navigation}: Props) {
           <View style={styles.divider} />
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>Total</Text>
-            <Text style={styles.totalValue}>{formatCurrency(total)}</Text>
+            {amountDue != null ? (
+              <Text style={styles.totalValue} testID="payment-amount-due">
+                {formatCurrency(amountDue)}
+              </Text>
+            ) : liveMoney.kind === 'loading' ? (
+              <ActivityIndicator color={Colors.primary} />
+            ) : (
+              <Pressable onPress={loadOrder} testID="payment-amount-unavailable">
+                <Text style={styles.totalValue}>{LIVE_TOTAL_UNAVAILABLE}</Text>
+              </Pressable>
+            )}
           </View>
+          {liveMoney.kind === 'known' &&
+          liveMoney.money.originalCents !== liveMoney.money.liveCents ? (
+            <Text style={styles.itemName} testID="payment-amount-after-voids">
+              {LIVE_TOTAL_AFTER_VOIDS.replace(
+                '{original}',
+                formatCurrency(liveMoney.money.originalCents / 100),
+              ).replace('{live}', formatCurrency(liveMoney.money.liveCents / 100))}
+            </Text>
+          ) : null}
         </View>
 
         {state === 'IDLE' ? (
@@ -1582,7 +1649,9 @@ export default function PaymentScreen({route, navigation}: Props) {
                 ) : null}
                 <View style={styles.cashRow}>
                   <Text style={styles.cashLabel}>Order total</Text>
-                  <Text style={styles.cashValue}>{formatCurrency(total)}</Text>
+                  <Text style={styles.cashValue}>
+                    {amountDue == null ? LIVE_TOTAL_UNAVAILABLE : formatCurrency(amountDue)}
+                  </Text>
                 </View>
                 <Text style={styles.cashLabel}>Amount tendered</Text>
                 <TextInput
@@ -1823,7 +1892,7 @@ export default function PaymentScreen({route, navigation}: Props) {
                 Mark paid by {PAYTODAY_METHOD_LABEL}
               </Text>
               <Text style={styles.processButtonSubtitle}>
-                {formatCurrency(total)}
+                {amountDue == null ? LIVE_TOTAL_UNAVAILABLE : formatCurrency(amountDue)}
               </Text>
             </View>
           </LoadingButton>

@@ -2,6 +2,7 @@ import {
   isClaimablePaymentStatus,
   selectClaimableOrdersForSettle,
 } from '../paymentIntegrity';
+import {noLinesPayload} from './helpers/linesPayload';
 
 // Independent QA verification pass on top of the 15 tests added in
 // e37268a. These probe scenarios not covered there: an all-cancelled tab,
@@ -15,7 +16,7 @@ describe('selectClaimableOrdersForSettle — QA edge cases', () => {
       {id: 'c2', total: 60, payment_status: 'cancelled'},
     ];
 
-    const result = selectClaimableOrdersForSettle(orders, ['c1', 'c2']);
+    const result = selectClaimableOrdersForSettle(orders, ['c1', 'c2'], noLinesPayload());
 
     expect(result.amount).toBe(0);
     expect(result.orderIds).toEqual([]);
@@ -33,7 +34,7 @@ describe('selectClaimableOrdersForSettle — QA edge cases', () => {
       'claimable',
       'cancelled',
       'refunded',
-    ]);
+    ], noLinesPayload());
 
     expect(result.amount).toBe(30);
     expect(result.orderIds).toEqual(['claimable']);
@@ -45,7 +46,7 @@ describe('selectClaimableOrdersForSettle — QA edge cases', () => {
       {id: 'cancelled-1', total: 999, payment_status: 'cancelled'},
     ];
 
-    const result = selectClaimableOrdersForSettle(orders, []);
+    const result = selectClaimableOrdersForSettle(orders, [], noLinesPayload());
 
     expect(result.amount).toBe(0);
     expect(result.orderIds).toEqual([]);
@@ -59,7 +60,7 @@ describe('selectClaimableOrdersForSettle — QA edge cases', () => {
       'order-1',
       'order-1',
       'order-1',
-    ]);
+    ], noLinesPayload());
 
     expect(result.amount).toBe(100);
     expect(result.orderIds).toEqual(['order-1']);
@@ -78,7 +79,7 @@ describe('selectClaimableOrdersForSettle — QA edge cases', () => {
       'does-not-exist',
       'a',
       'b',
-    ]);
+    ], noLinesPayload());
 
     expect(result.orderIds).toEqual(['a', 'b', 'c']);
     expect(result.amount).toBe(60);
@@ -93,7 +94,7 @@ describe('selectClaimableOrdersForSettle — QA edge cases', () => {
     const result = selectClaimableOrdersForSettle(orders, [
       'free-item',
       'paid-item',
-    ]);
+    ], noLinesPayload());
 
     expect(result.amount).toBe(40);
     expect(result.orderIds).toEqual(['free-item', 'paid-item']);

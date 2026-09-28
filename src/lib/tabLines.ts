@@ -338,6 +338,97 @@ export interface TabLinesPayload {
    */
   has_lines: boolean;
   server_time: string | null;
+  /**
+   * THE SERVER'S MONEY, per order and for the tab (contract C2, sprint 2026-09-28). Additive and
+   * OPTIONAL: a server that predates it sends nothing, and then every reader falls back to what
+   * the lines themselves can prove -- see settlementAmount.ts. When present it is AUTHORITATIVE for
+   * original / live / paid / outstanding and nothing on the device re-derives those figures.
+   */
+  financials?: TabFinancials;
+}
+
+/**
+ * ONE ORDER'S (or the tab's) MONEY, integer cents, exactly as the server's C1 projection states it.
+ *
+ *   original     orders.total as stored. Never rewritten, so it keeps counting voided lines.
+ *   voided       what the voided lines were worth.
+ *   live         original - voided (0 for a cancelled order). What the bill is now.
+ *   paid         what has actually been collected against it.
+ *   outstanding  what is still to collect. THE figure a waiter is asked to take.
+ *   overpaid     paid beyond live -- money the customer may be owed back. Never clamped away.
+ */
+export interface MoneyCents {
+  original_cents: number;
+  voided_cents: number;
+  live_cents: number;
+  paid_cents: number;
+  outstanding_cents: number;
+  overpaid_cents: number;
+}
+
+export interface TabFinancials {
+  tab: MoneyCents;
+  /** Keyed by order id. */
+  orders: Record<string, MoneyCents>;
+}
+
+const MONEY_KEYS: ReadonlyArray<keyof MoneyCents> = [
+  'original_cents',
+  'voided_cents',
+  'live_cents',
+  'paid_cents',
+  'outstanding_cents',
+  'overpaid_cents',
+];
+
+/** One money block, or null when ANY of its six figures is missing or not a whole, non-negative number. */
+export function parseMoneyCents(raw: unknown): MoneyCents | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const src = raw as Record<string, unknown>;
+  const out = {} as MoneyCents;
+  for (const key of MONEY_KEYS) {
+    const value = src[key];
+    // A string, a float, a negative or a null is a server we do not understand. Refusing the whole
+    // block is safer than guessing one figure of it: a half-read block would pair a real `original`
+    // with an invented `outstanding`.
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+      return null;
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * The C2 `financials` object, or undefined when it is absent or unreadable.
+ *
+ * UNREADABLE IS TREATED AS ABSENT, NOT AS ZERO. A malformed tab block drops the whole object, so the
+ * device falls back to line-derived figures rather than trusting part of a payload it cannot read.
+ * A malformed ORDER entry is dropped on its own: that order then has no server figure, which the
+ * payment path reads as "amount unavailable" rather than as N$0.
+ */
+export function parseTabFinancials(raw: unknown): TabFinancials | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const src = raw as Record<string, unknown>;
+  const tab = parseMoneyCents(src.tab);
+  if (!tab) {
+    return undefined;
+  }
+  const orders: Record<string, MoneyCents> = {};
+  const rawOrders = src.orders;
+  if (rawOrders && typeof rawOrders === 'object' && !Array.isArray(rawOrders)) {
+    for (const [orderId, value] of Object.entries(rawOrders as Record<string, unknown>)) {
+      const parsed = parseMoneyCents(value);
+      if (parsed) {
+        orders[orderId] = parsed;
+      }
+    }
+  }
+  return {tab, orders};
 }
 
 /**
@@ -587,14 +678,29 @@ export function oldestOutstandingSeconds(
 }
 
 /**
- * Money owed on the tab, taken from the payload's own `tab.total`.
+ * The running bill on the tab, in major units.
  *
  * The server's figure, not a sum of `order_total` — a client-side sum would silently disagree with
  * the bill the customer is shown the moment a discount, a void or a service charge exists.
+ *
+ * SPRINT 2026-09-28: `tabs.total` kept counting voided lines (amend never rewrites the original
+ * order, and a reduction adds a replacement order), so the Riviera tab in the sprint brief summed to
+ * N$1,945 + N$740 of replacements over a live bill of N$1,205. The server's C2 `financials.tab.live_cents` is preferred whenever it is sent, and the
+ * same server also rewrites `tab.total` to the live value.
+ *
+ * AN OLDER SERVER'S `tab.total` IS SHOWN AS IT IS, NOT CORRECTED HERE. It is recomputed at settle
+ * time as the sum of the UNPAID orders' totals, and the payload does not say which orders are paid,
+ * so subtracting the voided lines on the device would also subtract voids on orders already out of
+ * that sum -- an understated bill. An overstated header is the lesser error; the payment path does
+ * not read this figure (see settlementAmount.ts).
  */
 export function tabRunningTotal(
   payload: TabLinesPayload | null | undefined,
 ): number {
+  const live = payload?.financials?.tab?.live_cents;
+  if (typeof live === 'number' && Number.isFinite(live)) {
+    return live / 100;
+  }
   const total = Number(payload?.tab?.total);
   return Number.isFinite(total) ? total : 0;
 }

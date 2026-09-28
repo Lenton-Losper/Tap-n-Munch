@@ -8,7 +8,7 @@ import {APP_VERSION, FLASHTAP_API_URL} from '../constants';
 import {recordWiretapEvent} from './wiretap';
 // F19. The reader's own serial, sent at activation so a registration names a physical device.
 import {getDeviceIdentity} from './deviceIdentity';
-import {TabLinesPayload} from './tabLines';
+import {parseTabFinancials, TabLinesPayload} from './tabLines';
 import {
   getRefreshToken,
   saveMerchantCredentials,
@@ -3370,6 +3370,7 @@ export async function getTabLines(
   const data = (await response.json()) as Partial<TabLinesPayload>;
 
   const orders = Array.isArray(data.orders) ? data.orders : [];
+  const financials = parseTabFinancials((data as {financials?: unknown}).financials);
 
   return {
     tab: {
@@ -3483,6 +3484,12 @@ export async function getTabLines(
     all_ready: data.all_ready === true,
     has_lines: data.has_lines === true,
     server_time: typeof data.server_time === 'string' ? data.server_time : null,
+    /**
+     * C2 (sprint 2026-09-28): the server's per-order and per-tab money. ABSENT IS PRESERVED -- an
+     * older server sends nothing and the device falls back to line-derived figures; a block it
+     * cannot read is treated as absent rather than as zero. See parseTabFinancials.
+     */
+    ...(financials ? {financials} : {}),
   };
 }
 
