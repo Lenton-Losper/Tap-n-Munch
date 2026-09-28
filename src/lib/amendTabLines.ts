@@ -59,9 +59,10 @@ export interface AppliedAmendment {
 }
 
 /**
- * Why a line was NOT changed. These three strings are the SQL function's own literals — see
- * migration 20260829150000. `AmendRefusalReason` is deliberately a union of them plus `string`,
- * so a reason this build has never heard of still reaches the screen instead of being dropped.
+ * Why a line was NOT changed. These strings are the SQL function's own literals — see migration
+ * 20260829150000 — plus the two the Sprint 2026-09-28 contract (C3) adds. `AmendRefusalReason` is
+ * deliberately a union of them plus `string`, so a reason this build has never heard of still
+ * reaches the screen instead of being dropped.
  */
 export type AmendRefusalReason =
   /** The line is already cooked or ready. The kitchen won; the amendment loses. */
@@ -70,6 +71,10 @@ export type AmendRefusalReason =
   | 'not_found'
   /** The quantity did not survive the function's own validation. */
   | 'invalid_quantity'
+  /** C3. The order carrying the line is already paid. */
+  | 'order_paid'
+  /** C3. This line has been settled (split / pay-by-item). */
+  | 'line_settled'
   | string;
 
 export interface RefusedAmendment {
@@ -83,6 +88,80 @@ export interface AmendResult {
   order_number: number | null;
   applied: AppliedAmendment[];
   refused: RefusedAmendment[];
+  /**
+   * FALSE WHEN THE 200 COULD NOT BE READ AS AN AMEND RESULT: not JSON, not an object, or `applied`
+   * / `refused` missing or not arrays. Such a body proves nothing either way, so it is NOT a
+   * success and NOT a refusal — it is "not confirmed". Before Sprint 2026-09-28 the parser
+   * defaulted missing arrays to [] and a body of `{}` read as a clean, quiet success.
+   */
+  well_formed: boolean;
+  /** C3. Absent (undefined) on an older server; never inferred from `applied`. */
+  changed?: boolean;
+  lines?: AmendLineSummary[];
+}
+
+/** C3's per-line summary. Additive: an older server sends none, and nothing may depend on it. */
+export interface AmendLineSummary {
+  line_id: string;
+  name: string | null;
+  outcome: string;
+  previous_quantity: number | null;
+  quantity: number | null;
+  refusal_reason?: string;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The amend route's 200 body, read STRICTLY. Entries without a string line_id are dropped rather
+ * than guessed at, and a body whose arrays are missing comes back with `well_formed: false`.
+ */
+export function parseAmendResult(data: unknown): AmendResult {
+  if (!isObject(data) || !Array.isArray(data.applied) || !Array.isArray(data.refused)) {
+    return {order_id: null, order_number: null, applied: [], refused: [], well_formed: false};
+  }
+  const applied: AppliedAmendment[] = data.applied
+    .filter(isObject)
+    .filter(row => typeof row.line_id === 'string' && row.line_id !== '')
+    .map(row => ({
+      line_id: String(row.line_id),
+      action: row.action === 'replaced' ? ('replaced' as const) : ('voided' as const),
+      ...(typeof row.new_line_id === 'string' ? {new_line_id: row.new_line_id} : {}),
+    }));
+  const refused: RefusedAmendment[] = data.refused
+    .filter(isObject)
+    .filter(row => typeof row.line_id === 'string' && row.line_id !== '')
+    .map(row => ({line_id: String(row.line_id), reason: String(row.reason ?? '')}));
+  const result: AmendResult = {
+    order_id: typeof data.order_id === 'string' ? data.order_id : null,
+    order_number: numberOrNull(data.order_number),
+    applied,
+    refused,
+    well_formed: true,
+  };
+  if (typeof data.changed === 'boolean') {
+    result.changed = data.changed;
+  }
+  if (Array.isArray(data.lines)) {
+    result.lines = data.lines
+      .filter(isObject)
+      .filter(row => typeof row.line_id === 'string')
+      .map(row => ({
+        line_id: String(row.line_id),
+        name: typeof row.name === 'string' ? row.name : null,
+        outcome: String(row.outcome ?? ''),
+        previous_quantity: numberOrNull(row.previous_quantity),
+        quantity: numberOrNull(row.quantity),
+        ...(typeof row.refusal_reason === 'string' ? {refusal_reason: row.refusal_reason} : {}),
+      }));
+  }
+  return result;
 }
 
 /**
@@ -113,8 +192,89 @@ export function canAmendLine(line: {
   return hasAStation && kitchenOpen && barOpen;
 }
 
-/** True when the whole amendment was refused — nothing changed on the tab. */
+/**
+ * True when nothing on the tab is CONFIRMED to have changed.
+ *
+ * CHANGED Sprint 2026-09-28: this used to be `applied empty AND refused non-empty`, and a test
+ * asserted that an empty result "is not a refusal" — so a 200 of `{applied: [], refused: []}` read
+ * as success. Riviera #160 is what that shape costs: a waiter believes an item is off and the
+ * kitchen cooks it. Confirmation is now positive only — something must be IN `applied`.
+ */
 export function nothingApplied(result: AmendResult): boolean {
-  return result.applied.length === 0 && result.refused.length > 0;
+  return !result.well_formed || result.applied.length === 0;
+}
+
+// ================================================================================================
+// WHAT THE WAITER IS TOLD ABOUT ONE LINE. (Sprint 2026-09-28 brief, contract C3.)
+// ================================================================================================
+//
+// THE ONLY PATH TO "confirmed" IS THE LINE'S OWN id IN `applied`. Not the sheet closing, not a
+// 200, not `changed: true`, not an entry in `lines`. `lines` only decorates a confirmation that
+// `applied` already gave (the quantity the server actually left), and a line absent from both
+// arrays is "not_confirmed" — the server did not say what happened to it.
+
+export type LineAmendOutcome =
+  | {
+      kind: 'confirmed';
+      lineId: string;
+      /** removed: the line is gone. reduced / increased: it now stands at `quantity`. */
+      effect: 'removed' | 'reduced' | 'increased';
+      quantity: number;
+      previousQuantity: number;
+    }
+  | {kind: 'refused'; lineId: string; reason: AmendRefusalReason}
+  | {kind: 'not_confirmed'; lineId: string; why: 'malformed' | 'absent'};
+
+export function lineAmendOutcome(
+  result: AmendResult,
+  request: {lineId: string; previousQuantity: number; requestedQuantity: number},
+): LineAmendOutcome {
+  const {lineId} = request;
+  if (!result.well_formed) {
+    return {kind: 'not_confirmed', lineId, why: 'malformed'};
+  }
+  const applied = result.applied.find(row => row.line_id === lineId);
+  if (applied) {
+    const summary = result.lines?.find(row => row.line_id === lineId);
+    const quantity =
+      applied.action === 'voided' ? 0 : summary?.quantity ?? request.requestedQuantity;
+    const previousQuantity = summary?.previous_quantity ?? request.previousQuantity;
+    return {
+      kind: 'confirmed',
+      lineId,
+      effect: quantity === 0 ? 'removed' : quantity < previousQuantity ? 'reduced' : 'increased',
+      quantity,
+      previousQuantity,
+    };
+  }
+  const refused = result.refused.find(row => row.line_id === lineId);
+  if (refused) {
+    return {kind: 'refused', lineId, reason: refused.reason};
+  }
+  return {kind: 'not_confirmed', lineId, why: 'absent'};
+}
+
+/**
+ * The money a CONFIRMED reduction took off, for the sentence only, from the line's own server
+ * total. Null when the server sent no price for the line — the sentence then names no figure
+ * rather than inventing one. Never used to compute a bill.
+ */
+export function amountOffCents(
+  lineTotalCents: number | null | undefined,
+  previousQuantity: number,
+  quantity: number,
+): number | null {
+  if (
+    typeof lineTotalCents !== 'number' ||
+    !Number.isFinite(lineTotalCents) ||
+    previousQuantity <= 0 ||
+    quantity >= previousQuantity
+  ) {
+    return null;
+  }
+  if (quantity <= 0) {
+    return lineTotalCents;
+  }
+  return Math.round((lineTotalCents * (previousQuantity - quantity)) / previousQuantity);
 }
 

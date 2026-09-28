@@ -1,4 +1,4 @@
-import React, {useCallback, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -14,13 +14,20 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {
   ApiRequestError,
+  getTabLines,
+  RoundKeyMismatchError,
   RoundLinesNotWrittenError,
+  RoundOutcomeUnknownError,
   RoundOutOfStockError,
+  RoundPersistedItem,
+  RoundPricingRefusedError,
   RoundResult,
   sendRound,
   StationCounts,
   TabNotOpenError,
 } from '../lib/api';
+import * as RoundCopy from '../constants/roundSendCopy';
+import {findRoundOnTab} from '../lib/roundOutcome';
 import {
   basketCount,
   basketSubtotal,
@@ -51,10 +58,38 @@ function stationSummary(counts: StationCounts): string {
 /** What the screen is showing. Only one of these is ever true at a time. */
 type Outcome =
   | {kind: 'sent'; result: RoundResult}
+  /**
+   * C4 duplicate: true. `items` is the SERVER's list — from the response, or read off the table
+   * when an older server sent none. Null while that read is in progress or if it failed.
+   */
+  | {kind: 'duplicate'; result: RoundResult; items: RoundPersistedItem[] | null}
+  | {
+      kind: 'key_mismatch';
+      message: string;
+      orderNumber: number | null;
+      items: RoundPersistedItem[];
+    }
   | {kind: 'lines_not_written'; message: string; orderNumber: number | null}
   | {kind: 'tab_closed'; message: string}
   | {kind: 'gone'; message: string}
+  | {kind: 'pricing'; message: string; unavailable: string[]}
+  /** The round may be on the tab. The basket is locked; only Retry and Check are offered. */
+  | {kind: 'unknown'; message: string}
   | {kind: 'error'; message: string};
+
+/** What "Check the table" found, shown under the unknown-outcome panel. */
+type CheckResult =
+  | {kind: 'found'; orderNumber: number; items: RoundPersistedItem[]}
+  | {kind: 'not_found'}
+  | {kind: 'failed'};
+
+function itemsOfOrder(
+  order: {lines: {name_snapshot: string; quantity: number; is_voided: boolean}[]},
+): RoundPersistedItem[] {
+  return order.lines
+    .filter(line => !line.is_voided)
+    .map(line => ({name: line.name_snapshot, quantity: line.quantity}));
+}
 
 export default function ServiceRoundReviewScreen({navigation}: Props) {
   const insets = useSafeAreaInsets();
@@ -64,14 +99,41 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
     idempotencyKey,
     orderInstructions,
     setOrderInstructions,
+    roundLock,
+    lockRound,
+    unlockRound,
     clearBasket,
     endSession,
   } = useServiceSession();
 
   const [sending, setSending] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [check, setCheck] = useState<CheckResult | null>(null);
+  const [checking, setChecking] = useState(false);
   /** Snapshotted before endSession clears the context, so the panel survives the drop. */
   const [sentTableLabel, setSentTableLabel] = useState('');
+  /** When THIS round was first sent. Survives retries; only narrows Check the table's search. */
+  const firstSentAtRef = useRef<number | null>(null);
+
+  /**
+   * NO WAY OFF THIS SCREEN WHILE THE ROUND IS IN DOUBT, hardware back included. Leaving would end
+   * the session — dropping the key — and the waiter would rebuild the round under a new one: two
+   * rounds on the tab if the first did land. Also blocked mid-send.
+   */
+  const holdRef = useRef(false);
+  holdRef.current = sending || roundLock != null;
+  useEffect(() => {
+    const addListener = (navigation as {addListener?: Props['navigation']['addListener']})
+      .addListener;
+    if (typeof addListener !== 'function') {
+      return undefined;
+    }
+    return navigation.addListener('beforeRemove', event => {
+      if (holdRef.current) {
+        event.preventDefault();
+      }
+    });
+  }, [navigation]);
 
   const backToFloor = useCallback(() => {
     endSession();
@@ -101,6 +163,10 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
 
     setSending(true);
     setOutcome(null);
+    setCheck(null);
+    if (firstSentAtRef.current == null) {
+      firstSentAtRef.current = Date.now();
+    }
 
     const label = table.tableName
       ? `Table ${table.tableNumber} · ${table.tableName}`
@@ -122,21 +188,73 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
           subtotal,
           total: subtotal,
           orderInstructions,
-          // Reused verbatim on every retry of THIS round. A repeat carrying an already-used key
-          // returns the original order with 200, which lands in the success branch below —
-          // correctly, because that is exactly one round on the tab.
+          // Reused verbatim on every retry of THIS round, and the basket cannot change between
+          // retries (roundLock). A repeat returns the original order with duplicate: true.
           idempotencyKey,
         },
         token,
       );
 
+      // A definite answer: release the lock BEFORE endSession/clearBasket, which it would refuse.
+      unlockRound();
       // THE SEND-DROPS-THE-PIN-SESSION RULE. On any 2xx the held identity goes, immediately, so
       // the next table costs a PIN again. The round itself is attributed server-side from the
       // tab, so nothing about this affects who gets credit for what was just sent.
       setSentTableLabel(label);
       endSession();
-      setOutcome({kind: 'sent', result});
+
+      if (!result.duplicate) {
+        setOutcome({kind: 'sent', result});
+        return;
+      }
+
+      /**
+       * ALREADY SENT. Never a fresh green "Round sent": after an edit those two differ, and the
+       * basket this screen was showing is NOT necessarily what the kitchen has. Show the SERVER's
+       * items — from the response, or read off the table when an older server sent none.
+       */
+      if (result.persisted_items.length > 0) {
+        setOutcome({kind: 'duplicate', result, items: result.persisted_items});
+        return;
+      }
+      setOutcome({kind: 'duplicate', result, items: null});
+      try {
+        const payload = await getTabLines(table.tabId, token);
+        const order = payload.orders.find(o => o.order_id === result.order_id);
+        setOutcome({kind: 'duplicate', result, items: order ? itemsOfOrder(order) : []});
+      } catch {
+        setOutcome({kind: 'duplicate', result, items: []});
+      }
     } catch (err) {
+      if (err instanceof RoundOutcomeUnknownError) {
+        // THE LOCK. Nothing about this round may change until the server gives a definite answer.
+        lockRound({kind: err.kind, sentAt: firstSentAtRef.current ?? Date.now()});
+        setOutcome({kind: 'unknown', message: err.message});
+        return;
+      }
+
+      // Everything below is a DEFINITE answer about this round, so the lock goes first.
+      unlockRound();
+
+      if (err instanceof RoundKeyMismatchError) {
+        // Nothing new was created; the ORIGINAL is on the tab. The basket is not it.
+        setSentTableLabel(label);
+        endSession();
+        setOutcome({
+          kind: 'key_mismatch',
+          message: err.message,
+          orderNumber: err.orderNumber,
+          items: err.items,
+        });
+        return;
+      }
+
+      if (err instanceof RoundPricingRefusedError) {
+        // Nothing created. Not retried, automatically or by a button: the same body fails again.
+        setOutcome({kind: 'pricing', message: err.message, unavailable: err.unavailableItems});
+        return;
+      }
+
       if (err instanceof RoundLinesNotWrittenError) {
         // Billed, but the kitchen and bar were never told. Not retryable — a retry double-bills.
         // The basket goes, because the round IS on the tab; the message and order number stay.
@@ -183,11 +301,46 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
     endSession,
     idempotencyKey,
     lines,
+    lockRound,
     navigation,
     orderInstructions,
     sending,
     table,
+    unlockRound,
   ]);
+
+  /**
+   * Read the table and look for this round. A HINT, never a resolution — see lib/roundOutcome.
+   * The lock stays; the waiter still resolves it with Retry, which cannot double the round.
+   */
+  const handleCheckTable = useCallback(async () => {
+    if (!table || checking) {
+      return;
+    }
+    setChecking(true);
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        throw new Error('no token');
+      }
+      const payload = await getTabLines(table.tabId, token);
+      const sentAt = roundLock?.sentAt ?? firstSentAtRef.current ?? Date.now();
+      const found = findRoundOnTab(
+        payload,
+        lines.map(line => ({name: line.name, quantity: line.quantity})),
+        (Date.now() - sentAt) / 1000,
+      );
+      setCheck(
+        found
+          ? {kind: 'found', orderNumber: found.order_number, items: itemsOfOrder(found)}
+          : {kind: 'not_found'},
+      );
+    } catch {
+      setCheck({kind: 'failed'});
+    } finally {
+      setChecking(false);
+    }
+  }, [checking, lines, roundLock, table]);
 
   if (outcome?.kind === 'sent') {
     const {result} = outcome;
@@ -226,6 +379,49 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
             </View>
           ) : null}
 
+          <Pressable style={styles.primaryButton} onPress={backToFloor}>
+            <Text style={styles.primaryButtonText}>Back to Floor</Text>
+          </Pressable>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (outcome?.kind === 'duplicate' || outcome?.kind === 'key_mismatch') {
+    const mismatch = outcome.kind === 'key_mismatch';
+    const orderNumber = mismatch ? outcome.orderNumber : outcome.result.order_number;
+    return (
+      <View style={[styles.wrapper, {paddingTop: insets.top}]}>
+        <ScrollView contentContainerStyle={styles.resultContent}>
+          <MaterialCommunityIcons
+            name={mismatch ? 'alert-outline' : 'information-outline'}
+            size={56}
+            color={Colors.amber}
+          />
+          <Text style={styles.resultTitleWarn} testID={`round-${outcome.kind}-title`}>
+            {mismatch ? RoundCopy.ROUND_MISMATCH_TITLE : RoundCopy.ROUND_ALREADY_SENT_TITLE}
+          </Text>
+          <Text style={styles.resultSubtitle}>{sentTableLabel}</Text>
+          {orderNumber != null ? (
+            <Text style={styles.orderNumber}>Order #{orderNumber}</Text>
+          ) : null}
+          <Text style={styles.resultHint}>
+            {mismatch ? RoundCopy.ROUND_MISMATCH_BODY : RoundCopy.ROUND_ALREADY_SENT_BODY}
+          </Text>
+          {/* The SERVER's items. Never the basket: after an edit the two are different rounds. */}
+          <View style={styles.serverItems} testID="round-server-items">
+            {outcome.items == null ? (
+              <ActivityIndicator color={Colors.primary} />
+            ) : outcome.items.length === 0 ? (
+              <Text style={styles.warnText}>{RoundCopy.ROUND_ITEMS_UNAVAILABLE}</Text>
+            ) : (
+              outcome.items.map((item, index) => (
+                <Text key={`${item.name}-${index}`} style={styles.serverItemText}>
+                  {item.quantity}× {item.name}
+                </Text>
+              ))
+            )}
+          </View>
           <Pressable style={styles.primaryButton} onPress={backToFloor}>
             <Text style={styles.primaryButtonText}>Back to Floor</Text>
           </Pressable>
@@ -285,6 +481,8 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
   const heading = table.tableName
     ? `Table ${table.tableNumber} · ${table.tableName}`
     : `Table ${table.tableNumber}`;
+  /** The round may be on the tab: only Retry and Check are offered, and nothing is editable. */
+  const locked = roundLock != null;
 
   return (
     <View style={styles.wrapper}>
@@ -292,7 +490,8 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
         <Pressable
           style={styles.backButton}
           onPress={() => navigation.goBack()}
-          disabled={sending}>
+          testID="round-back-arrow"
+          disabled={sending || locked}>
           <MaterialCommunityIcons
             name="arrow-left"
             size={26}
@@ -330,6 +529,62 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
           </View>
         ) : null}
 
+        {/* C5. Nothing was created. No retry button: the same basket is refused the same way. */}
+        {outcome?.kind === 'pricing' ? (
+          <View style={styles.warnPanel} testID="round-pricing-refused">
+            <Text style={styles.warnTitle}>{RoundCopy.ROUND_PRICING_TITLE}</Text>
+            <Text style={styles.warnText}>{outcome.message}</Text>
+            <Text style={styles.warnText}>{RoundCopy.ROUND_PRICING_BODY}</Text>
+            {outcome.unavailable.map((name, index) => (
+              <Text key={`${name}-${index}`} style={styles.warnText}>
+                • {name}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
+        {/* THE LOCK. The round may already be with the kitchen. */}
+        {locked ? (
+          <View style={styles.warnPanel} testID="round-unknown-outcome">
+            <Text style={styles.warnTitle}>{RoundCopy.ROUND_UNKNOWN_TITLE}</Text>
+            <Text style={styles.warnText}>{RoundCopy.ROUND_UNKNOWN_BODY}</Text>
+            {outcome?.kind === 'unknown' ? (
+              <Text style={styles.warnText}>{outcome.message}</Text>
+            ) : null}
+            {check?.kind === 'found' ? (
+              <View testID="round-check-found">
+                <Text style={styles.warnText}>
+                  {RoundCopy.ROUND_CHECK_FOUND.replace('{number}', String(check.orderNumber))}
+                </Text>
+                {check.items.map((item, index) => (
+                  <Text key={`${item.name}-${index}`} style={styles.warnText}>
+                    {item.quantity}× {item.name}
+                  </Text>
+                ))}
+              </View>
+            ) : check?.kind === 'not_found' ? (
+              <Text style={styles.warnText} testID="round-check-not-found">
+                {RoundCopy.ROUND_CHECK_NOT_FOUND}
+              </Text>
+            ) : check?.kind === 'failed' ? (
+              <Text style={styles.warnText} testID="round-check-failed">
+                {RoundCopy.ROUND_CHECK_FAILED}
+              </Text>
+            ) : null}
+            <Pressable
+              style={[styles.warnButton, (checking || sending) && styles.buttonDisabled]}
+              testID="round-check-table"
+              disabled={checking || sending}
+              onPress={handleCheckTable}>
+              {checking ? (
+                <ActivityIndicator color={Colors.white} />
+              ) : (
+                <Text style={styles.warnButtonText}>{RoundCopy.ROUND_CHECK_TABLE}</Text>
+              )}
+            </Pressable>
+          </View>
+        ) : null}
+
         {lines.map(line => (
           <View key={line.lineId} style={styles.reviewRow}>
             <Text style={styles.reviewQty}>{line.quantity}×</Text>
@@ -350,6 +605,7 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
           style={styles.instructionsInput}
           value={orderInstructions}
           onChangeText={setOrderInstructions}
+          editable={!locked}
           placeholder="e.g. allergy: shellfish"
           placeholderTextColor={Colors.textMuted}
           multiline
@@ -371,24 +627,43 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
       </ScrollView>
 
       <View style={[styles.bottomBar, {paddingBottom: insets.bottom + Spacing.sm}]}>
-        <Pressable
-          style={[styles.secondaryButton, sending && styles.buttonDisabled]}
-          onPress={() => navigation.goBack()}
-          disabled={sending}>
-          <Text style={styles.secondaryButtonText}>Back</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.sendButton, sending && styles.buttonDisabled]}
-          onPress={handleSend}
-          disabled={sending}>
-          {sending ? (
-            <ActivityIndicator color={Colors.white} />
-          ) : (
-            <Text style={styles.primaryButtonText}>
-              {outcome ? 'Send Again' : 'Send Round'}
-            </Text>
-          )}
-        </Pressable>
+        {/* No Back while locked: leaving is how the key gets dropped and the round rebuilt. */}
+        {locked ? null : (
+          <Pressable
+            style={[styles.secondaryButton, sending && styles.buttonDisabled]}
+            onPress={() => navigation.goBack()}
+            testID="round-back"
+            disabled={sending}>
+            <Text style={styles.secondaryButtonText}>Back</Text>
+          </Pressable>
+        )}
+        {outcome?.kind === 'pricing' ? (
+          // The basket has to change before this can go. No resend of the same refused body.
+          <Pressable
+            style={styles.sendButton}
+            testID="round-pricing-fix"
+            onPress={() => navigation.goBack()}>
+            <Text style={styles.primaryButtonText}>{RoundCopy.ROUND_PRICING_FIX}</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            style={[styles.sendButton, sending && styles.buttonDisabled]}
+            testID="round-send"
+            onPress={handleSend}
+            disabled={sending}>
+            {sending ? (
+              <ActivityIndicator color={Colors.white} />
+            ) : (
+              <Text style={styles.primaryButtonText}>
+                {locked
+                  ? RoundCopy.ROUND_RETRY_SAME
+                  : outcome
+                  ? 'Send Again'
+                  : 'Send Round'}
+              </Text>
+            )}
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -535,6 +810,21 @@ const styles = StyleSheet.create({
     color: Colors.red,
     textAlign: 'center',
   },
+  resultTitleWarn: {
+    ...Typography.heading,
+    color: Colors.amber,
+    textAlign: 'center',
+  },
+  serverItems: {
+    alignSelf: 'stretch',
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 12,
+    padding: Spacing.md,
+    gap: Spacing.xs,
+  },
+  serverItemText: {...Typography.body, fontWeight: '600', color: Colors.textPrimary},
   resultSubtitle: {...Typography.body, color: Colors.textSecondary},
   orderNumber: {fontSize: 30, fontWeight: '800', color: Colors.textPrimary},
   orderNumberDanger: {fontSize: 30, fontWeight: '800', color: Colors.red},

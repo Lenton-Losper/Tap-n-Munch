@@ -60,8 +60,10 @@ describe(`the signed void copy (signed ${SIGNED_ON})`, () => {
     expect(VOID_REASON_TOO_LONG).toBe(
       'That reason is too long. Shorten it to a sentence and try again — nothing has changed yet.',
     );
+    // CHANGED Sprint 2026-09-28 brief: the dashboard has no per-line void, so the pointer to it
+    // was removed. See voidCopy.ts and the absence test below.
     expect(VOID_NEEDS_AUTHORIZATION).toBe(
-      'This terminal needs updating before items can come off a bill. Nothing has changed. Ask a manager to remove it from the dashboard.',
+      'This terminal needs updating before items can come off a bill. Nothing has changed, and the item is still on the bill. Tell a manager.',
     );
     expect(VOID_EFFECT_REDUCE).toBe('This takes {count} off the order and off the bill. The rest stays.');
     expect(VOID_EFFECT_REDUCE_ONE).toBe(
@@ -73,8 +75,13 @@ describe(`the signed void copy (signed ${SIGNED_ON})`, () => {
     // The owner's edit at signing. Asserted as an ABSENCE so restoring the instruction fails here.
     expect(VOID_NEEDS_AUTHORIZATION).not.toMatch(/update the app/i);
     expect(VOID_NEEDS_AUTHORIZATION).not.toMatch(/out of date/i);
-    // ...and the route that IS open to them is still named.
-    expect(VOID_NEEDS_AUTHORIZATION).toMatch(/dashboard/i);
+    /**
+     * REVERSED BY THE Sprint 2026-09-28 brief (Riviera #160). This asserted the string named the
+     * dashboard as "the route that IS open to them". It is not open: the dashboard has no per-line
+     * void, so that instruction was a second dead end. Asserted as an absence so it cannot return.
+     */
+    expect(VOID_NEEDS_AUTHORIZATION).not.toMatch(/dashboard/i);
+    expect(VOID_NEEDS_AUTHORIZATION).toMatch(/still on the bill/i);
   });
 
   it('the {name} and {count} slots survive, because a string without them renders a literal', () => {

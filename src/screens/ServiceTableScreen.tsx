@@ -14,7 +14,6 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AmendLineSheet from '../components/AmendLineSheet';
 import CloseTableAction from '../components/CloseTableAction';
-import {canAmendLine} from '../lib/amendTabLines';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import * as Copy from '../constants/serviceCopy';
 import {ApiRequestError, getTabLines, getTablesWithMeta} from '../lib/api';
@@ -111,19 +110,21 @@ function LineRow({line, onEdit}: {line: TabLine; onEdit?: (l: TabLine) => void})
       : Copy.TABLE_LINE_WAITING_CHIP;
 
   /**
-   * Tappable ONLY while the amend window is open. A line the kitchen has started is not pressable
-   * at all, rather than opening a sheet that could only say no — the affordance is the window.
+   * EVERY LINE IS TAPPABLE. (Sprint 2026-09-28 brief, Riviera #160.)
    *
-   * The server still decides. It can refuse a line this thought was open, because the kitchen may
-   * tap Cooked between this render and the waiter's press, and that is exactly why refusals come
-   * back per line.
+   * This used to be pressable only while the amend window was open, so a waiter tapping a cooked
+   * dish got no answer at all — and the only written guidance was "tell them yourself", an
+   * unrecorded verbal cancel. A cooked or cancelled line now opens the sheet, which says that it
+   * cannot be cancelled from here and that NOTHING was removed. `canAmendLine` still decides what
+   * the sheet offers; the server still decides what happens.
    */
-  const amendable = onEdit != null && canAmendLine(line);
+  const tappable = onEdit != null;
 
   return (
     <Pressable
-      disabled={!amendable}
-      onPress={amendable ? () => onEdit!(line) : undefined}
+      testID={`tab-line-${line.id}`}
+      disabled={!tappable}
+      onPress={tappable ? () => onEdit!(line) : undefined}
       style={[styles.lineRow, line.is_voided && styles.lineRowVoided]}>
       <Text style={styles.lineQty}>{line.quantity}×</Text>
       <View style={styles.lineMain}>
@@ -749,17 +750,20 @@ export default function ServiceTableScreen({route, navigation}: Props) {
         the list re-rendering under it — a refresh mid-edit must not close the sheet the waiter is
         typing into.
 
-        `onAmended` refetches rather than patching state locally: the amendment created a NEW
+        `onRefetch` re-reads rather than patching state locally: the amendment created a NEW
         ORDER on this tab, and the only honest way to show that is to re-read the tab. Editing the
         local copy would leave the bill and the line list disagreeing about what was ordered.
+
+        It is called after EVERY outcome, and it does NOT close the sheet (Sprint 2026-09-28):
+        closing was the old success signal, and it looked exactly like cancelling the edit. The
+        sheet says what happened and the waiter closes it.
       */}
       <AmendLineSheet
         tabId={tabId}
         line={editingLine}
         onClose={() => setEditingLine(null)}
-        onAmended={() => {
-          setEditingLine(null);
-          void load();
+        onRefetch={() => {
+          void load(false);
         }}
       />
     </View>
