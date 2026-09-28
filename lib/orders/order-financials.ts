@@ -311,7 +311,7 @@ export function centsToMajor(cents: number): number {
  */
 
 type FinancialsSupabase = {
-  from: (table: string) => any // eslint-disable-line @typescript-eslint/no-explicit-any
+  from: (table: string) => any
 }
 
 export class FinancialsUnreadable extends Error {

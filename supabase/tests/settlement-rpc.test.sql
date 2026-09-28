@@ -695,6 +695,113 @@ END;
 $$;
 
 -- ==================================================================================================
+-- T13. settled_charge_cents (20260928140000): WHAT A SETTLEMENT APPLIED, RECORDED PER ORDER.
+--
+-- The financial projection reads `paid` for a paid order from this column. Before it existed the
+-- only possible basis was `paid = total`, which is wrong for every order amended before payment.
+-- Asserted through the REAL settlement function and through direct writes, because ten writers mark
+-- orders paid and only some of them go through the RPC. (Mutations M13/M14 must break this.)
+-- ==================================================================================================
+CREATE OR REPLACE FUNCTION public._t_settled_charge_recorded()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE r jsonb; v integer; ok boolean;
+BEGIN
+  -- N$220 + N$500 of food with a N$30 gratuity on #155: the reader was asked for N$750.
+  PERFORM public._seed_riviera(3000);
+  r := public.settle_order_payment(
+    '11111111-1111-4111-8111-111111111111',
+    ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+          'aaaaaaaa-0000-4000-8000-000000000155']::uuid[],
+    75000, 75000, 'TXN-SC', 'MO-SC', 'card', 'MO-SC', NULL,
+    'terminal_verify_payment', 'term-1', 3000,
+    '55555555-5555-4555-8555-555555555555', ARRAY[]::uuid[], '2.37');
+  PERFORM public._expect('settled/rpc_ok', (r->>'ok')::boolean, r::text);
+
+  SELECT settled_charge_cents INTO v FROM public.orders
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000154';
+  PERFORM public._expect('settled/rpc_records_charge', v = 22000,
+    format('#154 should record 22000 applied, recorded %s', v));
+
+  SELECT settled_charge_cents INTO v FROM public.orders
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000155';
+  PERFORM public._expect('settled/tip_excluded', v = 50000,
+    format('#155 carried the N$30 gratuity; it should record 50000 of food, recorded %s', v));
+
+  -- The attempt itself is still cleared (F18): the column is a copy, not a reason to keep it.
+  PERFORM public._expect('settled/pending_still_cleared',
+    NOT EXISTS (SELECT 1 FROM public.orders WHERE pending_charge_cents IS NOT NULL),
+    'recording the settled charge must not stop the RPC clearing the attempt');
+
+  -- AN AMENDED ORDER. prepare-payment wrote the LIVE figure (N$465 of a N$1,945 order); a direct
+  -- writer (markOrderPaidConfirmed shape: no settled_charge_cents in the SET list) marks it paid.
+  PERFORM public._seed();
+  INSERT INTO public.orders (id, restaurant_id, tab_id, order_number, status, payment_status, total,
+                             pending_charge_cents)
+  VALUES ('aaaaaaaa-0000-4000-8000-000000000160', '11111111-1111-4111-8111-111111111111',
+          '22222222-2222-4222-8222-222222222222', 160, 'pending', 'pending', 1945, 46500);
+  UPDATE public.orders SET payment_status = 'paid', status = 'completed'
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000160';
+  SELECT settled_charge_cents INTO v FROM public.orders
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000160';
+  PERFORM public._expect('settled/direct_writer_records_live_charge', v = 46500,
+    format('an amended order charged N$465 must record 46500, not its N$1,945 total; recorded %s', v));
+
+  -- NO ATTEMPT RECORDED (a QR order, a legacy path): NULL, the legacy basis. Never invented.
+  INSERT INTO public.orders (id, restaurant_id, order_number, status, payment_status, total)
+  VALUES ('aaaaaaaa-0000-4000-8000-000000000161', '11111111-1111-4111-8111-111111111111',
+          161, 'pending', 'pending', 80);
+  UPDATE public.orders SET payment_status = 'paid'
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000161';
+  PERFORM public._expect('settled/unrecorded_attempt_is_null',
+    (SELECT settled_charge_cents IS NULL FROM public.orders
+      WHERE id = 'aaaaaaaa-0000-4000-8000-000000000161'),
+    'a payment with no recorded attempt must stay NULL (legacy basis), not a guessed figure');
+
+  -- EXPLICIT WINS. The cash route and the item-ledger routes state the figure themselves; a stale
+  -- card attempt left on the row must not overwrite it.
+  INSERT INTO public.orders (id, restaurant_id, order_number, status, payment_status, total,
+                             pending_charge_cents)
+  VALUES ('aaaaaaaa-0000-4000-8000-000000000162', '11111111-1111-4111-8111-111111111111',
+          162, 'pending', 'pending', 100, 10000);
+  UPDATE public.orders SET payment_status = 'paid', settled_charge_cents = 0
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000162';
+  SELECT settled_charge_cents INTO v FROM public.orders
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000162';
+  PERFORM public._expect('settled/explicit_value_wins', v = 0,
+    format('an explicit settled_charge_cents must survive the trigger; found %s', v));
+
+  -- ONLY THE TRANSITION INTO PAID. A write that leaves an order unpaid records nothing, and a
+  -- second write to an already-paid order does not overwrite what the settlement recorded.
+  INSERT INTO public.orders (id, restaurant_id, order_number, status, payment_status, total,
+                             pending_charge_cents)
+  VALUES ('aaaaaaaa-0000-4000-8000-000000000163', '11111111-1111-4111-8111-111111111111',
+          163, 'pending', 'pending', 100, 10000);
+  UPDATE public.orders SET payment_status = 'terminal_pending'
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000163';
+  PERFORM public._expect('settled/unpaid_transition_records_nothing',
+    (SELECT settled_charge_cents IS NULL FROM public.orders
+      WHERE id = 'aaaaaaaa-0000-4000-8000-000000000163'),
+    'a non-paid transition recorded a settled charge');
+  UPDATE public.orders SET payment_status = 'paid', pending_charge_cents = 7000
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000160';
+  SELECT settled_charge_cents INTO v FROM public.orders
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000160';
+  PERFORM public._expect('settled/paid_to_paid_keeps_value', v = 46500,
+    format('a paid -> paid write overwrote the recorded charge; found %s', v));
+
+  -- The CHECK: never negative.
+  ok := false;
+  BEGIN
+    UPDATE public.orders SET settled_charge_cents = -1
+     WHERE id = 'aaaaaaaa-0000-4000-8000-000000000161';
+  EXCEPTION WHEN check_violation THEN ok := true;
+  END;
+  PERFORM public._expect('settled/negative_refused', ok,
+    'the database accepted a negative settled_charge_cents');
+END;
+$$;
+
+-- ==================================================================================================
 -- RUN THEM ALL. Each in its own subtransaction so one failure cannot hide the others.
 -- ==================================================================================================
 DO $$
@@ -712,7 +819,8 @@ DECLARE
     '_t_intent_target_set_is_binding',
     '_t_absent_gateway_amount',
     '_t_db_constraints',
-    '_t_security_grants'
+    '_t_security_grants',
+    '_t_settled_charge_recorded'
   ];
 BEGIN
   FOREACH t IN ARRAY tests LOOP

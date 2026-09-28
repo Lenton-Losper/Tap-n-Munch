@@ -181,6 +181,9 @@ export async function settleAllocationsForIntent(
         status: 'completed',
         paid_at: paidAt,
         completed_at: paidAt,
+        // Paid entirely through the item ledger: the whole-order charge is zero, stated so the
+        // settled-charge trigger (20260928140000) cannot copy a stale whole-order attempt in.
+        settled_charge_cents: 0,
       })
       .eq('id', orderId)
       .eq('restaurant_id', intent.restaurantId)

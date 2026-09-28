@@ -57,13 +57,13 @@ import {
   CARD_IN_FLIGHT_TIMEOUT_SECONDS,
   isCardPaymentStillInFlight,
   normalizeSettlementPaymentMethod,
-  owesMoney,
   roundToCents,
   secondsSincePush,
 } from '@/lib/payments/payment-integrity'
 import { consumeAuthorizationToken } from '@/lib/terminal-auth/consume-authorization-token'
 import { clearReadyToPayAndReopenTab } from '@/lib/tabs/settle-tab-state'
 import { fromCents } from '@/lib/billing/split-cents'
+import { centsToMajor, loadTabFinancials, type TabFinancials } from '@/lib/orders/order-financials'
 
 export const dynamic = 'force-dynamic'
 
@@ -566,6 +566,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
           status: 'completed',
           paid_at: paidAt,
           completed_at: paidAt,
+          // Every cent reached this order through the item ledger, so the WHOLE-ORDER charge it
+          // was settled by is zero. Stated explicitly (20260928140000): the trigger would otherwise
+          // copy a stale whole-order card attempt into it, and the projection would count the
+          // order paid twice.
+          settled_charge_cents: 0,
         })
         .eq('id', orderId)
         .eq('restaurant_id', terminal.restaurantId)
@@ -582,16 +587,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       await safeIssueReceiptsForOrders(completedOrderIds, 'terminal/tabs/settle-allocations')
     }
 
-    const { data: tabOrderRows, error: unpaidError } = await supabase
-      .from('orders')
-      .select('total, payment_status')
-      .eq('tab_id', tabId)
+    /**
+     * Still owed, from the one financial projection (lib/orders/order-financials.ts): voided lines
+     * owe nothing, a reduction is owed once on its replacement, and the item ledger -- which this
+     * route just wrote to -- is subtracted. A failed read leaves the stored total as it was.
+     */
+    let tabFinancials: TabFinancials | null = null
+    try {
+      tabFinancials = await loadTabFinancials(supabase, terminal.restaurantId, tabId)
+    } catch (e) {
+      console.error('[terminal/tabs/settle-allocations] tab total recalc failed', {
+        tabId,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
 
     let newTotal: number | null = null
-    if (!unpaidError) {
-      const recalculated = roundToCents(
-        (tabOrderRows ?? []).filter((o) => owesMoney(o.payment_status)).reduce((sum, o) => sum + Number(o.total), 0),
-      )
+    if (tabFinancials) {
+      const recalculated = roundToCents(centsToMajor(tabFinancials.outstandingCents))
       const { error: totalWriteError } = await supabase.from('tabs').update({ total: recalculated }).eq('id', tabId)
       if (totalWriteError) {
         console.error('[terminal/tabs/settle-allocations] tab total write failed', { tabId, error: totalWriteError })
