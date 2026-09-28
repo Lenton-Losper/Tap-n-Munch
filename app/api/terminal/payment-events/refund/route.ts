@@ -69,6 +69,17 @@ function parseRpcError(message: string): {
       },
     }
   }
+  // 20260929130100: the sale is a device report the server never verified, so there is no amount
+  // to cap a refund at. Reconcile it against the gateway first.
+  if (message.includes('SALE_AMOUNT_UNVERIFIED')) {
+    return {
+      status: 409,
+      body: {
+        error: 'the original sale amount was never verified; reconcile it before refunding',
+        code: 'SALE_AMOUNT_UNVERIFIED',
+      },
+    }
+  }
   if (message.includes('INVALID_AMOUNT') || message.includes('INVALID_EVENT_TYPE')) {
     return { status: 400, body: { error: 'Invalid refund payload' } }
   }

@@ -51,6 +51,8 @@ const MIGRATIONS = [
   'supabase/migrations/20260928150000_amend_order_lines_refuse_paid.sql',
   // Sprint 2026-09-29 task 7: a device-reported sale row is marked as one (origin, device_amount_check).
   'supabase/migrations/20260929110000_payment_events_origin.sql',
+  // record_terminal_refund_event caps refunds at a VERIFIED figure (needs 20260929110000).
+  'supabase/migrations/20260929130100_refund_cap_is_verified_amount.sql',
 ]
 
 /**
@@ -459,6 +461,21 @@ const MUTATIONS = {
         '          true\n          AND device_amount_check IN (',
       ),
   },
+  MR1: {
+    what: "a device row's refund cap is its own reported amount, not the intent's",
+    expect: ['refund/device_capped_at_intent'],
+    apply: (sql) =>
+      sql.replace('        v_cap := v_intent_cents::numeric / 100;', '        v_cap := v_sale.amount;'),
+  },
+  MR2: {
+    what: 'an unverified device row (mismatch, no intent) is refundable up to its reported amount',
+    expect: ['refund/device_unverified_refused'],
+    apply: (sql) =>
+      sql.replace(
+        "        RAISE EXCEPTION 'SALE_AMOUNT_UNVERIFIED:%', v_sale.amount\n          USING ERRCODE = 'P0001';",
+        '        v_cap := v_sale.amount;',
+      ),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -566,6 +583,7 @@ function runSuite() {
   psql(readRepo('supabase/tests/amend-rpc.test.sql'))
   // Reuses the same helpers; the payment_events origin columns (20260929110000).
   psql(readRepo('supabase/tests/payment-events-origin.test.sql'))
+  psql(readRepo('supabase/tests/refund-cap.test.sql'))
   const total = Number(psqlValue('SELECT count(*) FROM public._test_results;'))
   const failed = psqlValue(
     "SELECT string_agg(name || '  ::  ' || COALESCE(detail,''), E'\\n') " +
