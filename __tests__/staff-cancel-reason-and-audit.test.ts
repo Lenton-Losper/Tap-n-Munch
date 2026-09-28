@@ -174,34 +174,28 @@ describe('what must NOT get a reason or an audit row (#103)', () => {
     expect(status).toBe(409)
     expect(auditRows).toHaveLength(0)
   })
-
-  it('writes no audit row for a payment_status-only patch', async () => {
-    updateResult = { id: 'order-1', status: 'preparing', payment_status: 'paid', paid_at: 'x' }
-    await callPatch({ payment_status: 'paid' })
-
-    expect(updateCalls[0].patch).not.toHaveProperty('cancellation_reason')
-    expect(auditRows).toHaveLength(0)
-  })
 })
 
 /**
- * payment_status-only patches are now claimed too. Before this, the route applied its
- * conditional claim ONLY when `status` was in the patch and said so in a comment; a
- * payment_status-only write (dashboard "Mark as Paid") was last-write-win, so two devices
- * reading `pending` both succeeded and a gateway write landing between one device's read and
- * its write was silently overwritten.
+ * The cancel's redundant payment_status is claimed on the value that was READ, not last-write-win:
+ * a gateway write landing between the read and this write must not be silently overwritten.
+ *
+ * Mark-as-Paid used to be tested here as a bare `{ payment_status: 'paid' }` patch. It is no longer
+ * one (Sprint 2026-09-28 brief, N1): it needs a method, writes a payments row and an audit row, and
+ * has its own claim -- see __tests__/orders-status-payment-invariants.test.ts. The recorded ruling
+ * "a repeated Mark-as-Paid still goes through" is REVERSED by that brief: a second manual payment
+ * would write a second trail for money collected once, so it is now ALREADY_PAID.
  */
 describe('payment_status is claimed, not last-write-win', () => {
-  it('conditions the write on the payment_status it read', async () => {
+  it('conditions the cancel on the payment_status it read', async () => {
     existingOrder = {
       id: 'order-1',
       restaurant_id: 'rest-1',
       status: 'preparing',
       payment_status: 'pending',
     }
-    updateResult = { id: 'order-1', status: 'preparing', payment_status: 'paid', paid_at: 'x' }
 
-    const { status } = await callPatch({ payment_status: 'paid' })
+    const { status } = await callPatch({ status: 'cancelled', payment_status: 'cancelled' })
 
     expect(status).toBe(200)
     expect(updateCalls[0].filters).toContainEqual(['payment_status', 'pending'])
@@ -209,17 +203,15 @@ describe('payment_status is claimed, not last-write-win', () => {
 
   it('claims a NULL payment_status with `is`, which is the only thing that matches NULL', async () => {
     existingOrder = { id: 'order-1', restaurant_id: 'rest-1', status: 'preparing' }
-    updateResult = { id: 'order-1', status: 'preparing', payment_status: 'paid' }
 
-    await callPatch({ payment_status: 'paid' })
+    await callPatch({ status: 'cancelled', payment_status: 'cancelled' })
 
     expect(updateCalls[0].filters).toContainEqual(['is:payment_status', null])
-    // Never the `.eq` form: `payment_status=eq.` matches no row at all when the column is
-    // NULL, so this order would 409 forever and could never be marked paid.
+    // Never the `.eq` form: `payment_status=eq.` matches no row at all when the column is NULL.
     expect(updateCalls[0].filters).not.toContainEqual(['payment_status', ''])
   })
 
-  it('returns 409, not 404, when the payment claim is lost', async () => {
+  it('returns 409 when the claim is lost', async () => {
     existingOrder = {
       id: 'order-1',
       restaurant_id: 'rest-1',
@@ -228,25 +220,25 @@ describe('payment_status is claimed, not last-write-win', () => {
     }
     updateResult = null
 
-    const { status, body } = await callPatch({ payment_status: 'paid' })
+    const { status } = await callPatch({ status: 'cancelled', payment_status: 'cancelled' })
 
     expect(status).toBe(409)
-    expect(String(body.error)).toMatch(/payment status changed/i)
   })
 
-  it('still lets a repeated Mark-as-Paid through — the claim matches the value it read', async () => {
+  it('a repeated Mark-as-Paid is refused as ALREADY_PAID and writes nothing (Sprint 2026-09-28 brief)', async () => {
     existingOrder = {
       id: 'order-1',
       restaurant_id: 'rest-1',
       status: 'preparing',
       payment_status: 'paid',
     }
-    updateResult = { id: 'order-1', status: 'preparing', payment_status: 'paid' }
 
-    const { status } = await callPatch({ payment_status: 'paid' })
+    const { status, body } = await callPatch({ payment_status: 'paid', payment_method: 'cash' })
 
-    expect(status).toBe(200)
-    expect(updateCalls[0].filters).toContainEqual(['payment_status', 'paid'])
+    expect(status).toBe(409)
+    expect(body.code).toBe('ALREADY_PAID')
+    expect(updateCalls).toHaveLength(0)
+    expect(auditRows).toHaveLength(0)
   })
 })
 

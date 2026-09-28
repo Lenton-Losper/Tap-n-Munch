@@ -656,6 +656,9 @@ export function OrdersDashboard() {
   const [markingPaidOrderId, setMarkingPaidOrderId] = useState<string | null>(null)
   const [markPaidTargetOrderId, setMarkPaidTargetOrderId] = useState<string | null>(null)
   const [showMarkPaidDialog, setShowMarkPaidDialog] = useState(false)
+  // Sprint 2026-09-28 (N1): a manual payment must say HOW it was paid; the server refuses one
+  // that does not, and records the method, the server's amount and who did it.
+  const [markPaidMethod, setMarkPaidMethod] = useState<'cash' | 'card' | 'paytoday'>('cash')
   const [closeTableTargetNumber, setCloseTableTargetNumber] = useState<number | null>(null)
   const [closingTableNumber, setClosingTableNumber] = useState<number | null>(null)
   const [showCloseTableDialog, setShowCloseTableDialog] = useState(false)
@@ -1899,7 +1902,7 @@ export function OrdersDashboard() {
       const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payment_status: 'paid' }),
+        body: JSON.stringify({ payment_status: 'paid', payment_method: markPaidMethod }),
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
@@ -2966,6 +2969,9 @@ export function OrdersDashboard() {
                         className="w-full"
                         onClick={() => {
                           setMarkPaidTargetOrderId(normalizedOrder.id)
+                          setMarkPaidMethod(
+                            paymentChannelOf(normalizedOrder) === 'card_manual' ? 'card' : 'cash',
+                          )
                           setShowMarkPaidDialog(true)
                         }}
                         disabled={markingPaidOrderId === normalizedOrder.id}
@@ -3222,9 +3228,32 @@ export function OrdersDashboard() {
           <DialogHeader>
             <DialogTitle>Mark Order as Paid</DialogTitle>
             <DialogDescription>
-              Are you sure you want to mark this order as paid? This action cannot be undone.
+              Choose how the customer paid. The amount still owed is recorded against your name.
+              This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
+          <div className="flex gap-2" role="radiogroup" aria-label="Payment method">
+            {(
+              [
+                ['cash', 'Cash'],
+                ['card', 'Card'],
+                ['paytoday', 'PayToday'],
+              ] as const
+            ).map(([value, label]) => (
+              <Button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={markPaidMethod === value}
+                variant={markPaidMethod === value ? 'default' : 'outline'}
+                className="flex-1"
+                onClick={() => setMarkPaidMethod(value)}
+                disabled={Boolean(markingPaidOrderId)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
           <DialogFooter>
             <Button
               type="button"

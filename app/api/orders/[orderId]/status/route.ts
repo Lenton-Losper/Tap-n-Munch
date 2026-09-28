@@ -13,6 +13,8 @@ import {
   staffUnknownStatusRefusal,
 } from '@/lib/orders/staff-status-refusal'
 import { voidOutstandingOrderLines, type VoidOrderLinesResult } from '@/lib/orders/order-lines'
+import { markOrderPaidManually } from '@/lib/payments/mark-order-paid-manually'
+import { normalizePaymentStatus } from '@/lib/payments/payment-state-machine'
 
 export const dynamic = 'force-dynamic'
 
@@ -42,7 +44,10 @@ export async function PATCH(
 
   const { data: existingOrder, error: loadError } = await supabase
     .from('orders')
-    .select('id, restaurant_id, status, payment_status')
+    // The payment columns are read so a manual payment that cannot be trailed is undone exactly.
+    .select(
+      'id, restaurant_id, status, payment_status, payment_method, payment_reference, paid_at, settled_charge_cents',
+    )
     .eq('id', orderId)
     .maybeSingle()
 
@@ -60,6 +65,79 @@ export async function PATCH(
     req,
   )
   if (isAuthError(auth)) return auth
+
+  /**
+   * payment_status IS NOT A FREE FIELD ON THIS ROUTE (Sprint 2026-09-28 brief, N1).
+   *
+   * It used to accept any value in the enum and write it: paid with no method, amount or trail
+   * (then a receipt), paid -> pending (so the order would be charged again), cancelled -> paid.
+   * Exactly two uses are legitimate, and they are the only two callers the dashboard has:
+   *
+   *   'cancelled' alongside status 'cancelled' -- redundant with the cancel below, kept so the
+   *               hosted-checkout cancel button's body still works.
+   *   'paid'      on its own -- a MANUAL PAYMENT: a method is required, the amount is the server's,
+   *               and a payments row + audit row are written or the payment is undone. See
+   *               lib/payments/mark-order-paid-manually.ts.
+   *
+   * Everything else is refused. There is no staff walk-back from paid: a refund is the reversal.
+   */
+  if (paymentStatus !== undefined && paymentStatus !== null && paymentStatus !== '') {
+    const nextPayment = normalizePaymentStatus(paymentStatus)
+    if (nextPayment === 'paid') {
+      if (status) {
+        return NextResponse.json(
+          {
+            error: 'Mark the order paid on its own, not together with a status change.',
+            code: 'PAYMENT_STATUS_WITH_STATUS',
+          },
+          { status: 400 },
+        )
+      }
+      const manual = await markOrderPaidManually(supabase, {
+        orderId,
+        restaurantId: String(existingOrder.restaurant_id),
+        staffUserId: auth.userId ?? null,
+        method: body?.payment_method ?? body?.paymentMethod ?? body?.method,
+        currentPaymentStatus: existingOrder.payment_status,
+        previous: existingOrder,
+      })
+      if (!manual.ok) {
+        return NextResponse.json(
+          { error: manual.error, code: manual.code },
+          { status: manual.status },
+        )
+      }
+      await safeIssueReceiptForOrder(orderId, 'orders/status')
+      return NextResponse.json({
+        success: true,
+        order: manual.order,
+        payment: {
+          method: manual.method,
+          amount_cents: manual.amountCents,
+          payment_reference: manual.paymentReference,
+          payment_record_written: manual.paymentRecordWritten,
+        },
+      })
+    }
+    if (nextPayment !== 'cancelled') {
+      return NextResponse.json(
+        {
+          error: 'That payment status cannot be set by hand. A refund is the only way to reverse a payment.',
+          code: 'PAYMENT_STATUS_NOT_STAFF_SETTABLE',
+        },
+        { status: 400 },
+      )
+    }
+    if (status !== 'cancelled') {
+      return NextResponse.json(
+        {
+          error: 'Cancel the order to cancel its payment.',
+          code: 'PAYMENT_STATUS_NEEDS_CANCEL',
+        },
+        { status: 400 },
+      )
+    }
+  }
 
   // Expected current status for the conditional claim — derived from the row we just
   // loaded (the same value isValidStaffStatusTransition validated against), not a
@@ -109,10 +187,8 @@ export async function PATCH(
     }
   }
   if (paymentStatus) {
+    // Only 'cancelled' reaches here, alongside status 'cancelled' (see the gate above).
     patch.payment_status = paymentStatus
-    if (paymentStatus === 'paid') {
-      patch.paid_at = new Date().toISOString()
-    }
   }
 
   // STAFF WINS over an open customer edit, and this is the whole mechanism. Moving an order
@@ -145,11 +221,11 @@ export async function PATCH(
   // reading `pending` and writing different values both succeeded, and a gateway write
   // landing between one device's read and its write was silently overwritten.
   //
-  // This does not make a repeated Mark-as-Paid fail. The claim matches on the value that was
-  // READ, so setting paid over paid still matches its own row; only a payment_status that
-  // moved to something DIFFERENT under the caller loses, which is exactly the case worth
-  // catching. `.eq` never matches NULL, so a null payment_status has to be claimed with
-  // `.is` — without that branch every order with no payment_status set would 409 forever.
+  // Mark-as-Paid no longer reaches this claim -- it has its own, in markOrderPaidManually, and a
+  // repeated Mark-as-Paid is now refused as ALREADY_PAID (Sprint 2026-09-28 brief, N1: a second
+  // manual payment would write a second trail for money collected once). What reaches here is the
+  // cancel's redundant payment_status. `.eq` never matches NULL, so a null payment_status has to
+  // be claimed with `.is` — without that branch such an order could never be cancelled here.
   if (paymentStatus) {
     updateQuery =
       expectedCurrentPaymentStatus === null
@@ -225,10 +301,6 @@ export async function PATCH(
     } catch (voidError) {
       console.error('[orders/status] order cancelled but voiding its lines failed', voidError)
     }
-  }
-
-  if (paymentStatus === 'paid') {
-    await safeIssueReceiptForOrder(orderId, 'orders/status')
   }
 
   if (status === 'cancelled') {
