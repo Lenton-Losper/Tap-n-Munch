@@ -17,7 +17,11 @@
  * server has, instead of only the narrowest one.
  */
 
-import {settlementAmountFor, type MoneyBasis} from './settlementAmount';
+import {
+  outstandingCentsForOrder,
+  settlementAmountFor,
+  type MoneyBasis,
+} from './settlementAmount';
 function matchesStatusSet(status: unknown, set: readonly string[]): boolean {
   const s = String(status ?? '')
     .trim()
@@ -104,10 +108,22 @@ export function selectClaimableOrdersForSettle<T extends ClaimableOrderLike>(
   orderIds: string[],
   basis: MoneyBasis,
 ): ClaimableSettleSelection<T> {
-  const claimable = orders.filter(
+  const filtered = orders.filter(
     order =>
       orderIds.includes(order.id) && isClaimablePaymentStatus(order.payment_status),
   );
+  /**
+   * AN ORDER THAT OWES SOMETHING LEADS. The card path prepares against the FIRST id, and since
+   * sprint 2026-09-28 prepare-payment refuses a lead order that owes nothing (409
+   * ORDER_NOTHING_OWED) -- which is what a fully voided order at the head of the tab is. Stable:
+   * owing orders keep their tab order, then the zero-owing ones, which /settle still names (the
+   * server accepts a 0 contribution).
+   */
+  const owesNothing = (order: T) => outstandingCentsForOrder(order, basis) === 0;
+  const claimable = [
+    ...filtered.filter(order => !owesNothing(order)),
+    ...filtered.filter(order => owesNothing(order)),
+  ];
   return {
     orderIds: claimable.map(order => order.id),
     orders: claimable,

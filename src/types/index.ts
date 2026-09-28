@@ -83,6 +83,12 @@ export interface TabOrder {
   card_payment_in_flight?: boolean;
   /** How long that card attempt has been running, per the server's clock. */
   card_in_flight_seconds?: number | null;
+  /**
+   * The server's C1 money for this order (original/voided/live/paid/outstanding/overpaid cents),
+   * added to /api/terminal/tables in sprint 2026-09-28. `unknown` on purpose: the tables response is
+   * not whitelisted, so every reader parses it with parseMoneyCents and treats unreadable as absent.
+   */
+  financials?: unknown;
 }
 
 export interface TableTab {

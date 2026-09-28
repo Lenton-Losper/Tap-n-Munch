@@ -72,6 +72,30 @@ const MUTATIONS = [
     to: '    const total = storedTotal;\n    startPayment(orderId, total);',
     suites: [PAYMENT_SUITE],
   },
+  {
+    id: 'M6',
+    what: "close-table rules ignore the server's outstanding 0 (a fully voided order blocks forever)",
+    file: 'src/lib/closeTableRefusals.ts',
+    from: '  const fromTables = parseMoneyCents(order.financials);\n  if (fromTables) {',
+    to: '  const fromTables = parseMoneyCents(order.financials);\n  if (false && fromTables) {',
+    suites: ['src/lib/__tests__/closeTableFullyVoidedOrder.test.ts'],
+  },
+  {
+    id: 'M7',
+    what: 'close-table rules trust a device-derived 0 (a guess closes a table)',
+    file: 'src/lib/closeTableRefusals.ts',
+    from: "  if (money && money.source === 'server') {",
+    to: '  if (money) {',
+    suites: ['src/lib/__tests__/closeTableFullyVoidedOrder.test.ts'],
+  },
+  {
+    id: 'M8',
+    what: 'a zero-owing order may lead the card settle (prepare-payment 409 ORDER_NOTHING_OWED)',
+    file: 'src/lib/paymentIntegrity.ts',
+    from: '    ...filtered.filter(order => !owesNothing(order)),\n    ...filtered.filter(order => owesNothing(order)),',
+    to: '    ...filtered,',
+    suites: ['src/lib/__tests__/paymentIntegrity.qa-edgecases.test.ts'],
+  },
 ];
 
 function runJest(suites) {

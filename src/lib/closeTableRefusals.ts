@@ -41,8 +41,36 @@ import {
   isMidFlightCardPayment,
   owesMoney,
 } from './paymentIntegrity';
-import {TabLinesPayload} from './tabLines';
-import {TableWithTab} from '../types';
+import {parseMoneyCents, TabLinesPayload} from './tabLines';
+import {orderMoney} from './settlementAmount';
+import {TabOrder, TableWithTab} from '../types';
+
+/**
+ * WHETHER ONE ORDER STILL OWES MONEY -- the question rules 6 and 11 ask.
+ *
+ * `owesMoney(payment_status)` alone said yes for a FULLY VOIDED order: amend never touches the
+ * order's payment_status, so it sits `pending` forever over a bill of N$0 and the table could never
+ * be closed from the device, although the server (sprint 2026-09-28) no longer refuses it.
+ *
+ * So a status that owes is overridden ONLY by the SERVER's own outstanding figure -- the per-order
+ * C1 financials on /api/terminal/tables, else C2 financials on the lines payload -- and only when
+ * that figure is exactly zero. A figure the device derived itself, or no figure at all, keeps the
+ * status's answer: a guess must never be what lets a table close over unpaid food.
+ */
+function orderStillOwes(order: TabOrder, lines: TabLinesPayload | null): boolean {
+  if (!owesMoney(order.payment_status)) {
+    return false;
+  }
+  const fromTables = parseMoneyCents(order.financials);
+  if (fromTables) {
+    return fromTables.outstanding_cents > 0;
+  }
+  const money = orderMoney(order, lines);
+  if (money && money.source === 'server') {
+    return money.outstandingCents > 0;
+  }
+  return true;
+}
 
 /**
  * Every reason a close can be refused BEFORE the request is sent.
@@ -198,7 +226,8 @@ export const CLOSE_TABLE_REFUSAL_RULES: readonly CloseTableRule[] = [
    * CONDITION: any order on the tab sits in a status where the restaurant has not been paid —
    * unpaid, pending, cash_pending, failed or terminal_pending.
    * DETECTION: `owesMoney(order.payment_status)`, the set already mirrored from the server in
-   * lib/paymentIntegrity. Cancelled and paid are absent from that set by design.
+   * lib/paymentIntegrity. Cancelled and paid are absent from that set by design. Sprint 2026-09-28:
+   * overridden only by the SERVER's outstanding_cents of exactly 0 -- see orderStillOwes.
    * ALLOWING IT: the same loss as rule 5.
    *
    * KEPT SEPARATE FROM RULE 5 ON PURPOSE, even though they usually agree. When they disagree the
@@ -209,7 +238,7 @@ export const CLOSE_TABLE_REFUSAL_RULES: readonly CloseTableRule[] = [
   {
     id: 'ORDER_OWES_MONEY',
     refuses: s =>
-      (s.table?.tab?.orders ?? []).some(order => owesMoney(order.payment_status)),
+      (s.table?.tab?.orders ?? []).some(order => orderStillOwes(order, s.lines)),
   },
 
   /**
@@ -344,7 +373,7 @@ export const CLOSE_TABLE_REFUSAL_RULES: readonly CloseTableRule[] = [
 
       const nothingOwed =
         Number(tab.unpaid_total ?? 0) === 0 &&
-        !(tab.orders ?? []).some(order => owesMoney(order.payment_status));
+        !(tab.orders ?? []).some(order => orderStillOwes(order, s.lines));
 
       return !nothingOwed;
     },

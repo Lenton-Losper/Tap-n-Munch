@@ -2,7 +2,7 @@ import {
   isClaimablePaymentStatus,
   selectClaimableOrdersForSettle,
 } from '../paymentIntegrity';
-import {noLinesPayload} from './helpers/linesPayload';
+import {line, noLinesPayload, payloadWith} from './helpers/linesPayload';
 
 // Independent QA verification pass on top of the 15 tests added in
 // e37268a. These probe scenarios not covered there: an all-cancelled tab,
@@ -97,7 +97,27 @@ describe('selectClaimableOrdersForSettle — QA edge cases', () => {
     ], noLinesPayload());
 
     expect(result.amount).toBe(40);
-    expect(result.orderIds).toEqual(['free-item', 'paid-item']);
+    // Still included -- but no longer FIRST. Sprint 2026-09-28: the card path prepares against the
+    // first id and prepare-payment now refuses a lead order that owes nothing (409
+    // ORDER_NOTHING_OWED), so an owing order leads. This used to assert tab order here.
+    expect(result.orderIds).toEqual(['paid-item', 'free-item']);
+  });
+
+  it('a fully voided order at the head of the tab does not lead the card settle', () => {
+    const orders = [
+      {id: 'voided', total: 120, payment_status: 'unpaid'},
+      {id: 'a', total: 30, payment_status: 'unpaid'},
+      {id: 'b', total: 20, payment_status: 'unpaid'},
+    ];
+    const basis = payloadWith([
+      {id: 'voided', total: 120, lines: [line({cents: 12000, voided: true})]},
+      {id: 'a', total: 30, lines: [line({cents: 3000})]},
+      {id: 'b', total: 20, lines: [line({cents: 2000})]},
+    ]);
+    const result = selectClaimableOrdersForSettle(orders, ['voided', 'a', 'b'], basis);
+    expect(result.orderIds).toEqual(['a', 'b', 'voided']);
+    expect(result.orders.map(o => o.id)).toEqual(result.orderIds);
+    expect(result.amount).toBe(50);
   });
 });
 
