@@ -326,6 +326,29 @@ describe('duplicate reconciliation', () => {
   })
 })
 
+describe('the verified set is pinned', () => {
+  it('refuses, applying nothing, when the settlement group changes between verification and settlement', async () => {
+    // While Finatic is being asked, B leaves the group and C (also N$50) joins it. The re-resolved
+    // target {A, C} sums to the same N$150 -- only the pin tells it apart from the verified {A, B}.
+    const GROUP = 'dddddddd-0000-4000-8000-000000000001'
+    const db = seedPair({
+      orders: [order(C, { total: 50, items: [{ name: 'Soda', quantity: 1, unitPrice: 50, total: 50 }], pending_charge_cents: 5000 })],
+    })
+    mockQuery.mockImplementation(async () => {
+      const rows = db.rows('orders')
+      rows.find((o) => o.id === B)!.pending_settlement_id = null
+      rows.find((o) => o.id === C)!.pending_settlement_id = GROUP
+      return finaticPaid(150)
+    })
+
+    const r = await call({ orderIds: [A, B], merchantOrderNo: REF })
+
+    expect({ status: r.status, code: r.body.code }).toEqual({ status: 409, code: 'SETTLEMENT_TARGET_CHANGED' })
+    expect(paidIds(db)).toEqual([])
+    expect(settleCalls(db)).toHaveLength(0)
+  })
+})
+
 describe('authorization', () => {
   it('an unauthorized caller is refused before anything is read or asked', async () => {
     const db = seedPair()

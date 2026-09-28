@@ -335,6 +335,8 @@ export async function POST(req: Request) {
       source: 'staff_reconcile',
       mismatchSource: 'staff_reconcile',
       allowCancelledRecovery: false,
+      // Pinned: the set bound and amount-checked above is the only set that may be settled.
+      expectedOrderIds: orderIds,
       extraAuditMetadata: {
         staffUserId: userId,
         finaticStatus: result.status,

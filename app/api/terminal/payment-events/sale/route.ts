@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { findIntentByMerchantOrderNo } from '@/lib/payments/payment-intents'
+import { isServerVerifiedLedgerRow } from '@/lib/payments/reconcile-reference'
 import {
   checkSaleAmount,
   saleAmountMismatchAudit,
@@ -381,7 +382,7 @@ export async function GET(req: Request) {
 
     const { data: sales, error: saleError } = await supabase
       .from('payment_events')
-      .select('business_order_no, amount, currency, order_ids, created_at')
+      .select('business_order_no, amount, currency, order_ids, created_at, origin, device_amount_check, raw_gateway_response')
       .eq('restaurant_id', terminal.restaurantId)
       .eq('event_type', 'sale')
       .contains('order_ids', [orderId])
@@ -415,7 +416,52 @@ export async function GET(req: Request) {
       )
     }
 
-    const saleAmount = Number(sale.amount)
+    /**
+     * THE REFUND CAP IS A SERVER FIGURE, NEVER THE DEVICE'S WORD (Sprint 2026-09-29, task 7
+     * follow-up). A device-reported row (origin='terminal_device') carries whatever amount the
+     * device sent -- recorded even when it disagreed with the intent -- so capping refunds at it
+     * would let a manipulated report authorise refunding more than was charged. The cap is:
+     *   - a server-verified row's amount (the settlement RPC's ledger row, or a promoted row);
+     *   - else, for a device row, the intent's amount_cents -- what the reader was asked for;
+     *   - else a device row whose amount MATCHED the server's order totals when recorded;
+     *   - anything else (a device mismatch / unchecked row with no intent) has no verified figure,
+     *     and is refused rather than guessed.
+     * Legacy rows (origin NULL, not server-written) predate the distinction and keep their amount.
+     */
+    let saleAmount: number
+    let refundableBasis: 'verified_sale' | 'intent' | 'matched_order_totals' | 'legacy'
+    if (isServerVerifiedLedgerRow(sale)) {
+      saleAmount = Number(sale.amount)
+      refundableBasis = 'verified_sale'
+    } else if (sale.origin === 'terminal_device') {
+      let saleIntent: Awaited<ReturnType<typeof findIntentByMerchantOrderNo>> = null
+      try {
+        saleIntent = await findIntentByMerchantOrderNo(supabase, originBusinessOrderNo)
+      } catch {
+        return NextResponse.json({ error: 'Failed to look up the payment intent' }, { status: 500 })
+      }
+      if (saleIntent && saleIntent.restaurantId === terminal.restaurantId) {
+        saleAmount = saleIntent.amountCents / 100
+        refundableBasis = 'intent'
+      } else if (sale.device_amount_check === 'matched_order_totals' || sale.device_amount_check === 'matched_intent') {
+        saleAmount = Number(sale.amount)
+        refundableBasis = 'matched_order_totals'
+      } else {
+        return NextResponse.json(
+          {
+            code: 'SALE_AMOUNT_UNVERIFIED',
+            error:
+              'This sale was reported by the device for an amount the server could not verify; ' +
+              'reconcile it against the gateway before refunding.',
+            business_order_no: originBusinessOrderNo,
+          },
+          { status: 409 },
+        )
+      }
+    } else {
+      saleAmount = Number(sale.amount)
+      refundableBasis = 'legacy'
+    }
     const refundedSoFar = (priorRefunds ?? []).reduce(
       (sum, row) => sum + Number(row.amount),
       0,
@@ -431,6 +477,8 @@ export async function GET(req: Request) {
       refunded_so_far: refundedSoFar,
       remaining: saleAmount - refundedSoFar,
       sale_recorded_at: sale.created_at,
+      // Additive: which rule produced `amount` / `remaining`.
+      refundable_basis: refundableBasis,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err

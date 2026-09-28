@@ -154,6 +154,24 @@ const MUTATIONS = {
     what: 'a reference already consumed by a verified payment is re-applied by the cron',
     edits: [[CRON, '    if (consumption.consumed) {', '    if (false /* C4 */) {']],
   },
+  R16: {
+    what: 'the verified order set is not pinned (a re-resolved, different set can be settled)',
+    edits: [['lib/payments/settle-whole-order-payment.ts', '    if (!same) {', '    if (false /* R16 */) {']],
+  },
+  S3: {
+    what: "the refund cap for a device row is the device's own reported amount",
+    edits: [[SALE, '        saleAmount = saleIntent.amountCents / 100', '        saleAmount = Number(sale.amount)']],
+  },
+  S4: {
+    what: 'a device mismatch row with no intent is refundable up to its reported amount',
+    edits: [
+      [
+        SALE,
+        "      } else if (sale.device_amount_check === 'matched_order_totals' || sale.device_amount_check === 'matched_intent') {",
+        '      } else if (true /* S4 */) {',
+      ],
+    ],
+  },
   S1: {
     what: "the device's sale row is no longer marked as the device's report",
     edits: [[SALE, "      origin: 'terminal_device' as const,\n", '']],
