@@ -8,6 +8,11 @@ import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-orders'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+import {
+  findOrderByIdempotencyKey,
+  idempotencyMismatchBody,
+  isSameRound,
+} from '@/lib/orders/round-idempotency'
 
 export const dynamic = 'force-dynamic'
 
@@ -143,10 +148,24 @@ export async function POST(request: Request) {
       isClosed: true,
     })
 
+    /**
+     * C4, the same rule as POST /api/terminal/rounds. A key this venue already used returns the
+     * ORIGINAL order from createOrder; a retry whose basket was edited in between would then be
+     * charged at the original total. Only an identical body is a replay.
+     */
+    if (result.duplicate) {
+      const idempotencyKey = String(request.headers.get('x-idempotency-key') ?? '')
+      const stored = await findOrderByIdempotencyKey(supabase, terminal.restaurantId, idempotencyKey)
+      if (stored && !isSameRound(stored, { items })) {
+        return NextResponse.json(idempotencyMismatchBody(stored), { status: 409 })
+      }
+    }
+
     return NextResponse.json({
       success: true,
       orderId: result.orderId,
       orderNumber: result.orderNumber,
+      duplicate: result.duplicate,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
