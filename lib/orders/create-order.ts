@@ -65,6 +65,13 @@ export interface CreateOrderResult {
   orderNumber: number
   restaurantId: string
   paymentStatus: string
+  /**
+   * True when no order was created because one already holds this idempotency key (the 23505
+   * branch below). The caller MUST compare the body it was sent with what that order holds before
+   * treating this as a replay -- a key reused across an EDITED basket returns the ORIGINAL order
+   * here (Riviera #160, contract C4; see lib/orders/round-idempotency.ts).
+   */
+  duplicate: boolean
 }
 
 export async function createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
@@ -181,6 +188,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
           orderNumber: existing.order_number,
           restaurantId: existing.restaurant_id,
           paymentStatus: existing.payment_status,
+          duplicate: true,
         }
       }
     }
@@ -196,5 +204,6 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     orderNumber: newOrder.order_number,
     restaurantId: newOrder.restaurant_id,
     paymentStatus: newOrder.payment_status,
+    duplicate: false,
   }
 }

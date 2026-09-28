@@ -75,6 +75,13 @@ import {
   type LineRouteTo,
 } from '@/lib/orders/order-lines'
 import { broadcastLineChanged } from '@/lib/stations/realtime-invalidate'
+import {
+  findOrderByIdempotencyKey,
+  idempotencyMismatchBody,
+  isSameRound,
+  persistedItemsSummary,
+  type IdempotentOrder,
+} from '@/lib/orders/round-idempotency'
 
 export const dynamic = 'force-dynamic'
 
@@ -191,6 +198,21 @@ export async function POST(request: Request) {
       )
     }
 
+    /**
+     * CONTRACT C4: A KEY THAT COMES BACK WITH A DIFFERENT BODY IS REFUSED, NOT REPLAYED.
+     *
+     * Riviera #160. A re-send that reuses the key after the waiter EDITED the basket used to be
+     * answered with the ORIGINAL round as a success -- the kitchen made the removed item and the
+     * device said "Round sent". Checked here, before stock and pricing, so a mismatched replay is
+     * named as one rather than refused for some other reason first; checked AGAIN after
+     * createOrder for the race where the first send lands between this read and the insert. See
+     * lib/orders/round-idempotency.ts.
+     */
+    const priorRound = await findOrderByIdempotencyKey(supabase, terminal.restaurantId, idempotencyKey)
+    if (priorRound && !isSameRound(priorRound, { tabId: String(tab.id), items })) {
+      return NextResponse.json(idempotencyMismatchBody(priorRound), { status: 409 })
+    }
+
     // Identical to the POS path, including the decision to allow the order through when the
     // balance READ itself fails. A failed read must never stop the till taking orders.
     try {
@@ -262,10 +284,26 @@ export async function POST(request: Request) {
      *
      * So the lines are the thing checked, not the order. If any exist for this order, this call is
      * a replay: report what is already there and write nothing.
+     *
+     * BUT ONLY A REPLAY OF THE SAME BODY (C4). createOrder hands back the original order for ANY
+     * body carrying the key, so before either branch below -- the duplicate answer, or building
+     * lines from the STORED items when the first send never wrote them -- the body is compared
+     * with what that order holds. A mismatch writes nothing and says what the server has.
      */
+    let storedRound: IdempotentOrder | null = null
+    if (result.duplicate) {
+      storedRound =
+        priorRound?.id === result.orderId
+          ? priorRound
+          : await findOrderByIdempotencyKey(supabase, terminal.restaurantId, idempotencyKey)
+      if (storedRound && !isSameRound(storedRound, { tabId: String(tab.id), items })) {
+        return NextResponse.json(idempotencyMismatchBody(storedRound), { status: 409 })
+      }
+    }
+
     const { data: existingLines, error: existingLinesError } = await supabase
       .from('order_lines')
-      .select('id, route_to')
+      .select('id, route_to, name_snapshot, quantity, kitchen_state, bar_state')
       .eq('order_id', result.orderId)
 
     if (existingLinesError) throw existingLinesError
@@ -290,6 +328,16 @@ export async function POST(request: Request) {
         lines_written: true,
         line_count: (existingLines ?? []).length,
         station_counts: stationCounts,
+        // C4: what is persisted, so the device confirms the round the kitchen actually has.
+        items: storedRound ? persistedItemsSummary(storedRound.items) : undefined,
+        lines: (existingLines ?? []).map((l) => ({
+          line_id: l.id,
+          name: l.name_snapshot,
+          quantity: l.quantity,
+          route_to: l.route_to,
+          kitchen_state: l.kitchen_state,
+          bar_state: l.bar_state,
+        })),
       })
     }
 

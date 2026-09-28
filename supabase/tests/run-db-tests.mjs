@@ -40,6 +40,12 @@ const MIGRATIONS = [
   'supabase/migrations/20260919093000_settle_validate_before_write.sql',
   // Sprint 2026-09-28: the per-order settled charge the financial projection reads for `paid`.
   'supabase/migrations/20260928140000_orders_settled_charge_cents.sql',
+  // amend_order_lines: the original, the void_reason column the route writes, and the redefinition
+  // that refuses paid lines. The ORIGINAL is applied first so the suite exercises the real
+  // CREATE OR REPLACE path production will take -- a second definition would be an overload.
+  'supabase/migrations/20260829150000_amend_order_lines_function.sql',
+  'supabase/migrations/20260906120100_order_line_events_void_reason.sql',
+  'supabase/migrations/20260928150000_amend_order_lines_refuse_paid.sql',
 ]
 
 /**
@@ -297,6 +303,102 @@ const MUTATIONS = {
         '    IF true THEN',
       ),
   },
+  /**
+   * amend_order_lines (20260928150000). Each anchor is text only the NEW migration contains, except
+   * MA3 and MA6, which are in the original too -- replacing both copies is intended, since the new
+   * definition replaces the original anyway.
+   */
+  MA1: {
+    what: 'amend_order_lines voids a line on a PAID order (the order_paid guard removed)',
+    expect: [
+      'amend_paid/void_refused_order_paid',
+      'amend_paid/line_untouched',
+      'amend_paid/reduction_refused_no_rebill',
+      'amend_mixed/refusals_named',
+    ],
+    apply: (sql) =>
+      sql.replace(
+        "        IF FOUND AND lower(btrim(COALESCE(v_payment_status, ''))) = 'paid' THEN",
+        '        IF false THEN',
+      ),
+  },
+  MA2: {
+    what: 'amend_order_lines voids a line whose allocation is SETTLED (the line_settled guard removed)',
+    expect: [
+      'amend_settled/refused_line_settled',
+      'amend_settled/line_untouched',
+      'amend_settled/ledger_row_counts',
+      'amend_mixed/refusals_named',
+    ],
+    apply: (sql) =>
+      sql.replace(
+        '                  ola.settled_at IS NOT NULL\n                  OR EXISTS (',
+        '                  false\n                  AND EXISTS (',
+      ),
+  },
+  MA2b: {
+    what: 'line_settled reads only settled_at, not the settlement ledger',
+    expect: ['amend_settled/ledger_row_counts'],
+    apply: (sql) =>
+      sql.replace(
+        '                  ola.settled_at IS NOT NULL\n                  OR EXISTS (',
+        '                  ola.settled_at IS NOT NULL\n                  OR false AND EXISTS (',
+      ),
+  },
+  MA3: {
+    what: 'the void no longer requires the line to still be outstanding (window / double void)',
+    expect: [
+      'amend_window/refused_window_closed',
+      'amend_window/no_event',
+      'amend_revoid/second_refused',
+      'amend_revoid/one_void_event',
+    ],
+    apply: (sql) =>
+      replaceEvery(
+        sql,
+        "          AND (kitchen_state IS NULL OR kitchen_state = 'outstanding')\n          AND (bar_state IS NULL OR bar_state = 'outstanding')\n",
+        '',
+      ),
+  },
+  MA3r: {
+    what: 'as MA3, proven in two sessions: two concurrent amendments of one line both apply',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/amend-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.MA3.apply(sql),
+  },
+  MA4: {
+    what: 'the orders are not locked before the paid check (an in-flight settlement is raced)',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/amend-race.test.sh',
+    expect: [],
+    apply: (sql) => sql.replace('    ORDER BY o.id\n    FOR SHARE;', '    ORDER BY o.id;'),
+  },
+  MA5: {
+    what: 'the tab is locked AFTER the orders (reverse of the settlement lock order -- deadlock)',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/amend-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql.replace('    PERFORM 1 FROM public.tabs WHERE id = p_tab_id FOR KEY SHARE;\n', ''),
+  },
+  MA6: {
+    what: 'amend_order_lines granted to anon (the amend security POSITIVE CONTROL)',
+    expect: ['amend_security/anon_cannot_execute', 'amend_security/public_cannot_execute'],
+    sqlAfterMigrations: `
+      GRANT EXECUTE ON FUNCTION public.amend_order_lines(uuid, uuid, integer, text, uuid, jsonb)
+        TO anon, PUBLIC;
+    `,
+  },
+  MA7: {
+    what: "a voided line's unsettled allocations are left live (chargeable for food that was voided)",
+    expect: ['amend_alloc/voided_with_line', 'amend_alloc/reduction_voids_allocation'],
+    apply: (sql) =>
+      sql.replace(
+        '          AND settled_at IS NULL;\n\n        IF v_new_quantity = 0 THEN',
+        '          AND settled_at IS NULL AND false;\n\n        IF v_new_quantity = 0 THEN',
+      ),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -341,8 +443,15 @@ function psqlValue(sql) {
   ).trim()
 }
 
+/**
+ * LF-NORMALISED. A Windows checkout (core.autocrlf) has every migration in CRLF, and a mutation
+ * anchor spanning a line break is written with `\n` -- so on that checkout M2 and M4 reported
+ * "anchor no longer matches" on correct code, and a new migration's multi-line anchors would
+ * start failing the first time git rewrote the file. Normalising here makes the anchors mean the
+ * same thing on every checkout; psql does not care which ending it is fed.
+ */
 function readRepo(rel) {
-  return readFileSync(join(REPO, rel), 'utf8')
+  return readFileSync(join(REPO, rel), 'utf8').replace(/\r\n/g, '\n')
 }
 
 /**
@@ -393,6 +502,8 @@ function buildDatabase(mutation) {
 
 function runSuite() {
   psql(readRepo('supabase/tests/settlement-rpc.test.sql'))
+  // Runs second: it reuses the settlement file's _test_results, _expect() and _seed().
+  psql(readRepo('supabase/tests/amend-rpc.test.sql'))
   const total = Number(psqlValue('SELECT count(*) FROM public._test_results;'))
   const failed = psqlValue(
     "SELECT string_agg(name || '  ::  ' || COALESCE(detail,''), E'\\n') " +
@@ -411,6 +522,9 @@ function runSuite() {
  * in a shell script beside this file. Returns true when it passed.
  */
 function runConcurrencyProbe(script = 'supabase/tests/concurrency.test.sh') {
+  // The amend probe seeds through amend-rpc.test.sql's _seed_amend(), which a concurrency-only
+  // mutation run (no runSuite) would not have defined yet.
+  if (script.includes('amend-race')) runSuite()
   try {
     const out = execFileSync('bash', [join(REPO, script)], {
       encoding: 'utf8',
@@ -468,6 +582,14 @@ if (!baseClose.passed) {
   process.exit(1)
 }
 console.log('  close-race probe: settlement and tab close serialise, money recorded once')
+
+const baseAmend = runConcurrencyProbe('supabase/tests/amend-race.test.sh')
+if (!baseAmend.passed) {
+  console.error('FAIL: the amend race probe did not pass on unmutated code.')
+  console.error(baseAmend.out.split('\n').slice(-24).join('\n'))
+  process.exit(1)
+}
+console.log('  amend-race probe: one winner per line, paid-in-flight refused, no deadlock with a settlement')
 
 if (!which) process.exit(0)
 

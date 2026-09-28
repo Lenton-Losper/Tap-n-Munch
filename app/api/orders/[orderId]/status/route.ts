@@ -12,6 +12,7 @@ import {
   staffStatusRefusal,
   staffUnknownStatusRefusal,
 } from '@/lib/orders/staff-status-refusal'
+import { voidOutstandingOrderLines, type VoidOrderLinesResult } from '@/lib/orders/order-lines'
 
 export const dynamic = 'force-dynamic'
 
@@ -181,6 +182,7 @@ export async function PATCH(
   }
 
   // Side effects only after a successful claim / update.
+  let lineVoid: VoidOrderLinesResult | null = null
   if (status === 'cancelled') {
     // Mirrors the audit row handleTerminalPaymentFailed writes on cancel. Best effort: the
     // order is already cancelled, and failing the request now would tell the caller the
@@ -201,10 +203,51 @@ export async function PATCH(
     if (auditError) {
       console.error('[orders/status] order.cancelled audit log failed:', auditError)
     }
+
+    /**
+     * THE KITCHEN STOPS TOO (Sprint 2026-09-28 brief). This route cancelled the ORDER and left
+     * its lines outstanding, so the station boards kept showing -- and the kitchen kept cooking --
+     * an order the dashboard called cancelled. The same helper every other cancel path uses,
+     * with a 'system' cascade event attributed to the staff member who cancelled.
+     *
+     * Lines a station already finished (ready / collected) cannot be un-made and are NOT voided;
+     * they are returned so the caller can say that food is still coming. Best effort, like
+     * cancelOrderWithTrail's own call: the order is already cancelled, and a failed void must
+     * not report the cancel as failed -- `lines_void_failed` says it instead.
+     */
+    try {
+      lineVoid = await voidOutstandingOrderLines(supabase, {
+        orderId,
+        restaurantId: String(existingOrder.restaurant_id),
+        actorKind: 'system',
+        actorUserId: auth.userId,
+      })
+    } catch (voidError) {
+      console.error('[orders/status] order cancelled but voiding its lines failed', voidError)
+    }
   }
 
   if (paymentStatus === 'paid') {
     await safeIssueReceiptForOrder(orderId, 'orders/status')
+  }
+
+  if (status === 'cancelled') {
+    return NextResponse.json({
+      success: true,
+      order: data,
+      lines_voided: lineVoid ? lineVoid.voidedLineCount : null,
+      // Food a station already finished: it is coming (or came) regardless of the cancel.
+      lines_not_voided: lineVoid
+        ? lineVoid.notVoided.map((l) => ({
+            line_id: l.id,
+            name: l.name,
+            quantity: l.quantity,
+            kitchen_state: l.kitchen_state,
+            bar_state: l.bar_state,
+          }))
+        : null,
+      lines_void_failed: lineVoid === null,
+    })
   }
 
   return NextResponse.json({ success: true, order: data })
