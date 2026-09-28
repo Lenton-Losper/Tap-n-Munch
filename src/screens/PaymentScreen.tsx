@@ -75,6 +75,7 @@ import {
   type PaymentResult,
 } from '../lib/payment';
 import {recordWiretapEvent} from '../lib/wiretap';
+import {prepareRefusalMessage} from '../lib/settlementRefusal';
 import {printReceiptForOrder, sendReceiptEmailForOrder} from '../lib/receiptPrinting';
 import {
   describeReceiptPrintError,
@@ -650,6 +651,27 @@ export default function PaymentScreen({route, navigation}: Props) {
 
       let result = await processPaymentIntent(total, orderId);
       lastResult = result;
+
+      /**
+       * THE SERVER REFUSED BEFORE THE READER OPENED, BECAUSE THIS SCREEN IS STALE (Sprint 2026-09-29,
+       * F-TERMPAY). The order is already paid, cancelled, held for review, or owes nothing. No card
+       * was presented, so there is nothing to verify with Finatic and nothing to report as a failed
+       * payment -- reporting one would write a failure against an order another payment settled.
+       * Say why, re-read the order so the amount reflects the server, and stop. No retry.
+       */
+      if (result.prepareRefusal) {
+        recordWiretapEvent('payment.exit', {
+          exit: 'prepare_refused',
+          reportsToServer: false,
+          code: result.prepareRefusal.code,
+          note: 'refused before the reader opened; nothing charged, nothing reported',
+        });
+        const refusal = prepareRefusalMessage(result.prepareRefusal);
+        reset();
+        Alert.alert(refusal.title, refusal.body);
+        await loadOrder();
+        return;
+      }
 
       // Ambiguous / orphaned device outcomes: ask Finatic before assuming failure.
       if (

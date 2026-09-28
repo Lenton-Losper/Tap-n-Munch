@@ -83,6 +83,12 @@ import {
   LIVE_TOTAL_UNAVAILABLE_BODY,
   LIVE_TOTAL_UNAVAILABLE_TITLE,
 } from '../constants/liveTotalCopy';
+import {
+  SETTLE_NOTHING_LEFT_AFTER_CARD,
+  SETTLE_NOTHING_LEFT_AFTER_CARD_TITLE,
+  SETTLE_NOTHING_LEFT_CASH,
+} from '../constants/settlementRefusalCopy';
+import {prepareRefusalMessage, refusedOrderIds} from '../lib/settlementRefusal';
 import {TABLE_LINE_VOIDED_CHIP} from '../constants/serviceCopy';
 import {
   ALLOCATION_PAYER_AT_TABLE,
@@ -678,6 +684,8 @@ export default function TableDetailScreen({route, navigation}: Props) {
 
     settleInFlight.current = true;
     setSettling(true);
+    /** True once the reader has returned a charge; a settle refusal after this is post-charge. */
+    let cardCharged = false;
     try {
       const token = await getTerminalToken();
       if (!token) {
@@ -702,6 +710,22 @@ export default function TableDetailScreen({route, navigation}: Props) {
         orderIds.join(','),
         wholeOrderGratuity.tipCents ? {gratuity: wholeOrderGratuity} : undefined,
       );
+
+      /**
+       * THE SERVER REFUSED BEFORE THE READER OPENED: THIS TAB'S PICTURE IS STALE (Sprint 2026-09-29,
+       * F-TERMPAY). Some order in the selection was paid, cancelled or held for review elsewhere, or
+       * owes nothing. No card was presented. So: no Finatic verify, no failure report, no retry of
+       * the same set. The refused orders leave the selection NOW, before the refresh lands, so a
+       * second tap cannot resend them; the refresh then brings the tab the server actually has.
+       */
+      if (paymentResult.prepareRefusal) {
+        const refused = refusedOrderIds(paymentResult.prepareRefusal);
+        setSelectedIds(prev => new Set([...prev].filter(id => !refused.includes(id))));
+        const refusal = prepareRefusalMessage(paymentResult.prepareRefusal);
+        Alert.alert(refusal.title, refusal.body);
+        await refreshTable();
+        return;
+      }
 
       // Ambiguous / orphaned device outcomes: ask Finatic before assuming failure
       // (mirrors PaymentScreen's handleProcessPayment).
@@ -766,6 +790,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
         throw new Error(baseError);
       }
 
+      cardCharged = true;
       const settleResult = await settleTab(
         tab.id,
         orderIds,
@@ -834,6 +859,20 @@ export default function TableDetailScreen({route, navigation}: Props) {
 
       await refreshTable();
     } catch (err) {
+      /**
+       * The card WENT THROUGH and the settle then found nothing left to charge: the items were paid
+       * some other way while the reader was open. Saying anything that sounds like "not charged"
+       * here invites a second charge. Never retried; the tab is re-read.
+       */
+      if (
+        cardCharged &&
+        err instanceof ApiRequestError &&
+        err.code === 'NOTHING_LEFT_TO_CHARGE'
+      ) {
+        Alert.alert(SETTLE_NOTHING_LEFT_AFTER_CARD_TITLE, SETTLE_NOTHING_LEFT_AFTER_CARD);
+        await refreshTable();
+        return;
+      }
       Alert.alert(
         'Error',
         err instanceof Error ? err.message : 'Failed to settle tab',
@@ -1056,7 +1095,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
       }
       Alert.alert(
         'Cannot take cash',
-        err instanceof Error ? err.message : 'Failed to record cash payment',
+        err instanceof ApiRequestError && err.code === 'NOTHING_LEFT_TO_CHARGE'
+          ? SETTLE_NOTHING_LEFT_CASH
+          : err instanceof Error
+            ? err.message
+            : 'Failed to record cash payment',
       );
       await refreshTable();
     } finally {
