@@ -219,7 +219,9 @@ async function applyGatewayConfirmedOrders(
   const permanent =
     settled.reason === 'amount_mismatch' ||
     settled.reason === 'illegal_transition' ||
-    settled.reason === 'paid_elsewhere'
+    settled.reason === 'paid_elsewhere' ||
+    // 20260929120100: the order changed after the charge was prepared; held and recorded by the RPC.
+    settled.reason === 'order_changed'
   return {
     retryable: !permanent,
     permanentRefusal: permanent,
