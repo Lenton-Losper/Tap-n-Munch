@@ -143,7 +143,7 @@ export async function GET(
     // column list is now the measured one and the error path below no longer looks like empty.
     // Measured against staging: orders and order_requests both carry `placed_at`, neither
     // carries `created_at`.
-    // settled_charge_cents is the projection's paid basis for a paid order (20260928140000).
+    // settled_charge_cents is the projection's paid basis for a paid order (20260928135000).
     const ORDER_LINE_COLUMNS = `id, status, order_number, items, member_session_id, session_id, placed_at, settled_charge_cents, ${TAB_TOTAL_ORDER_COLUMNS}`
     const REQUEST_LINE_COLUMNS = `id, member_session_id, session_id, placed_at, ${TAB_PENDING_REQUEST_COLUMNS}`
 

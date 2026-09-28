@@ -278,7 +278,7 @@ export function computeTabFinancials(
 /**
  * Columns the reader needs. SELECTED, not merely written -- see written-columns-are-not-selected.
  *
- * `settled_charge_cents` arrives with 20260928120000. That migration is additive and must be
+ * `settled_charge_cents` arrives with 20260928135000. That migration is additive and must be
  * applied BEFORE code selecting it is deployed: PostgREST refuses a select naming an absent column
  * (42703), and every money path reading through here fails closed on that refusal.
  */

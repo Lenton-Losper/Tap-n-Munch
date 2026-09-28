@@ -567,7 +567,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
           paid_at: paidAt,
           completed_at: paidAt,
           // Every cent reached this order through the item ledger, so the WHOLE-ORDER charge it
-          // was settled by is zero. Stated explicitly (20260928140000): the trigger would otherwise
+          // was settled by is zero. Stated explicitly (20260928135000): the trigger would otherwise
           // copy a stale whole-order card attempt into it, and the projection would count the
           // order paid twice.
           settled_charge_cents: 0,

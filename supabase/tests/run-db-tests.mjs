@@ -39,7 +39,7 @@ const MIGRATIONS = [
   'supabase/migrations/20260919092000_settle_lead_merchant_order_no.sql',
   'supabase/migrations/20260919093000_settle_validate_before_write.sql',
   // Sprint 2026-09-28: the per-order settled charge the financial projection reads for `paid`.
-  'supabase/migrations/20260928140000_orders_settled_charge_cents.sql',
+  'supabase/migrations/20260928135000_orders_settled_charge_cents.sql',
 ]
 
 /**
@@ -268,7 +268,7 @@ const MUTATIONS = {
     },
   },
   /**
-   * THE PER-ORDER SETTLED CHARGE (20260928140000), removed.
+   * THE PER-ORDER SETTLED CHARGE (20260928135000), removed.
    *
    * Without the trigger every paid order keeps settled_charge_cents NULL, the projection falls back
    * to `paid = total`, and an amended order paid at its live figure reads as underpaid by every
@@ -341,8 +341,14 @@ function psqlValue(sql) {
   ).trim()
 }
 
+/**
+ * LINE ENDINGS ARE NORMALISED ON READ. A Windows checkout with core.autocrlf=true holds the .sql
+ * files as CRLF, and every mutation anchor containing a newline (M2, M4, M9-M12) then matches
+ * nothing -- the harness correctly reports "did not apply", but the mutation never runs. Postgres
+ * does not care which it gets.
+ */
 function readRepo(rel) {
-  return readFileSync(join(REPO, rel), 'utf8')
+  return readFileSync(join(REPO, rel), 'utf8').replace(/\r\n/g, '\n')
 }
 
 /**
