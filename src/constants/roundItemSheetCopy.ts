@@ -19,9 +19,15 @@
  * waiter, so the two halves of the venue think about an item the same way, and so a note lands at
  * the moment somebody is deciding it rather than on a row afterwards.
  *
- * WHAT IT DELIBERATELY DOES NOT COPY: variants, sizes and add-ons. The round flow has never
- * modelled them — a RoundLine is item, quantity, note and nothing else — and building that to
- * mirror a sheet would be the wrong order. Owner's ruling, 2026-09-06.
+ * WHAT IT DELIBERATELY DOES NOT COPY: sizes and add-ons (the additive columns).
+ *
+ * VARIANTS: RULING SUPERSEDED. This used to read "variants, sizes and add-ons. The round flow has
+ * never modelled them — a RoundLine is item, quantity, note and nothing else. Owner's ruling,
+ * 2026-09-06." The Sprint 2026-09-28 brief explicitly requires Add-a-Round variants end to end
+ * ("display available variants, allow selecting, send the selected variant identity, display
+ * selected variant, display correct variant price"), so the sheet now offers an item's variant
+ * groups. Their strings live in variantPickerCopy.ts (drafted, awaiting signature) and are NOT
+ * part of the eight signed here — nothing below changed.
  *
  * SIGNED BY THE OWNER 2026-09-06, with one change — see ITEM_SHEET_NOTE_HINT.
  * Pinned in src/lib/__tests__/roundItemSheetCopySignedOff.test.ts.

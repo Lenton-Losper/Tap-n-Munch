@@ -32,6 +32,11 @@ import type {
 import {Sdk6ReceiptLine} from './wiseSdk6Printer';
 import {parseAmendResult, type AmendResult, type LineAmendment} from './amendTabLines';
 import {
+  mapResolvedVariantGroups,
+  type VariantGroup,
+  type VariantSelection,
+} from './variantPricing';
+import {
   isPinLockedError as pinLockedFromFields,
   isRefundAmountExceedsRemaining as refundExceedsFromFields,
   staffMessageForMarkPaidFailure as markPaidMessageFromFields,
@@ -1978,14 +1983,32 @@ export interface MenuItem {
   is_available: boolean;
   image_url: string | null;
   category_id: string;
+  /**
+   * C6 `resolved_variant_groups`, exactly as the server will price them. NULL when the server did
+   * not send the field (an older server): the item then keeps the one-tap flow, and the server --
+   * the authority -- refuses with a C5 400 if a choice was required. [] means "no options".
+   */
+  variant_groups: VariantGroup[] | null;
 }
+
+/**
+ * Tells POST /api/terminal/orders and /api/terminal/rounds that this build sends C6
+ * `selectedVariants`, so the server may enforce required-variant completeness (C5). Without it the
+ * server keeps the old lenient behaviour, which is what keeps older APKs working during rollout.
+ * Sprint 2026-09-28 brief. Spread into BOTH sends' headers; a test pins that both carry it.
+ */
+export const VARIANT_PROTOCOL_HEADERS = {'X-FlashTap-Variant-Protocol': '1'} as const;
 
 export interface POSOrderItem {
   menuItemId: string;
+  /** The menu item's own name, NOT the variant display name -- the server builds that. */
   name: string;
   quantity: number;
+  /** Advisory unit price (the variant's, when one is chosen). The server reprices. */
   basePrice: number;
   subtotal: number;
+  /** C6. `{groupName: optionLabel}`; omitted when the line has no selection. */
+  selectedVariants?: VariantSelection;
 }
 
 type MenuCategoryGroupResponse = Record<
@@ -2015,6 +2038,7 @@ function mapMenuItem(row: Record<string, unknown>): MenuItem {
     is_available: status !== 'hidden' && status !== 'unavailable',
     image_url: row.image_url != null ? String(row.image_url) : null,
     category_id: String(row.category_id ?? row.menu_category_id ?? ''),
+    variant_groups: mapResolvedVariantGroups(row.resolved_variant_groups),
   };
 }
 
@@ -2103,6 +2127,7 @@ export async function createPOSOrder(
       headers: {
         'Content-Type': 'application/json',
         'x-idempotency-key': idempotencyKey,
+        ...VARIANT_PROTOCOL_HEADERS,
       },
       // The key travels in the header only; the route reads it there and nowhere else.
       body: JSON.stringify(body),
@@ -2794,8 +2819,8 @@ export async function sendRound(
       name: string;
       quantity: number;
       note?: string;
-      /** C6. `{ [groupName]: optionLabel }`, the QR cart's shape. Part of the C4 fingerprint. */
-      selectedVariants?: Record<string, string>;
+      /** C6. `{groupName: optionLabel}`; omitted when the line has no selection. */
+      selectedVariants?: VariantSelection;
     }[];
     subtotal: number;
     total: number;
@@ -2841,6 +2866,7 @@ export async function sendRound(
         headers: {
           'Content-Type': 'application/json',
           'x-idempotency-key': params.idempotencyKey,
+          ...VARIANT_PROTOCOL_HEADERS,
         },
         body: JSON.stringify(body),
       },

@@ -15,6 +15,7 @@ import {
   setLineNote,
   clampLineQuantity,
 } from '../lib/serviceRound';
+import type {VariantPricedItem, VariantSelection} from '../lib/variantPricing';
 
 /**
  * The waiter the device is holding, and the tab it is holding them against.
@@ -66,8 +67,8 @@ interface ServiceSessionValue {
   unlockRound: () => void;
   beginSession: (waiter: ServiceWaiter | null, table: ServiceTable) => void;
   addItem: (
-    item: {id: string; name: string; base_price: number},
-    options?: {quantity?: number; note?: string},
+    item: VariantPricedItem,
+    options?: {quantity?: number; note?: string; selectedVariants?: VariantSelection},
   ) => void;
   adjustQuantity: (lineId: string, delta: number) => void;
   removeItem: (lineId: string) => void;
@@ -153,8 +154,8 @@ export function ServiceSessionProvider({
 
   const addItem = useCallback(
     (
-      item: {id: string; name: string; base_price: number},
-      options?: {quantity?: number; note?: string},
+      item: VariantPricedItem,
+      options?: {quantity?: number; note?: string; selectedVariants?: VariantSelection},
     ) => {
       if (locked()) {
         return;

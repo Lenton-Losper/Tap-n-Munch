@@ -33,6 +33,7 @@ import {
   basketSubtotal,
   buildRoundItems,
   outOfStockLineIds,
+  roundLineLabel,
 } from '../lib/serviceRound';
 import {getTerminalToken} from '../lib/storage';
 import {useServiceSession} from '../context/ServiceSessionContext';
@@ -589,7 +590,7 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
           <View key={line.lineId} style={styles.reviewRow}>
             <Text style={styles.reviewQty}>{line.quantity}×</Text>
             <View style={styles.reviewMain}>
-              <Text style={styles.reviewName}>{line.name}</Text>
+              <Text style={styles.reviewName}>{roundLineLabel(line)}</Text>
               {line.note.trim() ? (
                 <Text style={styles.reviewNote}>{line.note.trim()}</Text>
               ) : null}

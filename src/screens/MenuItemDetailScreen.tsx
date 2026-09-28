@@ -35,6 +35,7 @@ import {
   setMenuItemAvailability,
   staffMessageForPinLock,
 } from '../lib/api';
+import {formatPriceRange} from '../lib/variantPricing';
 import {
   applyAvailabilityOverrides,
   recordAvailabilityChange,
@@ -53,10 +54,6 @@ const PURPOSE = 'menu_availability';
 
 /** Which way the sheet is pointing. Null means the sheet is closed. */
 type Direction = 'hide' | 'restore';
-
-function formatMoney(amount: number): string {
-  return `N$${amount.toFixed(2)}`;
-}
 
 /**
  * What to show for a refusal.
@@ -412,7 +409,7 @@ export default function MenuItemDetailScreen({route, navigation}: Props) {
           contentContainerStyle={styles.scrollContent}>
           {/* The dish, as the fetched record describes it. */}
           <Text style={styles.itemName}>{item.name}</Text>
-          <Text style={styles.itemPrice}>{formatMoney(item.base_price)}</Text>
+          <Text style={styles.itemPrice}>{formatPriceRange(item)}</Text>
           {item.description ? (
             <Text style={styles.itemDescription}>{item.description}</Text>
           ) : null}

@@ -19,6 +19,8 @@ import {
   MenuItem,
 } from '../lib/api';
 import {useCart} from '../context/CartContext';
+import VariantPicker from '../components/VariantPicker';
+import {formatPriceRange, hasVariantChoices} from '../lib/variantPricing';
 import {getRestaurantId, getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 
@@ -35,6 +37,21 @@ export default function POSSaleScreen() {
   const [loadingCats, setLoadingCats] = useState(true);
   const [loadingItems, setLoadingItems] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The item whose variant picker is open. Items with no groups never open it. */
+  const [pickerItem, setPickerItem] = useState<MenuItem | null>(null);
+
+  /**
+   * One tap adds an item with no options, exactly as before. An item with variant groups opens the
+   * picker instead, because adding it at base price would charge (or show) a figure the server
+   * will not honour. Sprint 2026-09-28 brief.
+   */
+  const tapItem = (item: MenuItem) => {
+    if (hasVariantChoices(item)) {
+      setPickerItem(item);
+    } else {
+      addItem(item);
+    }
+  };
 
   useEffect(() => {
     getTerminalToken().then(t => setToken(t));
@@ -146,31 +163,37 @@ export default function POSSaleScreen() {
           numColumns={2}
           contentContainerStyle={styles.itemGrid}
           renderItem={({item}) => {
-            const inCart = cart.find(c => c.menuItemId === item.id);
-            const qty = inCart?.quantity ?? 0;
+            const withVariants = hasVariantChoices(item);
+            // Every line of this item, across sizes. A variant item can sit on several lines.
+            const qty = cart
+              .filter(c => c.menuItemId === item.id)
+              .reduce((sum, c) => sum + c.quantity, 0);
             return (
               <View style={styles.itemCard}>
                 <Pressable
-                  onPress={() => addItem(item)}
+                  onPress={() => tapItem(item)}
                   style={styles.itemCardMain}
                   android_ripple={{color: '#E5E7EB'}}>
                   <Text style={styles.itemName}>{item.name}</Text>
-                  <Text style={styles.itemPrice}>
-                    N${item.base_price.toFixed(2)}
-                  </Text>
+                  <Text style={styles.itemPrice}>{formatPriceRange(item)}</Text>
                 </Pressable>
                 {qty > 0 ? (
                   <View style={styles.qtyRow}>
-                    <Pressable
-                      style={styles.qtyButton}
-                      onPress={() => updateQuantity(item.id, -1)}
-                      hitSlop={6}>
-                      <Text style={styles.qtyButtonText}>−</Text>
-                    </Pressable>
+                    {withVariants ? (
+                      // Which size would a minus remove? The cart knows; the tile does not.
+                      <View style={styles.qtyButtonPlaceholder} />
+                    ) : (
+                      <Pressable
+                        style={styles.qtyButton}
+                        onPress={() => updateQuantity(item.id, -1)}
+                        hitSlop={6}>
+                        <Text style={styles.qtyButtonText}>−</Text>
+                      </Pressable>
+                    )}
                     <Text style={styles.qtyValue}>{qty}</Text>
                     <Pressable
                       style={styles.qtyButton}
-                      onPress={() => addItem(item)}
+                      onPress={() => tapItem(item)}
                       hitSlop={6}>
                       <Text style={styles.qtyButtonText}>+</Text>
                     </Pressable>
@@ -178,8 +201,10 @@ export default function POSSaleScreen() {
                 ) : (
                   <Pressable
                     style={styles.addHint}
-                    onPress={() => addItem(item)}>
-                    <Text style={styles.addHintText}>Tap to add</Text>
+                    onPress={() => tapItem(item)}>
+                    <Text style={styles.addHintText}>
+                      {withVariants ? 'Tap to choose' : 'Tap to add'}
+                    </Text>
                   </Pressable>
                 )}
               </View>
@@ -187,6 +212,17 @@ export default function POSSaleScreen() {
           }}
         />
       )}
+
+      {pickerItem ? (
+        <VariantPicker
+          item={pickerItem}
+          onCancel={() => setPickerItem(null)}
+          onConfirm={selection => {
+            addItem(pickerItem, selection);
+            setPickerItem(null);
+          }}
+        />
+      ) : null}
 
       {cartCount > 0 ? (
         <TouchableOpacity style={styles.cartButton} onPress={goToCart}>
@@ -272,6 +308,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  qtyButtonPlaceholder: {width: 40, height: 40},
   qtyButtonText: {
     color: '#fff',
     fontSize: 22,
