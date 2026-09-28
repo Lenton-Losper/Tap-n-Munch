@@ -11,12 +11,56 @@ import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-ord
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import {
+  financialsWire,
+  projectOrderRows,
+  type FinancialOrderInput,
+  type FinancialsWire,
+} from '@/lib/orders/order-financials'
+import {
   findOrderByIdempotencyKey,
   idempotencyMismatchBody,
   isSameRound,
 } from '@/lib/orders/round-idempotency'
 
 export const dynamic = 'force-dynamic'
+
+/** Orders per projection read. Keeps each `.in('order_id', ...)` URL well under PostgREST's limit. */
+const FINANCIALS_BATCH = 200
+
+/**
+ * WHAT EACH LISTED ORDER IS WORTH NOW (Sprint 2026-09-29, F-TERMPAY task 8).
+ *
+ * The terminal's order card showed `orders.total`, the stored ORIGINAL, which amend_order_lines
+ * never rewrites -- so an order with voided lines was listed at a figure nobody owes, on the card a
+ * waiter taps to reach Process Payment. Each order now carries the C1 projection (the same wire
+ * shape as the lines route's per-order `financials`), and the card shows live/outstanding.
+ *
+ * BATCHED: a constant number of reads per FINANCIALS_BATCH orders (lines + the item ledger), never
+ * one per order. FAIL-SOFT, because this route only DISPLAYS: a batch whose reads fail simply has no
+ * `financials` on its orders, and the terminal then labels the stored total as what was ordered
+ * rather than what is owed. The list itself must not fail because a figure could not be read -- and
+ * the charge path never reads these (PaymentScreen resolves the live amount itself).
+ */
+async function financialsByOrder(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  rows: Record<string, unknown>[],
+): Promise<Map<string, FinancialsWire>> {
+  const out = new Map<string, FinancialsWire>()
+  for (let i = 0; i < rows.length; i += FINANCIALS_BATCH) {
+    const batch = rows.slice(i, i + FINANCIALS_BATCH) as unknown as FinancialOrderInput[]
+    try {
+      const projected = await projectOrderRows(supabase, batch)
+      for (const [id, f] of projected) out.set(id, financialsWire(f))
+    } catch (e) {
+      console.error('[terminal/orders] financials unreadable; listing without them', {
+        batchStart: i,
+        batchSize: batch.length,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
+  }
+  return out
+}
 
 export async function GET(req: Request) {
   try {
@@ -54,14 +98,18 @@ export async function GET(req: Request) {
 
     const orderIds = (data ?? []).map((o: any) => String(o.id)).filter(Boolean)
     const projections = await getPaymentProjections(supabase, terminal.restaurantId, orderIds)
+    const financials = await financialsByOrder(supabase, data ?? [])
 
     const enriched = (data ?? []).map((order: any) => {
       const projection = projections.get(String(order.id)) ?? null
+      const money = financials.get(String(order.id))
       return {
         ...order,
         // Distinct from orders.payment_status (paid/pending settlement flag).
         payment_status_derived: projection?.paymentStatus ?? null,
         refunded_amount: projection?.refundedAmount ?? 0,
+        // Additive, and ABSENT (not zero) when it could not be read. See financialsByOrder.
+        ...(money ? { financials: money } : {}),
       }
     })
 
