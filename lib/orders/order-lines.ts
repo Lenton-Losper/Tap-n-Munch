@@ -370,6 +370,19 @@ export async function buildOrderLines(
 export type VoidOrderLinesResult = {
   /** Lines with at least one station-half voided by this call. */
   voidedLineCount: number
+  /**
+   * Lines this call could NOT void because a station had already finished them -- a half at
+   * `ready` or `collected`. The food exists (or has gone out) whatever happens to the order, so a
+   * caller cancelling an order must be able to tell staff so rather than imply the kitchen was
+   * stopped. Sprint 2026-09-28 brief (Riviera #160). Voided halves are never listed here.
+   */
+  notVoided: Array<{
+    id: string
+    name: string | null
+    quantity: number | null
+    kitchen_state: LineState | null
+    bar_state: LineState | null
+  }>
 }
 
 /**
@@ -408,7 +421,7 @@ export async function voidOutstandingOrderLines(
 ): Promise<VoidOrderLinesResult> {
   const { data: lines, error: linesError } = await supabase
     .from('order_lines')
-    .select('id, kitchen_state, bar_state')
+    .select('id, kitchen_state, bar_state, name_snapshot, quantity')
     .eq('order_id', params.orderId)
     .eq('restaurant_id', params.restaurantId)
 
@@ -418,14 +431,32 @@ export async function voidOutstandingOrderLines(
     id: string
     kitchen_state: LineState | null
     bar_state: LineState | null
+    name_snapshot?: string | null
+    quantity?: number | string | null
   }>
 
   const events: Array<Record<string, unknown>> = []
   let voidedLineCount = 0
+  const notVoided: VoidOrderLinesResult['notVoided'] = []
+  const finished = (s: LineState | null) => s === 'ready' || s === 'collected'
 
   for (const line of rows) {
     const voidKitchen = isStationOutstanding(line.kitchen_state)
     const voidBar = isStationOutstanding(line.bar_state)
+
+    // Decided from the states read above, before any write: a half this call leaves at ready or
+    // collected is food already made. A 'both' line can be half voided and half listed here.
+    if ((!voidKitchen && finished(line.kitchen_state)) || (!voidBar && finished(line.bar_state))) {
+      const quantity = Number(line.quantity)
+      notVoided.push({
+        id: line.id,
+        name: line.name_snapshot ?? null,
+        quantity: line.quantity == null || !Number.isFinite(quantity) ? null : quantity,
+        kitchen_state: voidKitchen ? 'voided' : line.kitchen_state,
+        bar_state: voidBar ? 'voided' : line.bar_state,
+      })
+    }
+
     if (!voidKitchen && !voidBar) continue
 
     // Captured BEFORE the update, not read off `line` afterward -- an event's from_state must
@@ -477,7 +508,7 @@ export async function voidOutstandingOrderLines(
     }
   }
 
-  return { voidedLineCount }
+  return { voidedLineCount, notVoided }
 }
 
 export type WriteOrderLinesResult = {
