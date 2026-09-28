@@ -95,6 +95,7 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   } | null = null
   private orderBy: { column: string; ascending: boolean } | null = null
   private limitN: number | null = null
+  private rangeBounds: { from: number; to: number } | null = null
 
   constructor(private db: InMemoryDb, private table: string) {}
 
@@ -154,6 +155,11 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   }
   limit(n: number) {
     this.limitN = n
+    return this
+  }
+  /** PostgREST pagination. Inclusive bounds, as the real client's `.range(from, to)`. */
+  range(from: number, to: number) {
+    this.rangeBounds = { from, to }
     return this
   }
   insert(payload: Row | Row[]) {
@@ -221,6 +227,7 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
       })
     }
     if (this.limitN != null) out = out.slice(0, this.limitN)
+    if (this.rangeBounds) out = out.slice(this.rangeBounds.from, this.rangeBounds.to + 1)
     return out
   }
 

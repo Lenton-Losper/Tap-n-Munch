@@ -59,6 +59,7 @@
  */
 
 import { owesMoney, isPaidPaymentStatus } from '@/lib/payments/payment-integrity'
+import { settledCentsByOrder } from '@/lib/payments/settled-cents'
 
 export type LineStationState = 'outstanding' | 'cooked' | 'ready' | 'collected' | 'voided' | string
 
@@ -274,7 +275,191 @@ export function computeTabFinancials(
   }
 }
 
-/** Columns the reader needs. SELECTED, not merely written -- see written-columns-are-not-selected. */
+/**
+ * Columns the reader needs. SELECTED, not merely written -- see written-columns-are-not-selected.
+ *
+ * `settled_charge_cents` arrives with 20260928120000. That migration is additive and must be
+ * applied BEFORE code selecting it is deployed: PostgREST refuses a select naming an absent column
+ * (42703), and every money path reading through here fails closed on that refusal.
+ */
 export const FINANCIAL_ORDER_COLUMNS =
-  'id, tab_id, total, items, status, payment_status, tab_settlement_for_tab_id'
+  'id, tab_id, total, items, status, payment_status, tab_settlement_for_tab_id, settled_charge_cents'
 export const FINANCIAL_LINE_COLUMNS = 'id, order_id, source_item_index, kitchen_state, bar_state'
+
+/** Integer cents to the major-unit figure the legacy wire fields carry. One division, no drift. */
+export function centsToMajor(cents: number): number {
+  return Math.round(cents) / 100
+}
+
+/**
+ * ================================================================================================
+ * THE READERS
+ * ================================================================================================
+ *
+ * The projection above is pure. These read its three inputs -- the orders, their order_lines, and
+ * the item-ledger settlements (settledCentsByOrder, whose rule is NOT restated here) -- and hand
+ * them over unchanged.
+ *
+ * THEY FAIL CLOSED. Every read error throws FinancialsUnreadable. A caller on a money path turns
+ * that into a refusal; a caller that only displays may catch it and degrade, but visibly. None may
+ * read "could not read the lines" as "nothing is voided" (that charges for cancelled food) or
+ * "could not read the settlements" as "nothing is paid" (that charges twice).
+ *
+ * LINES ARE READ BY order_id, NOT tab_id. The projection joins a line to its order's item on
+ * (order_id, source_item_index), so an order_id read is the one that cannot miss a line. Paginated:
+ * an unranged PostgREST read silently truncates at 1,000 rows.
+ */
+
+type FinancialsSupabase = {
+  from: (table: string) => any // eslint-disable-line @typescript-eslint/no-explicit-any
+}
+
+export class FinancialsUnreadable extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'FinancialsUnreadable'
+  }
+}
+
+const READ_PAGE = 1000
+
+type RangeResult<Row> = PromiseLike<{ data: Row[] | null; error: { message: string } | null }>
+
+async function readAllPages<Row>(
+  build: () => { range: (from: number, to: number) => RangeResult<Row> },
+  label: string,
+): Promise<Row[]> {
+  const out: Row[] = []
+  for (let offset = 0; ; offset += READ_PAGE) {
+    const { data, error } = await build().range(offset, offset + READ_PAGE - 1)
+    if (error) throw new FinancialsUnreadable(`${label}: ${error.message}`)
+    const page = data ?? []
+    out.push(...page)
+    if (page.length < READ_PAGE) return out
+  }
+}
+
+/** Every order_lines row for these orders, with the columns VOIDED_LINE needs. Throws on failure. */
+export async function readFinancialLines(
+  supabase: FinancialsSupabase,
+  orderIds: readonly string[],
+): Promise<FinancialLineInput[]> {
+  const ids = [...new Set(orderIds.map(String).filter(Boolean))]
+  if (ids.length === 0) return []
+  return readAllPages<FinancialLineInput>(
+    () =>
+      supabase
+        .from('order_lines')
+        .select(FINANCIAL_LINE_COLUMNS)
+        .in('order_id', ids)
+        .order('id', { ascending: true }),
+    'order_lines',
+  )
+}
+
+async function readAllocationSettled(
+  supabase: FinancialsSupabase,
+  orderIds: readonly string[],
+): Promise<Map<string, number>> {
+  try {
+    return await settledCentsByOrder(supabase as never, [...orderIds])
+  } catch (e) {
+    throw new FinancialsUnreadable(e instanceof Error ? e.message : String(e))
+  }
+}
+
+/**
+ * The projection for rows the CALLER has already read (with at least FINANCIAL_ORDER_COLUMNS).
+ * Reads only the lines and the ledger -- for routes that keep their own order read, such as
+ * prepare-payment (which also needs pending_settlement_id) or the tables view (orders nested under
+ * tabs).
+ */
+export async function projectOrderRows(
+  supabase: FinancialsSupabase,
+  rows: readonly FinancialOrderInput[],
+): Promise<Map<string, OrderFinancials>> {
+  const ids = rows.map((r) => String(r.id))
+  const [lines, settled] = await Promise.all([
+    readFinancialLines(supabase, ids),
+    readAllocationSettled(supabase, ids),
+  ])
+  const out = new Map<string, OrderFinancials>()
+  for (const row of rows) {
+    out.set(String(row.id), computeOrderFinancials(row, lines, settled.get(String(row.id)) ?? 0))
+  }
+  return out
+}
+
+export type LoadedOrderFinancials = {
+  rows: FinancialOrderInput[]
+  /** Keyed by order id; every row read has an entry. */
+  byId: Map<string, OrderFinancials>
+}
+
+/**
+ * Orders by id, scoped to the restaurant, projected. An id that cannot be read is simply absent;
+ * on a money path the caller must treat `rows.length !== ids.length` as a refusal.
+ */
+export async function loadOrderFinancials(
+  supabase: FinancialsSupabase,
+  restaurantId: string,
+  orderIds: readonly string[],
+): Promise<LoadedOrderFinancials> {
+  const ids = [...new Set(orderIds.map(String).filter(Boolean))]
+  if (ids.length === 0) return { rows: [], byId: new Map() }
+  const { data, error } = await supabase
+    .from('orders')
+    .select(FINANCIAL_ORDER_COLUMNS)
+    .eq('restaurant_id', restaurantId)
+    .in('id', ids)
+  if (error) throw new FinancialsUnreadable(`orders: ${error.message}`)
+  const rows = (data ?? []) as FinancialOrderInput[]
+  return { rows, byId: await projectOrderRows(supabase, rows) }
+}
+
+/** Every order on one tab, projected and summed. Settlement artefacts are excluded from the sum. */
+export async function loadTabFinancials(
+  supabase: FinancialsSupabase,
+  restaurantId: string,
+  tabId: string,
+): Promise<TabFinancials> {
+  const rows = await readAllPages<FinancialOrderInput>(
+    () =>
+      supabase
+        .from('orders')
+        .select(FINANCIAL_ORDER_COLUMNS)
+        .eq('restaurant_id', restaurantId)
+        .eq('tab_id', tabId)
+        .order('id', { ascending: true }),
+    'orders',
+  )
+  const ids = rows.map((r) => String(r.id))
+  const [lines, settled] = await Promise.all([
+    readFinancialLines(supabase, ids),
+    readAllocationSettled(supabase, ids),
+  ])
+  return computeTabFinancials(rows, lines, settled)
+}
+
+/** The C2 wire shape, for one order or a tab. Integer cents throughout. */
+export type FinancialsWire = {
+  original_cents: number
+  voided_cents: number
+  live_cents: number
+  paid_cents: number
+  outstanding_cents: number
+  overpaid_cents: number
+}
+
+export function financialsWire(
+  f: Pick<OrderFinancials, 'originalCents' | 'voidedCents' | 'liveCents' | 'paidCents' | 'outstandingCents' | 'overpaidCents'>,
+): FinancialsWire {
+  return {
+    original_cents: f.originalCents,
+    voided_cents: f.voidedCents,
+    live_cents: f.liveCents,
+    paid_cents: f.paidCents,
+    outstanding_cents: f.outstandingCents,
+    overpaid_cents: f.overpaidCents,
+  }
+}
