@@ -79,6 +79,10 @@ function makeClient() {
     from(table: string) {
       let op: 'select' | 'insert' = 'select'
       let payload: unknown = null
+      // web-cancel's C4 pre-check looks the key up BEFORE createOrder. No round was ever sent under
+      // it in these tests, so that lookup must find nothing -- a fake that answers every orders
+      // maybeSingle() with a row reads as "an earlier round exists" and turns every case into 409.
+      let byIdempotencyKey = false
       const answer = (single: boolean) => {
         if (table === 'menu_items') return { data: [LATTE], error: null }
         if (table === 'tabs') {
@@ -92,6 +96,7 @@ function makeClient() {
             insertedOrder = payload as Record<string, unknown>
             return { data: { id: 'order-new', restaurant_id: RESTAURANT, order_number: 42, payment_status: 'pending' }, error: null }
           }
+          if (single && byIdempotencyKey && !insertedOrder) return { data: null, error: null }
           if (single) return { data: { id: 'order-new', items: insertedOrder?.items ?? [] }, error: null }
           return { data: [{ order_number: 41 }], error: null }
         }
@@ -107,7 +112,12 @@ function makeClient() {
       const b: Record<string, unknown> = {}
       const chain = () => b
       Object.assign(b, {
-        select: chain, eq: chain, in: chain, not: chain, neq: chain, is: chain, order: chain, limit: chain,
+        select: chain,
+        eq: (column: string) => {
+          if (column === 'idempotency_key') byIdempotencyKey = true
+          return b
+        },
+        in: chain, not: chain, neq: chain, is: chain, order: chain, limit: chain,
         insert: (row: unknown) => {
           op = 'insert'
           payload = row
