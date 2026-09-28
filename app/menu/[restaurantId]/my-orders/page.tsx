@@ -38,12 +38,27 @@ import {
 import { hasAllocatedOrderNumber, orderIdentityLabel } from '@/lib/orders/order-identity'
 import { aggregateOrderLines } from '@/lib/orders/aggregate-order-lines'
 import { MENU_COPY } from '@/lib/customer-copy/menu-copy'
+import { VOIDED_LINES_COPY } from '@/lib/customer-copy/voided-lines-copy'
+// Sprint 2026-09-28: an order's value after staff voids, and the words for "it moved".
+import { displayOrderTotal, voidedTotalsLabel } from '@/lib/orders/voided-totals-label'
 
 /**
  * Whether to offer the edit button on a list card. The row here comes from the guest API,
  * which states which table it came from (`surface`), so the two status vocabularies are not
  * guessed at. Ownership is judged on the ids this BROWSER holds, never the row's own.
  */
+/**
+ * Lines staff voided carry `voided: true` (lib/guest-orders/guest-financials.ts). They are not
+ * aggregated with live lines -- a voided Pork Star merged into a live one would read as two ordered
+ * -- and they are not counted as items the customer is getting.
+ */
+function liveItems(order: any): any[] {
+  return (order?.items ?? []).filter((item: any) => item?.voided !== true)
+}
+function voidedItems(order: any): any[] {
+  return (order?.items ?? []).filter((item: any) => item?.voided === true)
+}
+
 function isEditableHere(order: any, sessionIds: string[]): boolean {
   // The BROWSER's ids, never the row's own. Echoing the row's id back would make ownership
   // trivially true, and guestCanAccessOrder releases an OPEN order on table_number alone -- so a
@@ -366,8 +381,18 @@ export default function MyOrdersPage() {
             </div>
             <div className="text-right">
               <p className="text-xl font-bold text-foreground font-sans">
-                N${order.total?.toFixed(2)}
+                N${displayOrderTotal(order).toFixed(2)}
               </p>
+              {/*
+                Sprint 2026-09-28. Staff voids never rewrite the stored order, so its total still
+                counts cancelled food. The headline is what the order is worth NOW; when that has
+                moved, the original is stated beside it rather than silently replaced.
+              */}
+              {voidedTotalsLabel(order) ? (
+                <p className="text-xs text-muted-foreground font-sans" data-testid="my-orders-voided-totals">
+                  {voidedTotalsLabel(order)}
+                </p>
+              ) : null}
               {/*
                 A STATUS BADGE, NOT A CONTROL. Ruled 2026-08-18: the filled rounded box with
                 padding on all four sides is button styling, and it is why "See staff" read as
@@ -398,7 +423,7 @@ export default function MyOrdersPage() {
           {/* Order Items Preview */}
           <div className="border-t border-border pt-4">
             <p className="text-sm text-muted-foreground font-sans mb-2">
-              {order.items?.length || 0} item{order.items?.length !== 1 ? 's' : ''}:
+              {liveItems(order).length} item{liveItems(order).length !== 1 ? 's' : ''}:
             </p>
             {/*
               #307: LOTS ARE AGGREGATED FOR DISPLAY, never for storage.
@@ -414,7 +439,7 @@ export default function MyOrdersPage() {
               forbids outright.
             */}
             <div className="space-y-1">
-              {aggregateOrderLines(order.items ?? []).slice(0, 3).map((group, idx: number) => (
+              {aggregateOrderLines(liveItems(order)).slice(0, 3).map((group, idx: number) => (
                 <div key={idx}>
                   <p className="text-sm text-foreground font-sans">
                     {group.quantity}× {String((group.sample as any).displayName || (group.sample as any).name || 'Item')}
@@ -437,12 +462,19 @@ export default function MyOrdersPage() {
                   )}
                 </div>
               ))}
-              {aggregateOrderLines(order.items ?? []).length > 3 && (
+              {aggregateOrderLines(liveItems(order)).length > 3 && (
                 <p className="text-sm text-muted-foreground font-sans italic">
-                  +{aggregateOrderLines(order.items ?? []).length - 3} more item
-                  {aggregateOrderLines(order.items ?? []).length - 3 !== 1 ? 's' : ''}
+                  +{aggregateOrderLines(liveItems(order)).length - 3} more item
+                  {aggregateOrderLines(liveItems(order)).length - 3 !== 1 ? 's' : ''}
                 </p>
               )}
+              {/* Voided lines stay visible -- the customer ordered them -- but apart, and unpriced. */}
+              {voidedItems(order).map((item: any, idx: number) => (
+                <p key={`voided-${idx}`} className="text-sm text-muted-foreground font-sans line-through">
+                  {item.quantity}× {String(item.displayName || item.name || 'Item')}
+                  <span className="ml-2 no-underline text-xs">({VOIDED_LINES_COPY.lineVoidedByStaff})</span>
+                </p>
+              ))}
             </div>
           </div>
 

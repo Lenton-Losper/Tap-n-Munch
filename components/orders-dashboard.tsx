@@ -77,6 +77,14 @@ import {
   TAB_TOTAL_ORDER_COLUMNS,
   computeTabFigures,
 } from '@/lib/tabs/tab-outstanding'
+// Sprint 2026-09-28: staff voids never rewrite an order, so money shown here goes through the one
+// financial projection -- live value, with the placed total beside it when voids moved it.
+import {
+  computeOrderFinancials,
+  readProjectionInputs,
+  type FinancialOrderInput,
+} from '@/lib/orders/order-financials'
+import type { TabProjectionInputs } from '@/lib/tabs/tab-outstanding'
 import { RefreshCw, Clock, ArrowLeft, CheckCircle2, ChefHat, Package, XCircle, Banknote, CreditCard, DollarSign, DoorClosed, Loader2, Mail, Printer, Pencil, Minus, ClipboardList, Volume2, VolumeX, BellOff, Wifi, WifiOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useRouter } from 'next/navigation'
@@ -629,6 +637,14 @@ export function OrdersDashboard() {
   const [pendingHostedCount, setPendingHostedCount] = useState(0)
   const [cancellingHostedOrderId, setCancellingHostedOrderId] = useState<string | null>(null)
   const [allOrders, setAllOrders] = useState<Order[]>([])
+  /**
+   * Per order id: the live value and the placed total, for orders whose lines staff voided
+   * (Sprint 2026-09-28). Absent for an unamended order -- the card then shows `total` exactly as
+   * before. Display only: nothing on this screen charges anybody.
+   */
+  const [voidedValueByOrder, setVoidedValueByOrder] = useState<
+    Record<string, { live: number; original: number }>
+  >({})
   const [completedOrders, setCompletedOrders] = useState<Order[]>([])
   const [orderRequests, setOrderRequests] = useState<OrderRequest[]>([])
   const [requestActionKey, setRequestActionKey] = useState<string | null>(null)
@@ -962,7 +978,9 @@ export function OrdersDashboard() {
               .in('id', linkedIds),
             supabase
               .from('orders')
-              .select(`tab_id, ${TAB_TOTAL_ORDER_COLUMNS}`)
+              // id/items/status/settled_charge_cents: the projection joins lines by order id and
+              // reads which item each voided line was (Sprint 2026-09-28).
+              .select(`id, tab_id, items, status, settled_charge_cents, ${TAB_TOTAL_ORDER_COLUMNS}`)
               .eq('restaurant_id', restaurantUuid)
               .in('tab_id', linkedIds),
             supabase
@@ -972,6 +990,21 @@ export function OrdersDashboard() {
               .in('tab_id', linkedIds)
               .in('status', [...TAB_PENDING_REQUEST_STATUSES]),
           ])
+        if (cancelled) return
+
+        /**
+         * Voided lines and item-ledger payments, for the figures below. A failed read degrades to
+         * the stored totals -- toward MORE owed, never less -- and this badge decides nothing.
+         */
+        let projectionInputs: TabProjectionInputs | undefined
+        try {
+          projectionInputs = await readProjectionInputs(
+            supabase,
+            (linkedOrders || []).map((row: unknown) => String((row as Record<string, unknown>).id ?? '')).filter(Boolean),
+          )
+        } catch (e) {
+          console.warn('[orders-dashboard] linked-tab projection unavailable; showing stored totals', e)
+        }
         if (cancelled) return
 
         const ordersByTab = new Map<string, Record<string, unknown>[]>()
@@ -1001,6 +1034,7 @@ export function OrdersDashboard() {
           const figures = computeTabFigures(
             (ordersByTab.get(id) ?? []) as never,
             (requestsByTab.get(id) ?? []) as never,
+            projectionInputs,
           )
           stillUnpaid[id] = {
             table_number: row.table_number != null ? Number(row.table_number) : null,
@@ -1474,6 +1508,49 @@ export function OrdersDashboard() {
     if (!permissionsLoaded) return allOrders
     return filterOrdersByStationScope(allOrders, stationScope)
   }, [allOrders, stationScope, permissionsLoaded])
+
+  /**
+   * LIVE VALUES FOR THE CARDS (Sprint 2026-09-28). One lines + ledger read for every open order,
+   * re-run when the set of order ids changes. Only orders with a voided line get an entry.
+   */
+  const openOrderIdsKey = useMemo(
+    () => [...new Set(allOrders.map((o) => String(o.id)))].sort().join(','),
+    [allOrders],
+  )
+  useEffect(() => {
+    // No open orders: nothing to fetch. Entries are keyed by order id, so one left over from an
+    // order that has gone is never read.
+    if (!openOrderIdsKey) return
+    let cancelled = false
+    const ids = openOrderIdsKey.split(',')
+    void (async () => {
+      try {
+        const inputs = await readProjectionInputs(supabase, ids)
+        if (cancelled) return
+        const next: Record<string, { live: number; original: number }> = {}
+        for (const order of allOrders) {
+          const fin = computeOrderFinancials(
+            order as unknown as FinancialOrderInput,
+            inputs.lines,
+            inputs.allocationSettledByOrder.get(String(order.id)) ?? 0,
+          )
+          if (fin.voidedCents > 0) {
+            next[String(order.id)] = { live: fin.liveCents / 100, original: fin.originalCents / 100 }
+          }
+        }
+        setVoidedValueByOrder(next)
+      } catch (e) {
+        // Display only: the cards keep showing the stored total.
+        console.warn('[orders-dashboard] order projection unavailable; showing stored totals', e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // allOrders is read for its rows; the effect is keyed on the id set so a poll that returns
+    // the same orders does not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openOrderIdsKey])
 
   const mergedSourceOrders = useMemo(() => {
     if (activeTab === 'pending_payment') {
@@ -2726,8 +2803,16 @@ export function OrdersDashboard() {
 
                 <div className="text-right">
                   <span className="text-lg font-bold">
-                    {restaurant?.currency || 'N$'}{(normalizedOrder.total ?? 0).toFixed(2)}
+                    {restaurant?.currency || 'N$'}
+                    {(voidedValueByOrder[String(normalizedOrder.id)]?.live ?? normalizedOrder.total ?? 0).toFixed(2)}
                   </span>
+                  {/* Staff voided lines on this order: the placed total, beside the live one. */}
+                  {voidedValueByOrder[String(normalizedOrder.id)] ? (
+                    <span className="block text-xs text-muted-foreground">
+                      {restaurant?.currency || 'N$'}
+                      {voidedValueByOrder[String(normalizedOrder.id)].original.toFixed(2)} original · after voids
+                    </span>
+                  ) : null}
                   {/* What the total was before the customer changed it, and by how much. Sits
                       beside the figure staff act on, not in a detail panel they would have to
                       open to discover the number moved. */}

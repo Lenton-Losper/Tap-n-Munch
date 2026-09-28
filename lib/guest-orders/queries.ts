@@ -12,6 +12,8 @@ import { redactGuestOrderMemberIds } from '@/lib/tab-member-key'
 import { filterToCurrentSession } from './session-boundary'
 import { LIVE_REQUEST_STATUSES } from '@/lib/tabs/pending-order-requests'
 import type { GuestOrderRow } from './types'
+// Sprint 2026-09-28: each order row carries its live value and voided lines. See the module header.
+import { attachGuestFinancials } from './guest-financials'
 
 /**
  * order_requests statuses that are still the customer's business.
@@ -135,7 +137,8 @@ export async function fetchGuestOrderById(
     // Same read-time redaction as fetchGuestOrdersBySession -- see the note there (#262).
     // #302: the caller's own ids, so their OWN row keeps session_id and nobody else's does.
     const [redacted] = await redactGuestOrderMemberIds([order], [params.sessionId, ...(params.sessionIds ?? [])].map((v) => String(v ?? '')).filter(Boolean))
-    return { order: redacted, denied: false }
+    const [withFinancials] = await attachGuestFinancials(supabase, [redacted])
+    return { order: withFinancials, denied: false }
   }
 
   let requestQuery = supabase.from('order_requests').select('*').eq('id', orderId)
@@ -437,7 +440,7 @@ export async function fetchGuestOrdersBySession(params: {
     mapOrderRequestToGuestRow(row as Record<string, unknown>),
   )
 
-  const merged = [...pendingRows, ...orders].sort((a, b) => {
+  const merged = [...pendingRows, ...(await attachGuestFinancials(supabase, orders))].sort((a, b) => {
     const aMs = a.placed_at ? new Date(String(a.placed_at)).getTime() : 0
     const bMs = b.placed_at ? new Date(String(b.placed_at)).getTime() : 0
     return bMs - aMs
@@ -598,7 +601,7 @@ export async function fetchGuestActiveTableOrders(params: {
   }
 
   const requestRows = (requests ?? []).map((row) => mapOrderRequestToGuestRow(row as Record<string, unknown>))
-  const merged = [...requestRows, ...orders].sort((a, b) => {
+  const merged = [...requestRows, ...(await attachGuestFinancials(supabase, orders))].sort((a, b) => {
     const aMs = a.placed_at ? new Date(String(a.placed_at)).getTime() : 0
     const bMs = b.placed_at ? new Date(String(b.placed_at)).getTime() : 0
     return bMs - aMs
@@ -697,11 +700,12 @@ export async function fetchGuestOrdersByPaymentRef(params: {
   // member_session_id substitution below helps; it does NOT stop session_id leaving, because that
   // column is never rewritten. Stripping edit_lock_token here is what stops the same reference
   // handing over an edit capability.
-  return redactGuestOrderMemberIds(
+  const redacted = await redactGuestOrderMemberIds(
     (data ?? [])
       .map((row) => redactGuestOrderRow({ id: String(row.id), ...row }) as GuestOrderRow)
       .filter((order) => guestCanAccessOrder(order, accessParams)),
     // This signature carries `sessionId` only -- there is no `sessionIds` array on it.
     [params.sessionId].map((v) => String(v ?? '')).filter(Boolean),
   )
+  return attachGuestFinancials(supabase, redacted)
 }
