@@ -228,3 +228,64 @@ BEGIN
   END IF;
 END
 $$;
+
+-- ==================================================================================================
+-- amend_order_lines (20260829150000, redefined by 20260928120000). Added for amend-rpc.test.sql.
+-- ==================================================================================================
+--
+-- Appended as ALTERs rather than folded into the tables above so the settlement fixture stays
+-- exactly as it was. Columns and constraints are from the real migrations:
+-- 20260827131000_order_lines.sql, 20260827131100_order_line_events.sql, the state widenings in
+-- 20260831120000 / 20260829160000, 20260809120000 / 20260826107000 for the order-number index, and
+-- the baseline for the orders/tabs columns the function writes.
+
+ALTER TABLE public.tabs ADD COLUMN table_number integer;
+
+ALTER TABLE public.orders
+  ADD COLUMN firebase_restaurant_id text,
+  ADD COLUMN table_number integer,
+  ADD COLUMN subtotal numeric DEFAULT 0,
+  ADD COLUMN tax numeric DEFAULT 0,
+  ADD COLUMN is_closed boolean DEFAULT false;
+
+-- THE index amend_order_lines' caller retries on. Without it a colliding order number would be
+-- accepted here, and the atomicity assertion that relies on the collision could not fail.
+CREATE UNIQUE INDEX orders_firebase_restaurant_id_order_number_key
+  ON public.orders (firebase_restaurant_id, order_number)
+  WHERE firebase_restaurant_id IS NOT NULL AND order_number IS NOT NULL;
+
+ALTER TABLE public.order_lines
+  ADD COLUMN restaurant_id uuid REFERENCES public.restaurants(id) ON DELETE CASCADE,
+  ADD COLUMN tab_id uuid REFERENCES public.tabs(id) ON DELETE SET NULL,
+  ADD COLUMN name_snapshot text,
+  ADD COLUMN quantity numeric,
+  ADD COLUMN line_note text,
+  ADD COLUMN route_to text CHECK (route_to IN ('kitchen', 'bar', 'both', 'unrouted')),
+  ADD COLUMN created_at timestamptz NOT NULL DEFAULT now(),
+  ADD CONSTRAINT order_lines_kitchen_state_check
+    CHECK (kitchen_state IN ('outstanding', 'cooked', 'ready', 'collected', 'voided')),
+  ADD CONSTRAINT order_lines_bar_state_check
+    CHECK (bar_state IN ('outstanding', 'cooked', 'ready', 'collected', 'voided')),
+  -- DEVIATION, STATED: production's order_lines_states_match_route has no `route_to IS NULL`
+  -- escape, and restaurant_id/name_snapshot/quantity/route_to are NOT NULL there. The settlement
+  -- suite's T11 inserts a bare (order_id, source_item_index) line, so those stay nullable here;
+  -- every row amend_order_lines writes or the amend tests seed satisfies the real constraint.
+  ADD CONSTRAINT order_lines_states_match_route CHECK (
+    route_to IS NULL
+    OR (route_to = 'kitchen' AND kitchen_state IS NOT NULL AND bar_state IS NULL)
+    OR (route_to = 'bar' AND bar_state IS NOT NULL AND kitchen_state IS NULL)
+    OR (route_to IN ('both', 'unrouted') AND kitchen_state IS NOT NULL AND bar_state IS NOT NULL)
+  );
+
+CREATE TABLE public.order_line_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  restaurant_id uuid NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
+  order_line_id uuid NOT NULL REFERENCES public.order_lines(id) ON DELETE CASCADE,
+  station text NOT NULL CHECK (station IN ('kitchen', 'bar')),
+  from_state text CHECK (from_state IN ('outstanding', 'cooked', 'ready', 'collected', 'voided')),
+  to_state text NOT NULL CHECK (to_state IN ('outstanding', 'cooked', 'ready', 'collected', 'voided')),
+  actor_kind text NOT NULL CHECK (actor_kind IN ('station', 'terminal', 'system')),
+  actor_user_id uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  occurred_at timestamptz NOT NULL DEFAULT now()
+  -- void_reason is added by the REAL migration 20260906120100, applied by the runner.
+);
