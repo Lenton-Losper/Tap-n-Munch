@@ -1,6 +1,7 @@
 import {Order, OrderItem, OrderStatus} from '../types';
 import {getItemUnitPrice} from './currency';
 import {variantSummary} from './variantPricing';
+import {parseMoneyCents} from './tabLines';
 
 /**
  * The variant to show beside an existing order line.
@@ -75,6 +76,7 @@ export function mapRowToOrder(row: Record<string, unknown>): Order {
       (row.payment_status_derived as Order['payment_status_derived']) ?? null,
     refunded_amount:
       row.refunded_amount != null ? Number(row.refunded_amount) : undefined,
+    financials: parseMoneyCents(row.financials) ?? undefined,
   };
 }
 

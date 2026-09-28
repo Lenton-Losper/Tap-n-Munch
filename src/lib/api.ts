@@ -25,6 +25,11 @@ import {
   TableWithTab,
 } from '../types';
 import {mapRowToOrder} from './orderMapper';
+import {
+  parseNotClaimable,
+  parseOrderIdsOwingNothing,
+  type NotClaimableOrder,
+} from './settlementRefusal';
 import type {
   HeldOrphanStoreRequest,
   HeldOrphanStoreResponse,
@@ -57,6 +62,12 @@ interface ApiErrorBody {
   attempts_remaining?: number | null;
   /** #120 residual: the rows blocking a table close, one entry each. */
   pending_requests?: unknown;
+  /** prepare-payment 409 SETTLEMENT_SET_NOT_CLAIMABLE: the refused orders, with why. */
+  not_claimable?: unknown;
+  /** Its pre-reason shape, still read from a worker that predates not_claimable. */
+  orders?: unknown;
+  /** prepare-payment 409 ORDER_NOTHING_OWED. */
+  order_ids_owing_nothing?: unknown;
 }
 
 /**
@@ -137,6 +148,10 @@ export class ApiRequestError extends Error {
   attemptsRemaining?: number | null;
   /** #120 residual. Empty for every error that is not a blocked table close. */
   pendingRequests: PendingOrderRequest[] = [];
+  /** SETTLEMENT_SET_NOT_CLAIMABLE's named orders. Empty for every other error. */
+  notClaimable: NotClaimableOrder[] = [];
+  /** ORDER_NOTHING_OWED's named orders. Empty for every other error. */
+  orderIdsOwingNothing: string[] = [];
 
   constructor(
     message: string,
@@ -151,6 +166,8 @@ export class ApiRequestError extends Error {
       retryAfterSeconds?: number | null;
       attemptsRemaining?: number | null;
       pendingRequests?: PendingOrderRequest[];
+      notClaimable?: NotClaimableOrder[];
+      orderIdsOwingNothing?: string[];
     },
   ) {
     super(message);
@@ -165,6 +182,8 @@ export class ApiRequestError extends Error {
     this.retryAfterSeconds = extras?.retryAfterSeconds;
     this.attemptsRemaining = extras?.attemptsRemaining;
     this.pendingRequests = extras?.pendingRequests ?? [];
+    this.notClaimable = extras?.notClaimable ?? [];
+    this.orderIdsOwingNothing = extras?.orderIdsOwingNothing ?? [];
   }
 }
 
@@ -204,6 +223,9 @@ async function parseApiError(response: Response): Promise<ApiRequestError> {
     retryAfterSeconds,
     attemptsRemaining: finiteOrNull(data.attempts_remaining),
     pendingRequests: parsePendingRequests(data.pending_requests),
+    notClaimable:
+      data.code === 'SETTLEMENT_SET_NOT_CLAIMABLE' ? parseNotClaimable(data) : [],
+    orderIdsOwingNothing: parseOrderIdsOwingNothing(data),
   });
 }
 

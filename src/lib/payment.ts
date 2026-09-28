@@ -9,6 +9,7 @@ import {PAYMENT_TIMED_OUT_MESSAGE} from '../constants/paymentCopy';
 import {getTerminalToken, holdOrphanPayment} from './storage';
 import {decideOrphanDisposition} from './orphanPaymentGuard';
 import {recordWiretapEvent} from './wiretap';
+import {prepareRefusalFromError, type PrepareRefusal} from './settlementRefusal';
 
 export type PaymentOutcomeKind =
   | 'success'
@@ -72,6 +73,13 @@ export interface PaymentResult {
    * list for a tab settle, and is "" when native had no pending record.
    */
   orderId?: string;
+  /**
+   * Sprint 2026-09-29 (F-TERMPAY). Set ONLY when prepare-payment refused BEFORE the reader opened
+   * because the set being charged is stale (paid / cancelled / held / owes nothing). outcomeKind is
+   * 'not_started'. The caller must show the reason, refresh from the server, and NOT retry or verify
+   * -- nothing was presented, so there is nothing to ask Finatic about. See settlementRefusal.ts.
+   */
+  prepareRefusal?: PrepareRefusal;
 }
 
 interface PaymentNativeResult {
@@ -653,6 +661,7 @@ export async function processPaymentIntent(
     }
   }
 
+  let readerLaunched = false;
   try {
     const token = await getTerminalToken();
     if (!token) {
@@ -707,6 +716,10 @@ export async function processPaymentIntent(
     }
 
     const amountInCents = String(Math.round(chargeAmount * 100));
+
+    // Everything above this line happens before any card is presented. A typed prepare refusal is
+    // only believed when this is still false -- see the catch.
+    readerLaunched = true;
 
     // launchPayment's Promise only resolves when WiseCashier returns. Start it
     // first so native startActivityForResult runs, then mark attempt-started
@@ -861,6 +874,27 @@ export async function processPaymentIntent(
           ).trim()
         : '';
     const gatewayResult = structuredGatewayResult || extractGatewayResult(message);
+
+    /**
+     * THE SET BEING CHARGED IS STALE (Sprint 2026-09-29, F-TERMPAY).
+     *
+     * SETTLEMENT_SET_NOT_CLAIMABLE and ORDER_NOTHING_OWED used to miss the list below and fall to
+     * 'ambiguous' -- which sends the screen to Finatic verification and then reports a FAILED card
+     * payment for orders another payment had already settled. No card was presented. They are
+     * returned as not_started with the server's reasons attached, so the screen can say which orders
+     * changed and refresh instead of verifying, reporting or retrying.
+     *
+     * Only before launch: a code thrown after the reader opened is not prepare-payment's.
+     */
+    const prepareRefusal = readerLaunched ? null : prepareRefusalFromError(error);
+    if (prepareRefusal) {
+      return {
+        success: false,
+        outcomeKind: 'not_started',
+        error: message || 'The card machine could not be started',
+        prepareRefusal,
+      };
+    }
 
     // Native rejects a known decline code (see MainActivity's KNOWN_DECLINE_CODES) as
     // PAYMENT_DECLINED — that's a confirmed no-charge, safe to report without a Finatic

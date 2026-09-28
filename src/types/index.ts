@@ -1,3 +1,5 @@
+import type {MoneyCents} from '../lib/tabLines';
+
 export type OrderStatus =
   | 'pending'
   | 'confirmed'
@@ -57,6 +59,12 @@ export interface Order {
    * Absent or null for a walk-up / kiosk order, which cannot have been voided.
    */
   tab_id?: string | null;
+  /**
+   * The server's C1 money for this order, from GET /api/terminal/orders (Sprint 2026-09-29). Parsed
+   * by parseMoneyCents; ABSENT when the server did not send it or it was unreadable -- never zeros.
+   * Display only: the charge path resolves the live amount itself (lib/orderLiveMoney).
+   */
+  financials?: MoneyCents;
 }
 
 export interface TabOrder {

@@ -3,6 +3,8 @@ import {Pressable, StyleSheet, Text, View} from 'react-native';
 import {Colors, Spacing, Typography} from '../constants/theme';
 import {formatCurrency} from '../lib/currency';
 import {formatOrderCardTime} from '../lib/orderCardTime';
+import {LIVE_TOTAL_AFTER_VOIDS} from '../constants/liveTotalCopy';
+import {ORDER_CARD_ORDERED, ORDER_CARD_STILL_OWED} from '../constants/orderCardCopy';
 import {Order} from '../types';
 import PaymentStatusBadge from './PaymentStatusBadge';
 import StatusBadge from './StatusBadge';
@@ -10,6 +12,48 @@ import StatusBadge from './StatusBadge';
 interface OrderCardProps {
   order: Order;
   onPress: () => void;
+}
+
+/**
+ * THE CARD'S MONEY, FROM THE SERVER'S PROJECTION -- NOT orders.total (Sprint 2026-09-29, F-TERMPAY).
+ *
+ * This list is the way into Process Payment (card -> OrderDetail -> Payment), and the figure sits
+ * unlabelled under the items, so a waiter reads it as the bill. `order.total` is the stored original
+ * and keeps counting voided lines. With the server's figures the card shows the LIVE value, the
+ * original beside it when a void changed it, and what is still owed when part has been paid. Without
+ * them it shows the stored total labelled as what was ORDERED -- never as a current amount.
+ *
+ * Display only. Nothing here is charged: PaymentScreen resolves the live amount itself.
+ */
+function OrderCardMoney({order}: {order: Order}) {
+  const f = order.financials;
+  if (!f) {
+    return (
+      <Text style={styles.total} testID="order-card-amount">
+        {ORDER_CARD_ORDERED.replace('{total}', formatCurrency(order.total))}
+      </Text>
+    );
+  }
+  return (
+    <View style={styles.moneyColumn}>
+      <Text style={styles.total} testID="order-card-amount">
+        {formatCurrency(f.live_cents / 100)}
+      </Text>
+      {f.outstanding_cents > 0 && f.outstanding_cents !== f.live_cents ? (
+        <Text style={styles.moneyNote} testID="order-card-owed">
+          {ORDER_CARD_STILL_OWED.replace('{owed}', formatCurrency(f.outstanding_cents / 100))}
+        </Text>
+      ) : null}
+      {f.original_cents !== f.live_cents ? (
+        <Text style={styles.moneyNote} testID="order-card-after-voids">
+          {LIVE_TOTAL_AFTER_VOIDS.replace(
+            '{original}',
+            formatCurrency(f.original_cents / 100),
+          ).replace('{live}', formatCurrency(f.live_cents / 100))}
+        </Text>
+      ) : null}
+    </View>
+  );
 }
 
 export default function OrderCard({order, onPress}: OrderCardProps) {
@@ -59,7 +103,7 @@ export default function OrderCard({order, onPress}: OrderCardProps) {
       </View>
 
       <View style={styles.footer}>
-        <Text style={styles.total}>{formatCurrency(order.total)}</Text>
+        <OrderCardMoney order={order} />
       </View>
     </Pressable>
   );
@@ -136,5 +180,12 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     color: Colors.textPrimary,
+  },
+  moneyColumn: {
+    alignItems: 'flex-end',
+  },
+  moneyNote: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
   },
 });
