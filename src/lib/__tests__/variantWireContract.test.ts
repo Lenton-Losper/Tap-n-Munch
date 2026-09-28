@@ -167,3 +167,47 @@ describe('POST /api/terminal/rounds carries selectedVariants', () => {
     ]);
   });
 });
+
+describe('the variant protocol header (team-lead contract addition)', () => {
+  const header = (init: RequestInit) =>
+    (init.headers as Record<string, string>)['X-FlashTap-Variant-Protocol'];
+
+  it('POST /api/terminal/orders carries X-FlashTap-Variant-Protocol: 1', async () => {
+    const value = await withApi(
+      {status: 200, body: {orderId: 'o-1', orderNumber: 7}},
+      async (api, calls) => {
+        await api.createPOSOrder('jwt', {
+          restaurantId: 'r-1',
+          items: [{menuItemId: 'm', name: 'Coke', quantity: 1, basePrice: 25, subtotal: 25}],
+          subtotal: 25,
+          total: 25,
+          idempotencyKey: 'pos_h',
+        });
+        expect(calls[0].url).toMatch(/\/api\/terminal\/orders$/);
+        return header(calls[0].init);
+      },
+    );
+    expect(value).toBe('1');
+  });
+
+  it('POST /api/terminal/rounds carries X-FlashTap-Variant-Protocol: 1', async () => {
+    const value = await withApi(
+      {status: 200, body: {order_id: 'o-2', order_number: 8, line_count: 1}},
+      async (api, calls) => {
+        await api.sendRound(
+          {
+            tabId: 'tab-1',
+            items: [{menuItemId: 'm', name: 'Coke', quantity: 1}],
+            subtotal: 25,
+            total: 25,
+            idempotencyKey: 'round_h',
+          },
+          'jwt',
+        );
+        expect(calls[0].url).toMatch(/\/api\/terminal\/rounds$/);
+        return header(calls[0].init);
+      },
+    );
+    expect(value).toBe('1');
+  });
+});

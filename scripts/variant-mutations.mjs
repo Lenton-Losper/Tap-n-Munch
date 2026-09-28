@@ -52,6 +52,22 @@ const MUTATIONS = {
     from: `    group => !group.required || canonical[group.name] !== undefined,`,
     to: `    group => true || !group.required || canonical[group.name] !== undefined,`,
   },
+  M4: {
+    what: 'POS sale omits X-FlashTap-Variant-Protocol',
+    file: 'src/lib/api.ts',
+    from: `        'x-idempotency-key': idempotencyKey,
+        ...VARIANT_PROTOCOL_HEADERS,`,
+    to: `        'x-idempotency-key': idempotencyKey,
+        ...(false ? VARIANT_PROTOCOL_HEADERS : {}),`,
+  },
+  M5: {
+    what: 'round send omits X-FlashTap-Variant-Protocol',
+    file: 'src/lib/api.ts',
+    from: `        'x-idempotency-key': params.idempotencyKey,
+        ...VARIANT_PROTOCOL_HEADERS,`,
+    to: `        'x-idempotency-key': params.idempotencyKey,
+        ...(false ? VARIANT_PROTOCOL_HEADERS : {}),`,
+  },
 };
 
 function runSuites() {

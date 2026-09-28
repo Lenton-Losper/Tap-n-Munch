@@ -1858,6 +1858,14 @@ export interface MenuItem {
   variant_groups: VariantGroup[] | null;
 }
 
+/**
+ * Tells POST /api/terminal/orders and /api/terminal/rounds that this build sends C6
+ * `selectedVariants`, so the server may enforce required-variant completeness (C5). Without it the
+ * server keeps the old lenient behaviour, which is what keeps older APKs working during rollout.
+ * Sprint 2026-09-28 brief. Spread into BOTH sends' headers; a test pins that both carry it.
+ */
+export const VARIANT_PROTOCOL_HEADERS = {'X-FlashTap-Variant-Protocol': '1'} as const;
+
 export interface POSOrderItem {
   menuItemId: string;
   /** The menu item's own name, NOT the variant display name -- the server builds that. */
@@ -1986,6 +1994,7 @@ export async function createPOSOrder(
       headers: {
         'Content-Type': 'application/json',
         'x-idempotency-key': idempotencyKey,
+        ...VARIANT_PROTOCOL_HEADERS,
       },
       // The key travels in the header only; the route reads it there and nowhere else.
       body: JSON.stringify(body),
@@ -2624,6 +2633,7 @@ export async function sendRound(
       headers: {
         'Content-Type': 'application/json',
         'x-idempotency-key': params.idempotencyKey,
+        ...VARIANT_PROTOCOL_HEADERS,
       },
       body: JSON.stringify(body),
     },
