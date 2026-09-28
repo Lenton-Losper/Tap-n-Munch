@@ -35,6 +35,75 @@ function isUuid(value: string): boolean {
 const MAX_VOID_REASON_LENGTH = 280
 
 type CleanAmendment = { line_id: string; new_quantity: number }
+type AppliedLine = { line_id: string; action: 'voided' | 'replaced'; new_line_id?: string }
+type RefusedLine = { line_id: string; reason: string }
+
+/**
+ * One entry per requested amendment, for the terminal to show (contract C3).
+ *
+ * The outcome is read off the RPC's `applied`/`refused` ONLY. A line in neither array was not
+ * acted on and is reported refused ('not_reported') -- never as done. 'increased' is a replaced
+ * line whose quantity went UP: C3 names voided/reduced/refused because the terminal only sends
+ * reductions, and calling an increase 'reduced' would be a lie on the one field staff read.
+ */
+function describeLines(
+  amendments: CleanAmendment[],
+  result: { applied: AppliedLine[]; refused: RefusedLine[] },
+  quantityById: Map<string, number>,
+  nameById: Map<string, string>,
+) {
+  return amendments.map((a) => {
+    const previous = quantityById.get(a.line_id)
+    const previousQuantity = typeof previous === 'number' && Number.isFinite(previous) ? previous : null
+    const base = { line_id: a.line_id, name: nameById.get(a.line_id) || null, previous_quantity: previousQuantity }
+    const applied = result.applied.find((x) => String(x.line_id) === a.line_id)
+    if (applied) {
+      if (applied.action === 'voided') return { ...base, outcome: 'voided' as const, quantity: 0 }
+      const increased = previousQuantity !== null && a.new_quantity > previousQuantity
+      return {
+        ...base,
+        outcome: increased ? ('increased' as const) : ('reduced' as const),
+        quantity: a.new_quantity,
+        new_line_id: applied.new_line_id ?? null,
+      }
+    }
+    const refused = result.refused.find((x) => String(x.line_id) === a.line_id)
+    return {
+      ...base,
+      outcome: 'refused' as const,
+      quantity: previousQuantity,
+      refusal_reason: refused?.reason ?? 'not_reported',
+    }
+  })
+}
+
+/**
+ * Writes the amendment's outcome onto the `consumed` authorization_events row for the PIN it
+ * spent (`detail` is that table's free jsonb column; no schema change). Best-effort by design: the
+ * void has either happened or not by now, and a failed audit write must not turn a real answer
+ * into an error. Logged loudly instead.
+ */
+async function recordAmendOutcome(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  params: { restaurantId: string; tokenId: string | null; detail: Record<string, unknown> },
+) {
+  if (!params.tokenId) return
+  try {
+    const { error } = await supabase
+      .from('authorization_events')
+      .update({ detail: params.detail })
+      .eq('restaurant_id', params.restaurantId)
+      .eq('token_id', params.tokenId)
+      .eq('event_type', 'consumed')
+    if (error) throw error
+  } catch (err) {
+    console.error('[terminal/tabs/amend] amendment outcome not recorded', {
+      tokenId: params.tokenId,
+      detail: params.detail,
+      error: err,
+    })
+  }
+}
 
 export async function POST(req: Request, { params }: { params: Promise<{ tabId: string }> }) {
   try {
@@ -120,7 +189,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
      */
     const { data: currentLines, error: currentLinesError } = await supabase
       .from('order_lines')
-      .select('id, quantity')
+      .select('id, quantity, name_snapshot')
       .eq('restaurant_id', terminal.restaurantId)
       .eq('tab_id', tabId)
       .in('id', amendments.map((a) => a.line_id))
@@ -131,6 +200,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
 
     const quantityById = new Map(
       (currentLines ?? []).map((l) => [String(l.id), Number(l.quantity)]),
+    )
+    const nameById = new Map(
+      (currentLines ?? []).map((l) => [String(l.id), String(l.name_snapshot ?? '').trim()]),
     )
     const reducesALine = amendments.some((a) => {
       const current = quantityById.get(a.line_id)
@@ -240,17 +312,43 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
 
     if (lastError) {
       console.error('[terminal/tabs/amend] RPC failed', lastError)
+      // The RPC raised, so its transaction rolled back: nothing was voided. The PIN was spent on
+      // it, and the record says so -- see recordAmendOutcome.
+      await recordAmendOutcome(supabase, {
+        restaurantId: terminal.restaurantId,
+        tokenId: attributedStaffUserId ? authorizationTokenId : null,
+        detail: {
+          action: 'line_void',
+          tab_id: tabId,
+          outcome: 'amend_failed',
+          requested: amendments,
+          applied: [],
+          refused: [],
+        },
+      })
       return NextResponse.json(
         { error: 'Could not apply this amendment', code: 'AMEND_FAILED' },
         { status: 502 },
       )
     }
 
-    const result = lastData as {
-      order_id: string | null
-      order_number: number | null
-      applied: Array<{ line_id: string; action: 'voided' | 'replaced'; new_line_id?: string }>
-      refused: Array<{ line_id: string; reason: string }>
+    /**
+     * WHAT THE RPC SAYS IT DID IS THE ONLY SOURCE OF `applied`. Never the request: a line the
+     * waiter asked to cancel is cancelled only if the database voided it, and the terminal shows
+     * "cancelled" on exactly that basis (contract C3). A malformed result reads as nothing applied
+     * -- the terminal re-fetches the tab's lines after every amend, so it then sees the truth.
+     */
+    const raw = (lastData ?? {}) as {
+      order_id?: string | null
+      order_number?: number | null
+      applied?: unknown
+      refused?: unknown
+    }
+    const result = {
+      order_id: raw.order_id ?? null,
+      order_number: raw.order_number ?? null,
+      applied: (Array.isArray(raw.applied) ? raw.applied : []) as AppliedLine[],
+      refused: (Array.isArray(raw.refused) ? raw.refused : []) as RefusedLine[],
     }
 
     /**
@@ -272,9 +370,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
      * SCOPED TIGHTLY: only the lines this call voided, only their `voided` events, and only where
      * no reason is set -- so a re-run cannot overwrite an earlier void's reason on a line that has
      * been voided before.
+     *
+     * A REDUCTION IS A VOID TOO (Sprint 2026-09-28 brief). The RPC reports it as 'replaced': the
+     * original line is voided and a smaller one created. Filtering on 'voided' alone left every
+     * reduction's void event with a NULL reason even though the gate above demanded one -- the
+     * reason was asked for, typed, and thrown away. The old line id is what carries the void.
      */
     const voidedLineIds = result.applied
-      .filter((a) => a.action === 'voided')
+      .filter((a) => a.action === 'voided' || a.action === 'replaced')
       .map((a) => a.line_id)
 
     if (voidReason && voidedLineIds.length > 0) {
@@ -306,12 +409,46 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
       await broadcastLineChanged(supabase, terminal.restaurantId)
     }
 
+    const lines = describeLines(amendments, result, quantityById, nameById)
+
+    /**
+     * REFUSED AND NEVER-SENT MUST BE TELLABLE APART AFTERWARDS.
+     *
+     * Riviera #160 had no trace at all, which is what made "the tester cancelled it" impossible to
+     * confirm or refute. A refused void writes nothing to order_line_events (nothing changed), so
+     * the outcome -- applied AND refused, with reasons -- goes onto the authorization_events row
+     * the PIN consumption just wrote. Only when a PIN was consumed: an amendment that reduces
+     * nothing is not a cancellation attempt.
+     */
+    await recordAmendOutcome(supabase, {
+      restaurantId: terminal.restaurantId,
+      tokenId: attributedStaffUserId ? authorizationTokenId : null,
+      detail: {
+        action: 'line_void',
+        tab_id: tabId,
+        outcome:
+          result.applied.length === 0 ? 'all_refused' : result.refused.length > 0 ? 'partial' : 'applied',
+        order_id: result.order_id,
+        void_reason: voidReason || null,
+        requested: amendments,
+        applied: result.applied,
+        refused: result.refused,
+      },
+    })
+
+    /**
+     * Contract C3. `applied`/`refused` are the RPC's own arrays, unchanged. `changed` and `lines`
+     * are derived from them and nothing else. An all-refused call is still a 200 -- the request
+     * was valid and was answered -- and `changed: false` is what says nothing happened.
+     */
     return NextResponse.json({
       success: true,
+      changed: result.applied.length > 0,
       order_id: result.order_id,
       order_number: result.order_number,
       applied: result.applied,
       refused: result.refused,
+      lines,
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
