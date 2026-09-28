@@ -98,7 +98,7 @@ jest.mock('@/lib/permissions/authorize', () => ({
       : null,
 }))
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+ 
 const route = require('@/app/api/admin/restaurants/[id]/billing-profile/route') as {
   GET: (req: Request, ctx: { params: Promise<{ id: string }> }) => Promise<Response>
   PATCH: (req: Request, ctx: { params: Promise<{ id: string }> }) => Promise<Response>
