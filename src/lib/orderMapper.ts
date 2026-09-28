@@ -1,17 +1,39 @@
 import {Order, OrderItem, OrderStatus} from '../types';
 import {getItemUnitPrice} from './currency';
+import {variantSummary} from './variantPricing';
+
+/**
+ * The variant to show beside an existing order line.
+ *
+ * `variant` / `variant_name` were read here for years and nothing ever wrote them. What the
+ * server actually persists (C6) is `selectedVariants` -- and it ALSO writes the display name
+ * ("Americano - Large") into `name`. So the selection is shown only when the name does not
+ * already carry it, or the row would read "Americano - Large (Large)".
+ */
+function lineVariant(raw: Record<string, unknown>, name: string): string | undefined {
+  if (raw.variant) {
+    return String(raw.variant);
+  }
+  if (raw.variant_name) {
+    return String(raw.variant_name);
+  }
+  const summary = variantSummary(raw.selectedVariants ?? raw.selected_variants);
+  if (!summary || name.endsWith(` - ${summary}`)) {
+    return undefined;
+  }
+  return summary;
+}
 
 function mapItem(raw: Record<string, unknown>, index: number): OrderItem {
+  const name = String(
+    raw.name ?? raw.item_name ?? raw.menu_item_name ?? 'Item',
+  );
   return {
     id: String(raw.id ?? `${raw.name ?? 'item'}-${index}`),
-    name: String(raw.name ?? raw.item_name ?? raw.menu_item_name ?? 'Item'),
+    name,
     quantity: Number(raw.quantity ?? raw.qty ?? 1),
     price: getItemUnitPrice(raw),
-    variant: raw.variant
-      ? String(raw.variant)
-      : raw.variant_name
-        ? String(raw.variant_name)
-        : undefined,
+    variant: lineVariant(raw, name),
   };
 }
 

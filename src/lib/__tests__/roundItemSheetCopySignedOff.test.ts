@@ -25,6 +25,12 @@
  */
 import * as Copy from '../../constants/roundItemSheetCopy';
 
+// No @types/node in this project; the builtins are declared locally, as settleAmountIsOutstanding does.
+declare const require: (mod: string) => unknown;
+declare const __dirname: string;
+const {readFileSync} = require('fs') as {readFileSync: (p: string, enc: string) => string};
+const {join} = require('path') as {join: (...parts: string[]) => string};
+
 const SIGNED_ON = '2026-09-06';
 
 describe(`the signed item sheet copy (signed ${SIGNED_ON})`, () => {
@@ -91,6 +97,26 @@ describe('the properties the wording was signed FOR', () => {
     // Without the slot it renders a literal; without the second sentence it is a dead end.
     expect(Copy.ITEM_SHEET_QUANTITY_CAPPED).toContain('{max}');
     expect(Copy.ITEM_SHEET_QUANTITY_CAPPED).toMatch(/another round/i);
+  });
+
+  it('the 2026-09-06 "no variants" clause is recorded as superseded by the Sprint 2026-09-28 brief', () => {
+    /**
+     * The owner ruled on 2026-09-06 that the round sheet carries no variants. The Sprint 2026-09-28
+     * brief explicitly requires Add-a-Round variants, so the sheet now offers them. The ruling
+     * text must say so rather than silently contradict the code -- and the eight signed strings
+     * above are unchanged: the picker's own copy is a separate, unsigned file.
+     */
+    const source = readFileSync(
+      join(__dirname, '..', '..', 'constants', 'roundItemSheetCopy.ts'),
+      'utf8',
+    );
+    expect(source).toMatch(/VARIANTS: RULING SUPERSEDED/);
+    expect(source).toMatch(/Sprint 2026-09-28 brief/);
+    const sheet = readFileSync(
+      join(__dirname, '..', '..', 'components', 'RoundItemSheet.tsx'),
+      'utf8',
+    );
+    expect(sheet).toMatch(/SUPERSEDED FOR VARIANTS by the Sprint\s+\*?\s*2026-09-28 brief/);
   });
 
   it('nothing is left as a placeholder', () => {

@@ -20,7 +20,8 @@ import * as Copy from '../constants/serviceCopy';
 import RoundItemSheet, {type RoundItemSheetTarget} from '../components/RoundItemSheet';
 import {getMenuCategories, getMenuItems, MenuCategory, MenuItem} from '../lib/api';
 import {applyAvailabilityOverrides} from '../lib/menuAvailabilityOverrides';
-import {basketCount, basketSubtotal, RoundLine} from '../lib/serviceRound';
+import {basketCount, basketSubtotal, RoundLine, roundLineLabel} from '../lib/serviceRound';
+import {formatPriceRange} from '../lib/variantPricing';
 import {getRestaurantId, getTerminalToken} from '../lib/storage';
 import {useServiceSession} from '../context/ServiceSessionContext';
 import {MainStackParamList} from '../navigation/AppNavigator';
@@ -62,8 +63,8 @@ function BasketRow({
   return (
     <View style={[styles.basketRow, flagged && styles.basketRowFlagged]}>
       <View style={styles.basketRowTop}>
-        <Text style={styles.basketName} numberOfLines={1}>
-          {line.name}
+        <Text style={styles.basketName} numberOfLines={1} testID={`basket-name-${line.lineId}`}>
+          {roundLineLabel(line)}
         </Text>
         <Text style={styles.basketLineTotal}>
           {formatMoney(line.unitPrice * line.quantity)}
@@ -452,7 +453,8 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
                   {entry.item.name}
                 </Text>
                 <Text style={styles.itemPrice}>
-                  {formatMoney(entry.item.base_price)}
+                  {/* A range for an item with priced variants, never a base the server won't charge. */}
+                  {formatPriceRange(entry.item)}
                 </Text>
               </Pressable>
 
@@ -533,6 +535,7 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
                       lineId: item.lineId,
                       quantity: item.quantity,
                       note: item.note,
+                      selectedVariants: item.selectedVariants,
                     },
                   })
                 }
@@ -553,7 +556,7 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
       <RoundItemSheet
         item={sheetTarget}
         onCancel={() => setSheetTarget(null)}
-        onConfirm={({quantity, note, lineId}) => {
+        onConfirm={({quantity, note, lineId, selectedVariants}) => {
           if (lineId) {
             updateLine(lineId, {quantity, note});
           } else if (sheetTarget) {
@@ -562,8 +565,9 @@ export default function ServiceRoundScreen({route, navigation}: Props) {
                 id: sheetTarget.id,
                 name: sheetTarget.name,
                 base_price: sheetTarget.base_price,
+                variant_groups: sheetTarget.variant_groups,
               },
-              {quantity, note},
+              {quantity, note, selectedVariants},
             );
           }
           setSheetTarget(null);

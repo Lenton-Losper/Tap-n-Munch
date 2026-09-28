@@ -11,8 +11,9 @@ import {
 import {RouteProp, useNavigation, useRoute} from '@react-navigation/native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {clearPersistedPaymentState} from '../components/PaymentStateMachine';
-import {createPOSOrder, POSOrderItem} from '../lib/api';
-import {useCart} from '../context/CartContext';
+import {ApiRequestError, createPOSOrder} from '../lib/api';
+import {buildPOSOrderItems, CartLine, useCart} from '../context/CartContext';
+import * as VariantCopy from '../constants/variantPickerCopy';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 
@@ -49,7 +50,8 @@ export default function POSCartScreen() {
 
       const result = await createPOSOrder(token, {
         restaurantId,
-        items: cart,
+        // Device-only fields stripped; selectedVariants sent per line (C6).
+        items: buildPOSOrderItems(cart),
         subtotal,
         total,
         // #328. Stable across retries of THIS sale, so a retry after a failed launch returns the
@@ -69,6 +71,22 @@ export default function POSCartScreen() {
         orderNumber: result.orderNumber,
       });
     } catch (err: unknown) {
+      /**
+       * C5: the server refused a line's variant choice (missing required group, or an option the
+       * menu no longer has). A 400 -- shown, never retried, and nothing was charged. Said as such
+       * so it does not read like a network fault worth tapping Charge again for.
+       */
+      if (
+        err instanceof ApiRequestError &&
+        (err.code === 'MENU_ITEM_VARIANT_REQUIRED' ||
+          err.code === 'MENU_ITEM_UNPRICEABLE_SELECTION')
+      ) {
+        Alert.alert(
+          VariantCopy.VARIANT_REFUSED_TITLE,
+          `${err.message}\n\n${VariantCopy.VARIANT_REFUSED_SUFFIX}`,
+        );
+        return;
+      }
       const message =
         err instanceof Error ? err.message : 'Failed to create order';
       Alert.alert('Error', message);
@@ -117,23 +135,24 @@ export default function POSCartScreen() {
 
       <FlatList
         data={cart}
-        keyExtractor={i => i.menuItemId}
+        keyExtractor={i => i.lineKey}
         style={styles.list}
-        renderItem={({item}: {item: POSOrderItem}) => (
+        renderItem={({item}: {item: CartLine}) => (
           <View style={styles.row}>
             <View style={styles.rowLeft}>
-              <Text style={styles.itemName}>{item.name}</Text>
+              {/* "Americano - Large": the variant is what tells two lines of one item apart. */}
+              <Text style={styles.itemName}>{item.displayName}</Text>
             </View>
             <View style={styles.qtyControls}>
               <TouchableOpacity
                 style={styles.qtyButton}
-                onPress={() => updateQuantity(item.menuItemId, -1)}>
+                onPress={() => updateQuantity(item.lineKey, -1)}>
                 <Text style={styles.qtyButtonText}>−</Text>
               </TouchableOpacity>
               <Text style={styles.itemQty}>{item.quantity}</Text>
               <TouchableOpacity
                 style={styles.qtyButton}
-                onPress={() => updateQuantity(item.menuItemId, 1)}>
+                onPress={() => updateQuantity(item.lineKey, 1)}>
                 <Text style={styles.qtyButtonText}>+</Text>
               </TouchableOpacity>
             </View>

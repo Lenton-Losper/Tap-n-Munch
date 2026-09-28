@@ -7,6 +7,16 @@
  *
  * Source of truth: docs/terminal-brief-waiter-led-service-v1.md in the web repo.
  */
+import {
+  canonicalSelection,
+  hasSelection,
+  isSelectionComplete,
+  variantDisplayName,
+  variantLineKey,
+  variantUnitPrice,
+  type VariantPricedItem,
+  type VariantSelection,
+} from './variantPricing';
 
 /**
  * ONE LINE OF THE BASKET, and note that a line is NOT the same thing as a menu item.
@@ -25,6 +35,16 @@ export interface RoundLine {
   quantity: number;
   /** Per-line note. Empty string, never undefined, so the editor always has a controlled value. */
   note: string;
+  /**
+   * C6 variant choice, `{groupName: optionLabel}`, canonical. Absent or {} for an item with none.
+   * Part of the line's identity: a Large and a Small are two lines. Sprint 2026-09-28 brief.
+   */
+  selectedVariants?: VariantSelection;
+}
+
+/** "Americano - Large" -- the label a basket row shows, matching the kitchen ticket. */
+export function roundLineLabel(line: RoundLine): string {
+  return variantDisplayName(line.name, line.selectedVariants);
 }
 
 let lineCounter = 0;
@@ -113,14 +133,27 @@ export function clampLineQuantity(quantity: number): number {
  */
 export function addLine(
   lines: RoundLine[],
-  item: {id: string; name: string; base_price: number},
-  options: {quantity?: number; note?: string} = {},
+  item: VariantPricedItem,
+  options: {quantity?: number; note?: string; selectedVariants?: VariantSelection} = {},
 ): RoundLine[] {
+  /**
+   * A required variant group left unanswered is REFUSED here, not only disabled in the sheet.
+   * The server would refuse the whole round (C5 MENU_ITEM_VARIANT_REQUIRED), and until then the
+   * basket would show the base price -- N$0.00 on a zero-base item.
+   */
+  if (!isSelectionComplete(item, options.selectedVariants)) {
+    return lines;
+  }
   const note = (options.note ?? '').trim();
   const quantity = clampLineQuantity(options.quantity ?? 1);
+  const selectedVariants = canonicalSelection(item, options.selectedVariants);
+  const key = variantLineKey(item.id, selectedVariants);
 
+  // Same item, same note AND same variant. Two sizes are never one line.
   const index = lines.findIndex(
-    line => line.menuItemId === item.id && line.note.trim() === note,
+    line =>
+      variantLineKey(line.menuItemId, line.selectedVariants) === key &&
+      line.note.trim() === note,
   );
   if (index >= 0) {
     return lines.map((line, i) =>
@@ -135,9 +168,10 @@ export function addLine(
       lineId: nextLineId(),
       menuItemId: item.id,
       name: item.name,
-      unitPrice: Number.isFinite(item.base_price) ? item.base_price : 0,
+      unitPrice: variantUnitPrice(item, selectedVariants),
       quantity,
       note,
+      ...(hasSelection(selectedVariants) ? {selectedVariants} : {}),
     },
   ];
 }
@@ -211,6 +245,8 @@ export interface RoundRequestItem {
   name: string;
   quantity: number;
   note?: string;
+  /** C6. Omitted, like `note`, when the line has none. */
+  selectedVariants?: VariantSelection;
 }
 
 /**
@@ -234,9 +270,15 @@ export function buildRoundItems(lines: RoundLine[]): RoundRequestItem[] {
     const note = line.note.trim();
     items.push({
       menuItemId: line.menuItemId,
+      // The menu item's own name. The server builds "Americano - Large" from selectedVariants;
+      // sending the display name would have it appended twice.
       name: line.name,
       quantity: line.quantity,
       ...(note ? {note} : {}),
+      // Without this the server prices the base and the kitchen makes the wrong size.
+      ...(hasSelection(line.selectedVariants)
+        ? {selectedVariants: {...line.selectedVariants}}
+        : {}),
     });
   }
   return items;
@@ -262,7 +304,13 @@ export function outOfStockLineIds(
   if (blocked.size === 0) {
     return [];
   }
+  // The server may name a line by its menu item name or by the variant display name it wrote, so
+  // either lights the row up.
   return lines
-    .filter(line => blocked.has(line.name.trim().toLowerCase()))
+    .filter(
+      line =>
+        blocked.has(line.name.trim().toLowerCase()) ||
+        blocked.has(roundLineLabel(line).trim().toLowerCase()),
+    )
     .map(line => line.lineId);
 }
