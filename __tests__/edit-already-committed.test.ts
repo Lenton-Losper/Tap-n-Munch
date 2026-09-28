@@ -45,6 +45,10 @@ const ROW_READERS = [
 const SURFACE_ONLY: Record<string, 'orders' | 'order_requests'> = {
   payment_status: 'orders',
   payment_checkout_url: 'orders',
+  // Read only by editRefusalReason (isChargeInFlight), which refusalFor calls for the 'orders'
+  // surface alone; requestEditRefusalReason never reads them. Same guard as payment_status.
+  pending_charge_cents: 'orders',
+  pending_charge_at: 'orders',
   items_customer: 'order_requests',
   subtotal_customer: 'order_requests',
   tax_customer: 'order_requests',
