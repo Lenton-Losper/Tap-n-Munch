@@ -100,6 +100,13 @@ export type SettleWholeOrderParams = {
   appVersion?: string | null
   /** Extra audit metadata merged into the refusal rows. */
   extraAuditMetadata?: Record<string, unknown>
+  /**
+   * Whether an E04111-auto-cancelled order may be recovered to paid. Default true (the webhook,
+   * verify-payment and the orphan cron). The staff reconciliation passes false: it refuses a
+   * cancelled order outright (Sprint 2026-09-29 brief, task 4), and this keeps a cancel that lands
+   * between its check and the RPC from being revived anyway.
+   */
+  allowCancelledRecovery?: boolean
 }
 
 export type SettleWholeOrderResult =
@@ -254,7 +261,7 @@ export async function settleWholeOrderPayment(
    * copy of a rule that has already been got wrong once. The function refuses `cancelled -> paid`
    * for any id not in this list.
    */
-  const allowCancelledRecovery = target.orders
+  const allowCancelledRecovery = params.allowCancelledRecovery === false ? [] : target.orders
     .filter((row) => isCancelledOnE04111Evidence(row as Parameters<typeof isCancelledOnE04111Evidence>[0]))
     .map((row) => String(row.id))
 

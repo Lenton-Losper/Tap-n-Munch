@@ -195,6 +195,13 @@ export async function POST(req: Request) {
         error: intentError instanceof Error ? intentError.message : String(intentError),
       })
     }
+    // Another venue's intent is not what THIS venue's reader was asked for. Never compared against.
+    if (intent && intent.restaurantId !== terminal.restaurantId) {
+      console.error('[payment-events/sale] reference resolves to another venue\'s intent; ignored', {
+        businessOrderNo,
+      })
+      intent = null
+    }
 
     const amountCheck = checkSaleAmount({
       amount,
@@ -230,7 +237,35 @@ export async function POST(req: Request) {
       }
     }
 
+    /**
+     * ============================================================================================
+     * THIS ROW IS THE DEVICE'S REPORT, AND IT SAYS SO (Sprint 2026-09-29 brief, task 7)
+     * ============================================================================================
+     *
+     * `amount` and `order_ids` below are what the DEVICE sent. The row used to be indistinguishable
+     * from the ledger row settle_order_payment writes after verifying the gateway, and the orphan
+     * cron treated its amount as the gateway's figure -- so a device reporting a manipulated amount
+     * that happened to equal the named orders' totals got them marked paid with no gateway query.
+     *
+     * `origin = 'terminal_device'` marks every row this route writes as reported, not verified, and
+     * `device_amount_check` records how the reported amount compared with what the server expected:
+     * a mismatch is still RECORDED (refusing a real charge is worse, as above) but it can never be
+     * read as an authoritative figure. The cron now verifies with Finatic before anything is paid;
+     * see lib/payments/reconcile-orphan-payments.ts.
+     */
+    const deviceAmountCheck = amountCheck.matched
+      ? amountCheck.basis === 'intent'
+        ? 'matched_intent'
+        : amountCheck.basis === 'order_totals'
+          ? 'matched_order_totals'
+          : 'unchecked'
+      : amountCheck.basis === 'intent'
+        ? 'mismatch_intent'
+        : 'mismatch_order_totals'
+
     const insertPayload = {
+      origin: 'terminal_device' as const,
+      device_amount_check: deviceAmountCheck,
       restaurant_id: terminal.restaurantId,
       order_ids: orderIds,
       event_type: 'sale' as const,

@@ -1,13 +1,14 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { safeIssueReceiptForOrder } from '@/lib/receipts/safeIssueReceipt'
-import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
+import { isCancelledOnE04111Evidence } from '@/lib/payments/e04111-recovery'
+import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
 import {
-  claimableStatusesForRecovery,
-  isCancelledOnE04111Evidence,
-  recordRecoveredAfterAutoCancel,
-} from '@/lib/payments/e04111-recovery'
-import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
-import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismatch'
+  isFinaticMerchantOrderInvalidError,
+  queryFinaticOrderPaid,
+  type FinaticOrderPaidResult,
+} from '@/lib/payments/query-finatic-order-paid'
+import { settleWholeOrderPayment } from '@/lib/payments/settle-whole-order-payment'
+import { bindReferenceToOrders, referenceConsumption } from '@/lib/payments/reconcile-reference'
 
 type Supabase = ReturnType<typeof createServerSupabaseClient>
 
@@ -42,18 +43,31 @@ export type ReconcileOrphanPaymentsResult = {
    */
   ordersLookupsFailed: number
   receiptLookupsFailed: number
+  /**
+   * Sprint 2026-09-29 task 7. Unpaid orders on an event whose reference could not be bound to them
+   * from server state, or was already consumed. Never marked paid; a human resolves them.
+   */
+  unverifiableCount: number
+  unverifiableIds: string[]
+  /**
+   * Unpaid orders the GATEWAY did not confirm this run: not paid, E04111, no credentials, or
+   * unreachable. Never marked paid on the device's word; the next run asks again.
+   */
+  gatewayUnverifiedCount: number
+  gatewayUnverifiedIds: string[]
 }
 
 /**
  * Recovery for race / legacy cases:
- * 1) Sale payment_events whose order_ids are still unpaid → mark paid + backfill merchant no.
+ * 1) Sale payment_events whose order_ids are still unpaid → ask the GATEWAY, and settle through
+ *    settle_order_payment only on its verified figure (Sprint 2026-09-29 task 7; see the loop).
  * 2) Paid orders missing a SALE_RECEIPT → safe-issue.
  *
- * Orders auto-cancelled by the E04111 rule go through markOrderPaidConfirmed rather than
- * the bulk update below. The bulk update sets payment_status/status but leaves cancelled_at
- * and cancellation_reason in place, producing a self-contradictory completed+paid+cancelled
- * row (the class scripts/check-paid-cancelled-contradictions-20260730.ts hunts for) and
- * telling nobody that an auto-cancel turned out to be wrong.
+ * Orders auto-cancelled by the E04111 rule are recovered inside the same RPC call (the
+ * allow-list settleWholeOrderPayment builds), which clears cancelled_at / cancellation_reason and
+ * records payment.recovered_after_auto_cancel -- so no completed+paid+cancelled row is produced.
+ * The old bulk `update({ payment_status: 'paid' })` and its separate #239 audit are gone: the
+ * RPC's settlement_applied row and ledger row are the record now.
  *
  * Idempotent; safe to run on a schedule.
  */
@@ -68,10 +82,12 @@ export async function reconcileOrphanPayments(
   const markedPaidIds: string[] = []
   const recoveredAfterAutoCancelIds: string[] = []
   const amountMismatchIds: string[] = []
+  const unverifiableIds: string[] = []
+  const gatewayUnverifiedIds: string[] = []
 
   const { data: events, error: eventsError } = await supabase
     .from('payment_events')
-    .select('id, business_order_no, order_ids, amount, created_at')
+    .select('id, restaurant_id, business_order_no, order_ids, amount, transaction_id, created_at')
     .eq('event_type', 'sale')
     .gte('created_at', since)
     .order('created_at', { ascending: false })
@@ -93,16 +109,15 @@ export async function reconcileOrphanPayments(
       ? event.order_ids.map((id) => String(id || '').trim()).filter(Boolean)
       : []
     if (!orderIds.length) continue
+    const restaurantId = String(event.restaurant_id || '').trim()
+    const merchantNo = String(event.business_order_no || '').trim()
 
-    // #223. Load ALL orders this event names, not only the currently-unpaid ones. The
-    // event's amount was for the WHOLE original transaction (a tab settle can cover several
-    // orders in one event), so comparing against just the unpaid subset would understate the
-    // expected total the moment any sibling order is already paid, and manufacture a mismatch.
+    // Scoped to the event's own venue: an id the device named in another venue is not found, and
+    // an event naming orders that cannot all be found is not reconciled.
     const { data: eventOrders, error: eventOrdersError } = await supabase
       .from('orders')
-      .select(
-        'id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at, paycloud_merchant_order_no',
-      )
+      .select('id, restaurant_id, total, payment_method, payment_status, cancellation_reason, cancelled_at')
+      .eq('restaurant_id', restaurantId)
       .in('id', orderIds)
 
     /**
@@ -122,7 +137,7 @@ export async function reconcileOrphanPayments(
     if (eventOrdersError) {
       ordersLookupsFailed += 1
       console.error('[reconcileOrphanPayments] order lookup failed; event NOT reconciled', {
-        businessOrderNo: String(event.business_order_no || ''),
+        businessOrderNo: merchantNo,
         orderIds,
         error: eventOrdersError.message,
       })
@@ -130,244 +145,172 @@ export async function reconcileOrphanPayments(
     }
 
     if (!eventOrders?.length) continue
+    const unpaid = eventOrders.filter((row) => String(row.payment_status || '').toLowerCase() !== 'paid')
+    // Nothing owed -> nothing to verify, and no gateway call is spent on it.
+    if (!unpaid.length) continue
+    const unpaidIds = unpaid.map((row) => String(row.id))
 
-    const merchantNo = String(event.business_order_no || '').trim()
+    const deviceAmount = Number.isFinite(Number(event.amount)) ? Number(event.amount) : null
 
-    // #223. GATEWAY leg: payment_events.amount is NOT NULL (schema constraint), so there is no
-    // absent-amount case in practice -- checked explicitly anyway rather than assumed, per the
-    // same rule as the other three gateway legs. Compared ONCE against the sum of every order
-    // the event names, at GATEWAY_AMOUNT_TOLERANCE_CENTS (zero).
-    const expectedAmount = eventOrders.reduce((sum, row) => sum + (Number(row.total) || 0), 0)
-    const gatewayAmount =
-      typeof event.amount === 'number' && Number.isFinite(event.amount) ? event.amount : null
-    const verified =
-      gatewayAmount !== null && amountsMatch(gatewayAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)
-
-    if (!verified) {
-      const reason =
-        gatewayAmount === null
-          ? `payment_events ${event.id} (sale, ${merchantNo || 'no business_order_no'}) has no ` +
-            'amount -- never verified, orders left as they were.'
-          : `payment_events ${event.id} (sale, ${merchantNo || 'no business_order_no'}) reports ` +
-            `${gatewayAmount}, the named orders total ${expectedAmount} -- not applying, and not ` +
-            'cancelling orders the event says were paid.'
-      console.error(`[reconcileOrphanPayments] ${reason}`)
-
-      for (const row of eventOrders) {
-        if (String(row.payment_status || '').toLowerCase() === 'paid') continue
-        const orderId = String(row.id)
-        const restaurantId = String(row.restaurant_id)
-
-        if (gatewayAmount !== null) {
-          await recordPaymentAmountMismatch(supabase, {
-            restaurantId,
-            orderId,
-            expectedAmount,
-            receivedAmount: gatewayAmount,
-            source: 'reconcile_orphan_payments',
-            businessOrderNo: merchantNo || null,
-            reference: merchantNo || null,
-          })
-        }
-
-        const { error: uncertainAuditError } = await supabase.from('audit_logs').insert({
-          restaurant_id: restaurantId,
-          action: 'payment.verification_uncertain',
-          entity_type: 'order',
-          entity_id: orderId,
-          metadata: {
-            reason,
-            gatewayAmount,
-            expectedAmount,
-            amountVerified: false,
-            paymentEventId: String(event.id),
-            businessOrderNo: merchantNo || null,
-            source: 'cron_reconcile_orphan_payments',
-            outcome: 'left_pending_finatic_uncertain',
-          },
-        })
-        if (uncertainAuditError) {
-          console.error(
-            '[reconcileOrphanPayments] payment.verification_uncertain audit failed:',
-            uncertainAuditError,
-          )
-        }
-        amountMismatchIds.push(orderId)
-      }
-
+    /**
+     * ============================================================================================
+     * THE EVENT IS A LEAD, NOT EVIDENCE (Sprint 2026-09-29 brief, task 7)
+     * ============================================================================================
+     *
+     * This loop used to compare `event.amount` with the sum of orders.total and, on agreement,
+     * mark the orders paid. But a sale row is written by the DEVICE (POST
+     * /api/terminal/payment-events/sale) with the device's own `amount` and `order_ids`, and that
+     * route records a row even when the amount disagrees with the intent. So a device reporting
+     * N$X against orders totalling N$X paid them, with nobody ever asking the gateway: the
+     * device's word, twice.
+     *
+     * Now the event only says WHERE TO LOOK. Every figure that decides anything comes from server
+     * state and the gateway:
+     *
+     *   1. the reference is BOUND to the event's orders from server state -- the intent, or the
+     *      orders prepare-payment stamped it on, expanded to their settlement target -- and the
+     *      event's order_ids must be exactly that set (bindReferenceToOrders);
+     *   2. it is not already CONSUMED by a verified payment (referenceConsumption);
+     *   3. Finatic is asked. Not paid, no record, no credentials, unreachable -> NOTHING is marked
+     *      paid; the event is retried next run;
+     *   4. Finatic's own paid amount -- never the device's -- goes to settleWholeOrderPayment, which
+     *      checks it against the target's expected charge (intent amount_cents /
+     *      pending_charge_cents) and applies it through settle_order_payment: ledger row, audit
+     *      row, settled_charge_cents, intent consumed, E04111 recovery -- one transaction.
+     *
+     * The device's amount is kept only to be REPORTED when it disagrees with the gateway.
+     */
+    const bound = restaurantId
+      ? await bindReferenceToOrders(supabase, { restaurantId, merchantOrderNo: merchantNo, orderIds })
+      : ({ ok: false, code: 'REFERENCE_UNKNOWN', detail: 'event has no restaurant' } as const)
+    if (!bound.ok) {
+      if (bound.code === 'REFERENCE_UNREADABLE') ordersLookupsFailed += 1
+      else unverifiableIds.push(...unpaidIds)
+      console.error('[reconcileOrphanPayments] reference not bound to the event orders; NOT marking paid', {
+        paymentEventId: String(event.id),
+        businessOrderNo: merchantNo,
+        code: bound.code,
+        detail: bound.detail,
+      })
       continue
     }
 
-    const unpaid = eventOrders.filter((row) => String(row.payment_status || '').toLowerCase() !== 'paid')
-    if (!unpaid.length) continue
+    const consumption = await referenceConsumption(supabase, {
+      restaurantId,
+      merchantOrderNo: merchantNo,
+      intent: bound.intent,
+    })
+    if (consumption.consumed === null) {
+      ordersLookupsFailed += 1
+      continue
+    }
+    if (consumption.consumed) {
+      unverifiableIds.push(...unpaidIds)
+      console.error('[reconcileOrphanPayments] reference already consumed; NOT marking paid', {
+        paymentEventId: String(event.id),
+        businessOrderNo: merchantNo,
+        detail: consumption.detail,
+      })
+      continue
+    }
 
-    const paidAt = new Date().toISOString()
-    const autoCancelled = unpaid.filter((row) => isCancelledOnE04111Evidence(row))
-    const plain = unpaid.filter((row) => !isCancelledOnE04111Evidence(row))
-    const ids = unpaid.map((row) => String(row.id))
-    const plainIds = plain.map((row) => String(row.id))
+    let finatic: FinaticOrderPaidResult
+    try {
+      const credentials = await getRestaurantFinaticCredentials(restaurantId)
+      finatic = await queryFinaticOrderPaid({
+        merchantOrderNo: merchantNo,
+        merchantNo: credentials.merchantNo,
+        storeNo: credentials.storeNo,
+      })
+    } catch (err) {
+      // E04111 is "no record YET" -- never "not paid" and never "paid". Missing credentials and an
+      // unreachable gateway are the same answer here: unverified, so nothing is applied.
+      gatewayUnverifiedIds.push(...unpaidIds)
+      console.error('[reconcileOrphanPayments] gateway could not confirm; NOT marking paid', {
+        paymentEventId: String(event.id),
+        businessOrderNo: merchantNo,
+        e04111: isFinaticMerchantOrderInvalidError(err),
+        error: err instanceof Error ? err.message : String(err),
+      })
+      continue
+    }
 
-    // Auto-cancelled orders: full confirm path so cancelled_at / cancellation_reason clear
-    // and the wrong auto-cancel is surfaced as a critical alert.
-    for (const row of autoCancelled) {
-      const orderId = String(row.id)
-      const restaurantId = String(row.restaurant_id)
-      const reference = merchantNo || String(row.paycloud_merchant_order_no || '').trim() || orderId
-      try {
-        const claim = await markOrderPaidConfirmed(supabase, {
-          orderId,
-          restaurantId,
-          reference,
-          amount: Number(row.total) || 0,
-          /**
-           * F3 — THE GATEWAY'S CHANNEL, NOT THE ORDER'S OLD ONE.
-           *
-           * This read `(row.payment_method as string) || 'card'`, which keeps whatever the order
-           * already said and only defaults when it said nothing. An order moved to `cash_pending`
-           * before the card went through therefore stayed recorded as CASH after a gateway payment
-           * was reconciled onto it -- the same defect the webhook carried, on the path that runs
-           * unattended and is least likely to be noticed.
-           *
-           * `'card'` is STATED, not defaulted, and it is safe to state: this whole function is
-           * driven by a `payment_events` row with `event_type = 'sale'`, and a sale row exists only
-           * for a gateway transaction. The device's recordSaleEvent requires a non-empty
-           * business_order_no AND transaction_id, and recordGatewaySaleEvent writes one only when
-           * `usesGateway`. There is no cash sale row for this to be wrong about.
-           */
-          paymentMethod: 'card',
-          source: 'cron_reconcile_orphan_payments',
-          extraAuditMetadata: {
-            businessOrderNo: merchantNo || null,
+    if (!finatic.paid) {
+      gatewayUnverifiedIds.push(...unpaidIds)
+      console.warn('[reconcileOrphanPayments] gateway does not report paid; NOT marking paid', {
+        paymentEventId: String(event.id),
+        businessOrderNo: merchantNo,
+        status: finatic.status,
+      })
+      continue
+    }
+
+    // The device's figure, REPORTED when it disagrees with the gateway's. Never used to decide.
+    if (
+      deviceAmount !== null &&
+      finatic.amount !== null &&
+      Math.round(deviceAmount * 100) !== Math.round(finatic.amount * 100)
+    ) {
+      const { error: deviceAuditError } = await supabase.from('audit_logs').insert(
+        unpaidIds.map((orderId) => ({
+          restaurant_id: restaurantId,
+          action: 'payment.device_amount_disagrees_with_gateway',
+          entity_type: 'order',
+          entity_id: orderId,
+          metadata: {
             paymentEventId: String(event.id),
-            recoveredAfterAutoCancel: true,
-          },
-          fromPaymentStatuses: claimableStatusesForRecovery(row),
-        })
-
-        if (claim.claimed) {
-          markedPaidIds.push(orderId)
-          recoveredAfterAutoCancelIds.push(orderId)
-          await recordRecoveredAfterAutoCancel(supabase, {
-            restaurantId,
-            orderId,
-            reference,
+            businessOrderNo: merchantNo,
+            deviceReportedAmount: deviceAmount,
+            gatewayAmount: finatic.amount,
             source: 'cron_reconcile_orphan_payments',
-            previousCancellationReason: row.cancellation_reason
-              ? String(row.cancellation_reason)
-              : null,
-            previousCancelledAt: row.cancelled_at ? String(row.cancelled_at) : null,
-            amount: Number(row.total) || 0,
-            metadata: { paymentEventId: String(event.id) },
-          })
-        } else {
-          console.warn(
-            `[reconcileOrphanPayments] auto-cancelled order ${orderId} not claimed (${claim.reason}); retrying next run`,
-          )
-        }
-      } catch (err) {
-        // Never let one order abort the sweep -- the rest of this event still reconciles.
-        console.error(
-          `[reconcileOrphanPayments] recovery of auto-cancelled order ${orderId} failed:`,
-          err instanceof Error ? err.message : err,
-        )
+          },
+        })),
+      )
+      if (deviceAuditError) {
+        console.error('[reconcileOrphanPayments] device-amount audit failed:', deviceAuditError)
       }
     }
 
-    if (plainIds.length) {
-      const { error: bulkError } = await supabase
-        .from('orders')
-        .update({
-          payment_status: 'paid',
-          paid_at: paidAt,
-          status: 'completed',
-          completed_at: paidAt,
-          /**
-           * F3 — THE SECOND RESIDUAL ON THIS PATH, AND THE QUIETER ONE.
-           *
-           * The sibling branch above at least carried a method, wrongly. This branch set NO method
-           * at all, so an order marked paid from a gateway sale event kept whatever
-           * `payment_method` it happened to hold -- `cash` for anything that had been through
-           * /api/payments/cancel-terminal, and `null` for the seven production rows that carry
-           * none. Every one of those then reads as a non-card payment in the method split, the
-           * cash-up and the reconciliation report.
-           *
-           * Same justification as above: a `payment_events` sale row exists only for a gateway
-           * transaction, so `card` is the channel by construction and is stated rather than
-           * inferred.
-           */
-          payment_method: 'card',
-        })
-        .in('id', plainIds)
+    // Decided from the rows as READ, before the settlement changes them.
+    const autoCancelledIds = new Set(
+      unpaid.filter((row) => isCancelledOnE04111Evidence(row)).map((row) => String(row.id)),
+    )
 
-      /**
-       * #239. THIS PATH MARKED ORDERS PAID AND LEFT NO RECORD OF HAVING DONE SO.
-       *
-       * The auto-cancelled subset a few lines above routes through `markOrderPaidConfirmed` and
-       * gets a full audit entry; the amount-mismatch subset writes
-       * `payment.verification_uncertain`. This one wrote neither — same sweep, same run, on a
-       * SCHEDULED PRODUCTION CRON, with two different evidentiary standards.
-       *
-       * An order marked paid here left no trail of having been marked, which is precisely the
-       * record anyone reconciling a disputed charge would go looking for.
-       *
-       * ONE ROW PER ORDER, not one for the batch. A dispute is about a single order, and a
-       * batch-shaped row would make the reconciler read the whole sweep to find out whether their
-       * order was in it.
-       *
-       * DELIBERATELY NOT ROUTED THROUGH `markOrderPaidConfirmed`. That helper performs its own
-       * amount verification, and this subset reached here precisely because no amount comparison
-       * was possible — sending it through would either fabricate an amount or trip a guard that
-       * exists for a different question. The audit row therefore records `amountVerified: false`
-       * explicitly rather than staying silent about it, so the row cannot be mistaken for a
-       * verified settlement.
-       *
-       * NON-FATAL, like its two siblings. The money is already recorded by the time this runs; a
-       * failed audit write is logged and the sweep continues, because losing the payment record
-       * to protect the audit record would be the wrong trade.
-       */
-      if (bulkError) {
-        console.error('[reconcileOrphanPayments] bulk mark-paid failed:', bulkError)
-      } else {
-        const { error: auditError } = await supabase.from('audit_logs').insert(
-          // Mapped over the ROWS, not the ids: restaurantId is scoped to the per-row loops above
-          // and each order carries its own restaurant. A batch cannot assume one tenant.
-          plain.map((row) => ({
-            restaurant_id: String(row.restaurant_id),
-            action: 'payment.marked_paid_by_reconcile',
-            entity_type: 'order',
-            entity_id: String(row.id),
-            metadata: {
-              paidAt,
-              amountVerified: false,
-              reason: 'gateway settlement found with no matching paid order',
-              paymentEventId: String(event.id),
-              businessOrderNo: merchantNo || null,
-              source: 'cron_reconcile_orphan_payments',
-              batchSize: plainIds.length,
-            },
-          })),
-        )
-        if (auditError) {
-          console.error(
-            '[reconcileOrphanPayments] payment.marked_paid_by_reconcile audit failed:',
-            auditError,
-          )
-        }
-      }
+    const settled = await settleWholeOrderPayment(supabase, {
+      restaurantId,
+      leadOrderIds: bound.leadOrderIds,
+      intent: bound.intent,
+      merchantOrderNo: merchantNo,
+      transactionId: finatic.transactionId,
+      // THE GATEWAY'S FIGURE. Substituting `deviceAmount` here is the task-7 defect.
+      gatewayAmount: finatic.amount,
+      // F3: Finatic has just confirmed a card charge on this reference -- established, not defaulted.
+      paymentMethod: 'card',
+      source: 'cron_reconcile_orphan_payments',
+      mismatchSource: 'reconcile_orphan_payments',
+      extraAuditMetadata: {
+        paymentEventId: String(event.id),
+        businessOrderNo: merchantNo,
+        deviceReportedAmount: deviceAmount,
+        finaticAmount: finatic.amount,
+        finaticTransactionId: finatic.transactionId,
+      },
+    })
+
+    if (!settled.ok) {
+      // amount_mismatch: settleWholeOrderPayment has already written payment.amount_mismatch and
+      // payment.verification_uncertain on every covered order.
+      if (settled.reason === 'amount_mismatch') amountMismatchIds.push(...unpaidIds)
+      console.error('[reconcileOrphanPayments] settlement not applied', {
+        paymentEventId: String(event.id),
+        businessOrderNo: merchantNo,
+        reason: settled.reason,
+      })
+      continue
     }
 
-    if (merchantNo) {
-      await supabase
-        .from('orders')
-        .update({ paycloud_merchant_order_no: merchantNo.slice(0, 32) })
-        .in('id', ids)
-        .is('paycloud_merchant_order_no', null)
-    }
-
-    for (const id of plainIds) {
-      markedPaidIds.push(id)
-      await safeIssueReceiptForOrder(id, 'cron/reconcile-orphan-payments')
-    }
+    markedPaidIds.push(...settled.claimedOrderIds)
+    recoveredAfterAutoCancelIds.push(...settled.claimedOrderIds.filter((id) => autoCancelledIds.has(id)))
   }
 
   // Paid but never issued (issuance failure / race).
@@ -444,5 +387,9 @@ export async function reconcileOrphanPayments(
      */
     ordersLookupsFailed,
     receiptLookupsFailed,
+    unverifiableCount: new Set(unverifiableIds).size,
+    unverifiableIds: [...new Set(unverifiableIds)],
+    gatewayUnverifiedCount: new Set(gatewayUnverifiedIds).size,
+    gatewayUnverifiedIds: [...new Set(gatewayUnverifiedIds)],
   }
 }

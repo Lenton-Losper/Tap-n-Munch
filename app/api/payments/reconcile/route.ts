@@ -1,42 +1,70 @@
 import { NextResponse } from 'next/server'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { queryPaymentOrder } from '@/payments/paycloud'
-import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaurant-credentials'
+import {
+  getRestaurantFinaticCredentials,
+  isMissingFinaticCredentialsError,
+} from '@/lib/payments/finatic-restaurant-credentials'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 import {
   isAuthError,
   requireCallerRestaurantPermission,
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
-import { amountsMatch, GATEWAY_AMOUNT_TOLERANCE_CENTS } from '@/lib/payments/payment-integrity'
-import { expectedChargeForOrders } from '@/lib/payments/expected-charge'
+import { isPaidPaymentStatus, owesMoney } from '@/lib/payments/payment-integrity'
+import {
+  isFinaticMerchantOrderInvalidError,
+  queryFinaticOrderPaid,
+} from '@/lib/payments/query-finatic-order-paid'
+import { loadOrderFinancials, FinancialsUnreadable } from '@/lib/orders/order-financials'
+import { settleWholeOrderPayment } from '@/lib/payments/settle-whole-order-payment'
+import { bindReferenceToOrders, referenceConsumption } from '@/lib/payments/reconcile-reference'
 
-function toMoney(value: unknown) {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return null
-  return Math.round(n * 100) / 100
+/**
+ * STAFF RECONCILIATION: "the customer was charged, the order does not show it".
+ *
+ * ==================================================================================================
+ * WHAT CHANGED (Sprint 2026-09-29 brief, task 4)
+ * ==================================================================================================
+ *
+ * This route took client-chosen `orderIds` and a client-chosen `merchantOrderNo`, asked Finatic
+ * about the reference, and if the amount equalled the orders' summed totals it ran an
+ * UNCONDITIONAL `update({ payment_status: 'paid', status: 'accepted' })` on each -- no check that
+ * the reference was prepared for those orders or that venue, none that it had not already paid for
+ * something, none on the orders' current state (cancelled -> paid worked), no ledger row and no
+ * audit row on success.
+ *
+ * Now, in order:
+ *
+ *   1. every requested order is in the caller's venue, and none is cancelled or otherwise
+ *      unclaimable (all already paid -> an idempotent no-op; a mix -> refused);
+ *   2. the reference is BOUND to exactly these orders from server state (reconcile-reference.ts)
+ *      and has not been CONSUMED by any recorded payment;
+ *   3. Finatic says it was paid, for an amount that equals what the projection
+ *      (lib/orders/order-financials.ts) says these orders still owe, plus the gratuity the
+ *      prepared charge carried -- not orders.total, which keeps counting voided lines;
+ *   4. the gateway transaction id is not already on another payment;
+ *   5. the settlement is applied by settle_order_payment (via settleWholeOrderPayment): a locked,
+ *      conditional claim from owing statuses only, the immutable gateway ledger row, the
+ *      settlement audit row, settled_charge_cents (trigger), the intent consumed -- one transaction.
+ *      A `payment.staff_reconciled` row per order records WHO did it.
+ *
+ * Authorization is unchanged: PAYMENTS_PROCESS in the caller's own venue.
+ */
+
+type Refusal = { code: string; error: string; status: number; extra?: Record<string, unknown> }
+
+function refuse(r: Refusal) {
+  return NextResponse.json(
+    { ok: false, paid: false, applied: false, code: r.code, error: r.error, ...(r.extra ?? {}) },
+    { status: r.status },
+  )
 }
 
-async function loadOrders(
-  supabase: ReturnType<typeof createServerSupabaseClient>,
-  restaurantUuid: string,
-  orderIds: string[],
-) {
-  const { data, error } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('restaurant_id', restaurantUuid)
-    .in('id', orderIds)
-
-  if (error) throw error
-  const rows = (data || []).map((row: Record<string, unknown>) => ({
-    orderId: String(row.id),
-    data: row,
-  }))
-  if (rows.length !== orderIds.length) {
-    throw new Error('One or more orders were not found')
-  }
-  return rows
+const REFERENCE_REFUSAL_STATUS: Record<string, number> = {
+  REFERENCE_UNKNOWN: 409,
+  REFERENCE_NOT_FOR_RESTAURANT: 403,
+  REFERENCE_NOT_FOR_THESE_ORDERS: 409,
+  REFERENCE_ALREADY_CONSUMED: 409,
+  REFERENCE_UNREADABLE: 503,
 }
 
 export async function POST(req: Request) {
@@ -44,11 +72,11 @@ export async function POST(req: Request) {
     const auth = await requireCallerRestaurantPermission(PERMISSIONS.PAYMENTS_PROCESS, req)
     if (isAuthError(auth)) return auth
 
-    const { supabase, restaurantId: callerRestaurantId } = auth
-    const body = await req.json()
+    const { supabase, restaurantId: callerRestaurantId, userId } = auth
+    const body = await req.json().catch(() => ({}))
     const restaurantId = String(body.restaurantId || callerRestaurantId || '').trim()
     const orderIds: string[] = Array.isArray(body.orderIds)
-      ? body.orderIds.map((id: unknown) => String(id).trim()).filter(Boolean)
+      ? [...new Set<string>(body.orderIds.map((id: unknown) => String(id).trim()).filter(Boolean))]
       : []
     const merchantOrderNoRaw = String(body.merchantOrderNo || '').trim()
 
@@ -64,136 +92,178 @@ export async function POST(req: Request) {
       )
     }
 
-    console.log('[RECONCILE] start', {
-      restaurantId: restaurantUuid,
-      orderIds,
-    })
-
-    const rows = await loadOrders(supabase, restaurantUuid, orderIds)
-    for (const r of rows) {
-      console.log('[RECONCILE] loaded order', {
-        orderId: r.orderId,
-        status: r.data.status,
-        payment_status: r.data.payment_status,
-        payment_method: r.data.payment_method,
-        tab_id: r.data.tab_id ?? null,
-        tab_settlement_for_tab_id: r.data.tab_settlement_for_tab_id ?? null,
-        tab_settlement_member_session_id: r.data.tab_settlement_member_session_id ?? null,
-        member_session_id: r.data.member_session_id ?? null,
+    // ---- 1. the orders, in THIS venue, projected -------------------------------------------
+    let loaded: Awaited<ReturnType<typeof loadOrderFinancials>>
+    try {
+      loaded = await loadOrderFinancials(supabase, restaurantUuid, orderIds)
+    } catch (e) {
+      if (e instanceof FinancialsUnreadable) {
+        return refuse({ code: 'ORDERS_UNREADABLE', error: e.message, status: 503 })
+      }
+      throw e
+    }
+    // Another venue's order is simply not found here, and that is a refusal of the whole request.
+    if (loaded.rows.length !== orderIds.length) {
+      const found = new Set(loaded.rows.map((r) => String(r.id)))
+      return refuse({
+        code: 'ORDERS_NOT_FOUND',
+        error: 'One or more orders were not found',
+        status: 404,
+        extra: { missingOrderIds: orderIds.filter((id) => !found.has(id)) },
       })
     }
-    if (rows.every((r) => r.data.payment_status === 'paid')) {
-      return NextResponse.json({ ok: true, paid: true, source: 'supabase' }, { status: 200 })
-    }
 
-    /**
-     * The charge each order was asked for, summed -- not the order totals. Same figure for an
-     * untipped charge; correct rather than refusing once a gratuity is included.
-     */
-    const expectedAmount =
-      Math.round(expectedChargeForOrders(rows.map((r) => r.data)).expectedAmount * 100) / 100
-    const merchantOrderNoFromOrders = rows
-      .map((r) => String(r.data.paycloud_merchant_order_no || '').trim())
-      .find(Boolean)
-    const merchantOrderNo =
-      merchantOrderNoRaw ||
-      merchantOrderNoFromOrders ||
-      (orderIds.length === 1 ? `${restaurantId}:${orderIds[0]}` : `${restaurantId}:receipt:${orderIds.join(',')}`)
-
-    const { merchantNo, storeNo } = await getRestaurantFinaticCredentials(restaurantId)
-    const query = await queryPaymentOrder({ orderId: merchantOrderNo, merchantNo, storeNo })
-    const raw = query.rawResponse || {}
-
-    // Finatic returns `data` as a JSON string; parse before checking trans_status.
-    let orderData: unknown = (raw as Record<string, unknown>)?.data
-    if (typeof orderData === 'string') {
-      try {
-        orderData = JSON.parse(orderData)
-      } catch {
-        console.warn('[RECONCILE] Failed to parse order data string')
-      }
-    }
-
-    const transStatus =
-      (orderData as Record<string, unknown> | null)?.trans_status ??
-      (raw as Record<string, unknown>)?.trans_status
-    console.log(
-      '[RECONCILE] trans_status=',
-      transStatus,
-      'orderData=',
-      JSON.stringify(orderData ?? null)
-    )
-
-    const paid =
-      transStatus === 2 ||
-      transStatus === '2' ||
-      ['paid', 'success', 'succeeded'].includes(
-        String(
-          (orderData as Record<string, unknown> | null)?.trade_status ??
-            (orderData as Record<string, unknown> | null)?.status ??
-            (raw as Record<string, unknown>)?.trade_status ??
-            (raw as Record<string, unknown>)?.status ??
-            ''
-        ).toLowerCase()
-      )
-
-    if (!paid) {
-      const statusText = String(
-        (orderData as Record<string, unknown> | null)?.trade_status ??
-          (orderData as Record<string, unknown> | null)?.status ??
-          (raw as Record<string, unknown>)?.trade_status ??
-          (raw as Record<string, unknown>)?.status ??
-          transStatus ??
-          'unknown'
-      ).toLowerCase()
+    const paidCount = loaded.rows.filter((r) => isPaidPaymentStatus(r.payment_status)).length
+    if (paidCount === orderIds.length) {
+      // IDEMPOTENT. A second reconciliation of a settled set writes nothing and says so.
       return NextResponse.json(
-        { ok: true, paid: false, source: 'query', status: statusText || 'unknown', merchantOrderNo },
-        { status: 200 }
+        { ok: true, paid: true, applied: false, outcome: 'already_paid', source: 'supabase' },
+        { status: 200 },
+      )
+    }
+    if (paidCount > 0) {
+      return refuse({
+        code: 'ORDERS_PARTIALLY_PAID',
+        error: 'Some of these orders are already paid; reconcile the unpaid ones against their own reference.',
+        status: 409,
+      })
+    }
+    const unclaimable = loaded.rows.filter(
+      (r) => String(r.status ?? '').toLowerCase() === 'cancelled' || !owesMoney(r.payment_status),
+    )
+    if (unclaimable.length > 0) {
+      return refuse({
+        code: 'ORDER_NOT_CLAIMABLE',
+        error: 'A cancelled order, or one not in an owing state, cannot be reconciled to paid.',
+        status: 409,
+        extra: {
+          orders: unclaimable.map((r) => ({ id: r.id, status: r.status, payment_status: r.payment_status })),
+        },
+      })
+    }
+
+    // ---- 2. the reference: bound to these orders, and unconsumed ----------------------------
+    const { data: refRows, error: refError } = await supabase
+      .from('orders')
+      .select('id, paycloud_merchant_order_no, pending_tip_cents')
+      .eq('restaurant_id', restaurantUuid)
+      .in('id', orderIds)
+    if (refError) return refuse({ code: 'ORDERS_UNREADABLE', error: refError.message, status: 503 })
+    const refOrderRows = (refRows ?? []) as Array<Record<string, unknown>>
+    const onOrders = [
+      ...new Set(refOrderRows.map((r) => String(r.paycloud_merchant_order_no ?? '').trim()).filter(Boolean)),
+    ]
+    if (!merchantOrderNoRaw && onOrders.length > 1) {
+      return refuse({
+        code: 'REFERENCE_AMBIGUOUS',
+        error: 'These orders carry more than one payment reference; name the one to reconcile.',
+        status: 409,
+      })
+    }
+    const merchantOrderNo = merchantOrderNoRaw || onOrders[0] || ''
+    if (!merchantOrderNo) {
+      return refuse({
+        code: 'REFERENCE_UNKNOWN',
+        error: 'No payment reference was prepared for these orders.',
+        status: 409,
+      })
+    }
+
+    const bound = await bindReferenceToOrders(supabase, {
+      restaurantId: restaurantUuid,
+      merchantOrderNo,
+      orderIds,
+    })
+    if (!bound.ok) {
+      return refuse({
+        code: bound.code,
+        error: `Reference ${merchantOrderNo} cannot be reconciled onto these orders (${bound.detail}).`,
+        status: REFERENCE_REFUSAL_STATUS[bound.code] ?? 409,
+        extra: { merchantOrderNo },
+      })
+    }
+
+    const consumedBefore = await referenceConsumption(supabase, {
+      restaurantId: restaurantUuid,
+      merchantOrderNo,
+      intent: bound.intent,
+    })
+    if (consumedBefore.consumed === null) {
+      return refuse({ code: 'REFERENCE_UNREADABLE', error: consumedBefore.detail, status: 503 })
+    }
+    if (consumedBefore.consumed) {
+      return refuse({
+        code: 'REFERENCE_ALREADY_CONSUMED',
+        error: `Reference ${merchantOrderNo} has already been applied (${consumedBefore.detail}).`,
+        status: 409,
+        extra: { merchantOrderNo, consumedBy: consumedBefore.by },
+      })
+    }
+
+    // ---- 3. the gateway ----------------------------------------------------------------------
+    let merchantNo: string
+    let storeNo: string
+    try {
+      ;({ merchantNo, storeNo } = await getRestaurantFinaticCredentials(restaurantUuid))
+    } catch (credErr) {
+      if (!isMissingFinaticCredentialsError(credErr)) throw credErr
+      return refuse({
+        code: 'CREDENTIALS_NOT_CONFIGURED',
+        error: 'This venue has no Finatic credentials; the gateway cannot be asked.',
+        status: 400,
+      })
+    }
+
+    let result: Awaited<ReturnType<typeof queryFinaticOrderPaid>>
+    try {
+      result = await queryFinaticOrderPaid({ merchantOrderNo, merchantNo, storeNo })
+    } catch (queryErr) {
+      if (!isFinaticMerchantOrderInvalidError(queryErr)) throw queryErr
+      return NextResponse.json(
+        { ok: true, paid: false, applied: false, source: 'query', status: 'no_gateway_record', merchantOrderNo },
+        { status: 200 },
       )
     }
 
-    const paidAmount = toMoney(
-      (orderData as Record<string, unknown> | null)?.amount ??
-        (orderData as Record<string, unknown> | null)?.order_amount ??
-        (orderData as Record<string, unknown> | null)?.paid_amount ??
-        (raw as Record<string, unknown>)?.amount ??
-        (raw as Record<string, unknown>)?.order_amount ??
-        (raw as Record<string, unknown>)?.paid_amount
-    )
+    if (!result.paid) {
+      return NextResponse.json(
+        { ok: true, paid: false, applied: false, source: 'query', status: result.status || 'unknown', merchantOrderNo },
+        { status: 200 },
+      )
+    }
+
     /**
-     * #197, ruled inside #190 — this was the FIFTH gateway gate and the only one that never
-     * called amountsMatch:
-     *
-     *     if (paidAmount !== null && Math.abs(paidAmount - expectedAmount) > 0.02)
-     *
-     * #180 swept the amountsMatch call sites, so a raw float comparison at two cents was
-     * invisible to it. It carried both defects at once — the float artefact (|78.36 - 78.35| is
-     * 0.010000000000005116, not 0.01) and the null hole (`paidAmount !== null` short-circuits and
-     * the whole batch is marked paid with no amount check of any kind).
-     *
-     * This is a GATEWAY leg: paidAmount comes off Finatic's order.query response, echoing back
-     * our own figure, so it takes exact agreement and no tolerance — see
-     * GATEWAY_AMOUNT_TOLERANCE_CENTS. An absent amount is unverified, not agreed.
-     *
-     * It is staff-triggered and it marks orders paid DIRECTLY, in a batch whose totals are summed
-     * into one expected figure — so a wrong answer here is written across every order at once.
-     * The refusal therefore writes one payment.verification_uncertain row PER ORDER: the staff
-     * member sees the 409, but nobody else does, and these are charged customers whose orders
-     * stay unpaid. The resolution procedure finds them by entity_id on that action.
+     * WHAT THESE ORDERS STILL OWE, from the projection, plus the gratuity the prepared charge
+     * carried (the intent's, or Σ pending_tip_cents). Integer cents; exact; an absent gateway
+     * amount is unverified, never agreed (#197 / #190, unchanged).
      */
-    const amountVerified =
-      paidAmount !== null &&
-      amountsMatch(paidAmount, expectedAmount, GATEWAY_AMOUNT_TOLERANCE_CENTS)
+    const outstandingCents = loaded.rows.reduce(
+      (sum, r) => sum + (loaded.byId.get(String(r.id))?.outstandingCents ?? 0),
+      0,
+    )
+    const tipCents = bound.intent
+      ? bound.intent.tipCents
+      : refOrderRows.reduce((sum, r) => sum + Math.max(0, Math.round(Number(r.pending_tip_cents ?? 0)) || 0), 0)
+    const expectedCents = outstandingCents + tipCents
+    const expectedAmount = expectedCents / 100
+    const paidAmount = result.amount
+    const gatewayCents = paidAmount === null ? null : Math.round(Number(paidAmount) * 100)
+    const amountVerified = gatewayCents !== null && gatewayCents === expectedCents
 
     if (!amountVerified) {
       const error =
         paidAmount === null
           ? `Amount unverified. Finatic reports paid for ${merchantOrderNo} but returned no amount, ` +
             `so the expected ${expectedAmount.toFixed(2)} could not be confirmed.`
-          : `Amount mismatch. Expected ${expectedAmount.toFixed(2)}, got ${paidAmount.toFixed(2)}`
+          : `Amount mismatch. Expected ${expectedAmount.toFixed(2)}, got ${Number(paidAmount).toFixed(2)}`
       console.error('[RECONCILE] refusing to mark paid:', error)
 
-      for (const { orderId } of rows) {
+      /**
+       * One payment.verification_uncertain row PER ORDER: the staff member sees the 409, but these
+       * are charged customers whose orders stay unpaid, and the resolution procedure finds them by
+       * entity_id on that action.
+       */
+      for (const orderId of orderIds) {
         const { error: uncertainAuditError } = await supabase.from('audit_logs').insert({
           restaurant_id: restaurantUuid,
           action: 'payment.verification_uncertain',
@@ -205,20 +275,17 @@ export async function POST(req: Request) {
             // from a figure that was checked and agreed.
             finaticAmount: paidAmount,
             expectedAmount,
+            expectedBasis: 'projection_outstanding_plus_tip',
             amountVerified: false,
             businessOrderNo: merchantOrderNo,
-            // The batch this order was reconciled in — expectedAmount is their SUM, so a single
-            // order's total will not match it and the row would be unreadable without this.
             batchOrderIds: orderIds,
+            staffUserId: userId,
             source: 'staff_reconcile',
             outcome: 'left_pending_finatic_uncertain',
           },
         })
         if (uncertainAuditError) {
-          console.error(
-            '[RECONCILE] payment.verification_uncertain audit failed:',
-            uncertainAuditError,
-          )
+          console.error('[RECONCILE] payment.verification_uncertain audit failed:', uncertainAuditError)
         }
       }
 
@@ -226,54 +293,103 @@ export async function POST(req: Request) {
         {
           ok: false,
           paid: false,
+          applied: false,
+          code: 'AMOUNT_UNVERIFIED',
           error,
           outcome: 'left_pending_finatic_uncertain',
           expectedAmount,
           paidAmount,
         },
-        { status: 409 }
+        { status: 409 },
       )
     }
 
-    const transId = String(raw.psn || raw.transaction_id || '') || null
-
-    /**
-     * #234. THIS ROUTE MARKED ORDERS PAID WITH NO `paid_at`, AND THE SAFETY NET COULD NOT SEE THEM.
-     *
-     * `orders.paid_at` is nullable with no default and no trigger, so an order reconciled here had
-     * `payment_status='paid'` and `paid_at IS NULL`. The paid-but-never-issued sweep in
-     * reconcile-orphan-payments filters `.eq('payment_status','paid').gte('paid_at', since)`, and
-     * a NULL fails that comparison — so a staff-reconciled order was PERMANENTLY invisible to the
-     * compensating control, not merely late to it.
-     *
-     * The customer therefore never got a receipt, and the mechanism that exists to catch exactly
-     * that could not.
-     *
-     * FIX-FORWARD ONLY, and this is the honest limit: the TRUE payment date does not exist
-     * anywhere for these orders. The gateway settled at some earlier moment this route never
-     * learns. Stamping `now()` records when the RECONCILIATION happened, which is a real fact and
-     * the one the sweep needs — it is NOT a claim about when the customer paid. Historical rows
-     * already carrying NULL are left alone; inventing a date for them would be worse than the gap.
-     *
-     * Only set when it is absent, so a re-run cannot move a date that a real settlement wrote.
-     */
-    const reconciledAt = new Date().toISOString()
-    for (const { orderId, data } of rows) {
-      const currentStatusRaw = String(data.status || '')
-      const nextStatus =
-        currentStatusRaw === 'pending' ? 'accepted' : currentStatusRaw || 'accepted'
-      const patch: Record<string, unknown> = {
-        status: nextStatus,
-        payment_status: 'paid',
-        paycloud_transaction_id: transId,
-      }
-      if (!data.paid_at) patch.paid_at = reconciledAt
-
-      const { error } = await supabase.from('orders').update(patch).eq('id', orderId)
-      if (error) throw error
+    // ---- 4. the gateway transaction is not already another payment's --------------------------
+    const consumedAfter = await referenceConsumption(supabase, {
+      restaurantId: restaurantUuid,
+      merchantOrderNo,
+      intent: bound.intent,
+      transactionId: result.transactionId,
+    })
+    if (consumedAfter.consumed === null) {
+      return refuse({ code: 'REFERENCE_UNREADABLE', error: consumedAfter.detail, status: 503 })
+    }
+    if (consumedAfter.consumed) {
+      return refuse({
+        code: 'REFERENCE_ALREADY_CONSUMED',
+        error: `The gateway transaction for ${merchantOrderNo} has already been applied (${consumedAfter.detail}).`,
+        status: 409,
+        extra: { merchantOrderNo, consumedBy: consumedAfter.by },
+      })
     }
 
-    return NextResponse.json({ ok: true, paid: true, source: 'query', merchantOrderNo }, { status: 200 })
+    // ---- 5. apply: one transaction, conditional, ledgered, audited ----------------------------
+    const settled = await settleWholeOrderPayment(supabase, {
+      restaurantId: restaurantUuid,
+      leadOrderIds: bound.leadOrderIds,
+      intent: bound.intent,
+      merchantOrderNo,
+      transactionId: result.transactionId,
+      gatewayAmount: paidAmount,
+      paymentMethod: 'card',
+      source: 'staff_reconcile',
+      mismatchSource: 'staff_reconcile',
+      allowCancelledRecovery: false,
+      extraAuditMetadata: {
+        staffUserId: userId,
+        finaticStatus: result.status,
+        finaticTransactionId: result.transactionId,
+        finaticAmount: paidAmount,
+        businessOrderNo: merchantOrderNo,
+      },
+    })
+
+    if (!settled.ok) {
+      const transient = settled.reason === 'rpc_failed' || settled.reason === 'target_unreadable'
+      return refuse({
+        code: `SETTLEMENT_${settled.reason.toUpperCase()}`,
+        error: `The settlement was not applied (${settled.reason}).`,
+        status: transient ? 503 : 409,
+        extra: { outcome: 'left_pending_finatic_uncertain', merchantOrderNo },
+      })
+    }
+
+    const applied = settled.applied && settled.claimedOrderIds.length > 0
+    if (applied) {
+      const { error: auditError } = await supabase.from('audit_logs').insert(
+        settled.claimedOrderIds.map((orderId) => ({
+          restaurant_id: restaurantUuid,
+          action: 'payment.staff_reconciled',
+          entity_type: 'order',
+          entity_id: orderId,
+          metadata: {
+            staffUserId: userId,
+            businessOrderNo: merchantOrderNo,
+            gatewayTransactionId: result.transactionId,
+            settlementGatewayAmountCents: gatewayCents,
+            settlementExpectedAmountCents: expectedCents,
+            intentId: bound.intent?.id ?? null,
+            batchOrderIds: orderIds,
+            source: 'staff_reconcile',
+          },
+        })),
+      )
+      // The settlement's own audit row is already committed inside the RPC; this one adds WHO.
+      if (auditError) console.error('[RECONCILE] payment.staff_reconciled audit failed:', auditError)
+    }
+
+    return NextResponse.json(
+      {
+        ok: true,
+        paid: true,
+        applied,
+        outcome: applied ? 'settled' : 'already_settled',
+        source: 'query',
+        merchantOrderNo,
+        claimedOrderIds: settled.claimedOrderIds,
+      },
+      { status: 200 },
+    )
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : 'Failed to reconcile payment'
     return NextResponse.json({ ok: false, error: msg }, { status: 502 })

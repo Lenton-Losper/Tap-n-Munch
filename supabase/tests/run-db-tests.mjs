@@ -49,6 +49,8 @@ const MIGRATIONS = [
   'supabase/migrations/20260829150000_amend_order_lines_function.sql',
   'supabase/migrations/20260906120100_order_line_events_void_reason.sql',
   'supabase/migrations/20260928150000_amend_order_lines_refuse_paid.sql',
+  // Sprint 2026-09-29 task 7: a device-reported sale row is marked as one (origin, device_amount_check).
+  'supabase/migrations/20260929110000_payment_events_origin.sql',
 ]
 
 /**
@@ -435,6 +437,28 @@ const MUTATIONS = {
         "     AND false\n     AND (e->>'payment_method' IS NULL",
       ),
   },
+  /**
+   * Sprint 2026-09-29 task 7 (20260929110000). A device report must never be able to present as
+   * something it is not.
+   */
+  MO1: {
+    what: 'payment_events.origin accepts any value (a device row could claim to be gateway-verified)',
+    expect: ['origin/unknown_origin_refused'],
+    apply: (sql) =>
+      sql.replace(
+        "CHECK (origin IS NULL OR origin IN ('gateway', 'terminal_device'))",
+        'CHECK (true)',
+      ),
+  },
+  MO2: {
+    what: 'device_amount_check is accepted on a non-device row',
+    expect: ['origin/check_on_non_device_refused'],
+    apply: (sql) =>
+      sql.replace(
+        "          origin = 'terminal_device'\n          AND device_amount_check IN (",
+        '          true\n          AND device_amount_check IN (',
+      ),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -540,6 +564,8 @@ function runSuite() {
   psql(readRepo('supabase/tests/settlement-rpc.test.sql'))
   // Runs second: it reuses the settlement file's _test_results, _expect() and _seed().
   psql(readRepo('supabase/tests/amend-rpc.test.sql'))
+  // Reuses the same helpers; the payment_events origin columns (20260929110000).
+  psql(readRepo('supabase/tests/payment-events-origin.test.sql'))
   const total = Number(psqlValue('SELECT count(*) FROM public._test_results;'))
   const failed = psqlValue(
     "SELECT string_agg(name || '  ::  ' || COALESCE(detail,''), E'\\n') " +

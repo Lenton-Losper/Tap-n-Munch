@@ -81,7 +81,7 @@ export class InMemoryDb {
   }
 }
 
-type Filter = { kind: 'eq' | 'neq' | 'is_null'; column: string; value: unknown }
+type Filter = { kind: 'eq' | 'neq' | 'is_null' | 'gte'; column: string; value: unknown }
 
 class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   private filters: Filter[] = []
@@ -108,6 +108,14 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   }
   neq(column: string, value: unknown) {
     this.filters.push({ kind: 'neq', column, value })
+    return this
+  }
+  /**
+   * `.gte()` on a string-ordered column (ISO timestamps, as the orphan-payments cron filters
+   * `created_at` / `paid_at`). A NULL never satisfies it, as in Postgres.
+   */
+  gte(column: string, value: unknown) {
+    this.filters.push({ kind: 'gte', column, value })
     return this
   }
   /**
@@ -196,6 +204,7 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
         // row whose voided_at is the empty string. For a filter that excludes voided rows from a
         // billing read, matching too much is the dangerous direction.
         if (f.kind === 'is_null') return r[f.column] == null
+        if (f.kind === 'gte') return r[f.column] != null && String(r[f.column]) >= String(f.value)
         return f.kind === 'eq'
           ? String(r[f.column] ?? '') === String(f.value)
           : String(r[f.column] ?? '') !== String(f.value)
