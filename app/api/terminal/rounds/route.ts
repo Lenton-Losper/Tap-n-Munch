@@ -63,6 +63,7 @@ import { resolveOrderRestaurantScope } from '@/lib/supabase/restaurants'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
 import { createOrder } from '@/lib/orders/create-order'
+import { UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
 import {
@@ -243,6 +244,8 @@ export async function POST(request: Request) {
       idempotencyKey,
       // Stays on the tab -- the table is not closed by taking a round.
       isClosed: false,
+      // C6: a variant item must arrive fully chosen; never priced at base (often N$0) by default.
+      requireCompleteVariantSelection: true,
     })
 
     /**
@@ -352,6 +355,14 @@ export async function POST(request: Request) {
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
+    // C5: a pricing refusal is a 400 the terminal must NOT retry. As a 500 it was retried
+    // forever -- the same unpriceable round, re-sent until somebody cleared the queue.
+    if (err instanceof UnmatchedMenuItemError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code, unavailableItems: err.items },
+        { status: 400 },
+      )
+    }
     const message = err instanceof Error ? err.message : 'Internal server error'
     console.error('[TERMINAL/ROUNDS POST]', message)
     return NextResponse.json({ error: message }, { status: 500 })

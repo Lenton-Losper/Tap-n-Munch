@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveOrderRestaurantScope } from '@/lib/supabase/restaurants'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { createOrder } from '@/lib/orders/create-order'
+import { UnmatchedMenuItemError } from '@/lib/orders/calculate-order-pricing'
 import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-orders'
@@ -141,6 +142,8 @@ export async function POST(request: Request) {
       customerName: null,
       idempotencyKey: request.headers.get('x-idempotency-key') || null,
       isClosed: true,
+      // C6: a variant item must arrive fully chosen; never priced at base (often N$0) by default.
+      requireCompleteVariantSelection: true,
     })
 
     return NextResponse.json({
@@ -150,6 +153,14 @@ export async function POST(request: Request) {
     })
   } catch (err: unknown) {
     if (err instanceof Response) return err
+    // C5: a pricing refusal is the waiter's to fix, not a server fault -- 400 with the code and
+    // the offending lines, the same body /api/orders returns. A 500 here read as "try again".
+    if (err instanceof UnmatchedMenuItemError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code, unavailableItems: err.items },
+        { status: 400 },
+      )
+    }
     const message = err instanceof Error ? err.message : 'Internal server error'
     console.error('[TERMINAL/ORDERS POST]', message)
     return NextResponse.json({ error: message }, { status: 500 })

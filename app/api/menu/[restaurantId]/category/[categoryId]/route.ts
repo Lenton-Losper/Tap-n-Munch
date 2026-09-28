@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getCachedMenu, setCachedMenu } from '@/lib/cache/menu-cache'
-import { getSupabaseMenuItemsByCategory } from '@/lib/supabase/menu'
+import { getSupabaseMenuItemsByCategory, withResolvedVariantGroups } from '@/lib/supabase/menu'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { resolveRestaurantUuid } from '@/lib/supabase/restaurants'
 
@@ -52,7 +52,8 @@ export async function GET(
         (group) => Array.isArray(group?.items) && group.items.length > 0
       )
     if (cachedHasItems) {
-      return NextResponse.json(cached)
+      // C6: a cached payload may predate `resolved_variant_groups`; it is recomputed, not trusted.
+      return NextResponse.json(withResolvedVariantGroups(cached))
     }
 
     const payload = await getSupabaseMenuItemsByCategory(restaurantId, categoryId, true)

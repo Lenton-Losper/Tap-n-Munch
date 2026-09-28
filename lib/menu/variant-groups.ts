@@ -520,3 +520,106 @@ export function findMissingRequiredVariantGroups(
   }
   return missing
 }
+
+/* ------------------------------------------------------------------------------------------
+ * TERMINAL SIDE (Sprint 2026-09-28, contract C6)
+ *
+ * The waiter terminal had no variant support at all: it sent a variant item with no selection
+ * and the server priced it at base_price, which on a variant-only item is the schema default 0.
+ * A N$0 sale with no error. The two functions below are what the terminal and the server share
+ * so that cannot recur: the menu payload publishes exactly the groups the server prices
+ * (`resolvedVariantGroupsForWire`), and the terminal order paths refuse anything that does not
+ * answer them completely (`checkCompleteVariantSelection`).
+ *
+ * BOTH READ `getVariantGroups()` AND NOTHING ELSE, precedence unchanged -- typed groups first,
+ * the legacy column's synthesised required 'Size' group otherwise. Which of the two SHOULD win
+ * where they disagree is an owner ruling not taken here. What matters for money is that the
+ * terminal is shown, and is checked against, the same resolution the pricer charges from.
+ *
+ * NOT #228. `findMissingRequiredVariantGroups` above reads the RAW stored groups on purpose; a
+ * raw group normalisation drops is invisible to the terminal, so enforcing it there would make
+ * an item permanently unsellable from the till. That question stays with #228.
+ * ------------------------------------------------------------------------------------------ */
+
+/** One group as `GET /api/menu/{rid}/category/{cid}` publishes it (`resolved_variant_groups`). */
+export type WireVariantGroup = {
+  name: string
+  required: boolean
+  type: 'text' | 'price'
+  /** `price` is ABSOLUTE for a price group (it replaces base_price) and null for a text group. */
+  options: Array<{ label: string; price: number | null }>
+}
+
+export function resolvedVariantGroupsForWire(item: VariantItem): WireVariantGroup[] {
+  return getVariantGroups(item).map((group) => ({
+    name: group.name,
+    required: group.required,
+    type: group.type,
+    options: group.options.map((option) =>
+      typeof option === 'string'
+        ? { label: option, price: null }
+        : { label: String(option.label || ''), price: Number(option.price) },
+    ),
+  }))
+}
+
+export type VariantSelectionCheck = {
+  /** Required groups the selection leaves unanswered. */
+  missingRequired: string[]
+  /** Selection keys that name no group on this item. */
+  unknownGroups: string[]
+  /** Answers that are not one of their group's options. */
+  unknownOptions: Array<{ groupName: string; label: string }>
+  /** The selection restated in the server's own group order and labels. Answered groups only. */
+  canonical: Record<string, string>
+  /** What each answered group resolved to; `price` null for a text group. */
+  resolution: Array<{ group: string; label: string; price: number | null }>
+}
+
+/**
+ * The COMPLETE check the terminal order paths apply. Stricter than the customer channel, which
+ * tolerates a missing required group and an unknown text option (and must keep doing so -- the
+ * QR flow is out of scope for this change and pinned by its own tests).
+ *
+ * Labels are matched exactly, as `findSelectedVariantPrice` matches them, so a selection this
+ * accepts is one the pricer resolves -- the two cannot disagree about whether an option exists.
+ */
+export function checkCompleteVariantSelection(
+  item: VariantItem,
+  selection: Record<string, string>,
+): VariantSelectionCheck {
+  const groups = getVariantGroups(item)
+  const byName = new Map(groups.map((group) => [group.name, group]))
+  const result: VariantSelectionCheck = {
+    missingRequired: [],
+    unknownGroups: [],
+    unknownOptions: [],
+    canonical: {},
+    resolution: [],
+  }
+
+  for (const key of Object.keys(selection)) {
+    if (!byName.has(key)) result.unknownGroups.push(key)
+  }
+
+  for (const group of groups) {
+    const chosen = String(selection[group.name] || '').trim()
+    if (!chosen) {
+      if (group.required) result.missingRequired.push(group.name)
+      continue
+    }
+    const option = group.options.find((opt) => getVariantOptionLabel(opt) === chosen)
+    if (option === undefined) {
+      result.unknownOptions.push({ groupName: group.name, label: chosen })
+      continue
+    }
+    result.canonical[group.name] = chosen
+    result.resolution.push({
+      group: group.name,
+      label: chosen,
+      price: typeof option === 'string' ? null : Number(option.price),
+    })
+  }
+
+  return result
+}

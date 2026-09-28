@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
 import { useAuth } from '@/components/auth/auth-provider'
+import { orderLineDisplayName } from '@/lib/orders/line-display'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -101,7 +102,8 @@ function formatItemsSummary(items: unknown) {
   if (!Array.isArray(items) || items.length === 0) return '—'
   return items
     .map((item) => {
-      const name = String(item?.display_name || item?.name || 'Item')
+      // Stored lines carry camelCase `displayName`; see lib/orders/line-display.ts.
+      const name = orderLineDisplayName(item)
       const qty = Number(item?.quantity) || 1
       return qty > 1 ? `${qty}× ${name}` : name
     })

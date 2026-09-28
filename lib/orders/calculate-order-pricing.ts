@@ -5,6 +5,8 @@ import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-
 import { isChargeableMenuStatus } from '@/lib/menu/menu-item-status'
 import { listNames } from '@/lib/orders/list-names'
 import {
+  buildVariantDisplayName,
+  checkCompleteVariantSelection,
   findSelectedVariantPrice,
   findUnpricedVariantSelections,
   findVariantPriceByOptionLabel,
@@ -78,11 +80,35 @@ export type UnmatchedMenuItemCode =
    * charged at a figure nobody quoted. See `unpriceableSelectionsFor` for exactly what counts.
    */
   | 'MENU_ITEM_UNPRICEABLE_SELECTION'
+  /**
+   * Sprint 2026-09-28 (C6). A required variant group was left unanswered. Raised ONLY under
+   * `requireCompleteVariantSelection` -- i.e. only on the terminal order paths. The customer
+   * channel has never refused this and still does not.
+   */
+  | 'MENU_ITEM_VARIANT_REQUIRED'
 
 export type UnmatchedMenuItemLine = {
   menuItemId: string
   /** The item's own name where the row was found; the cart's label otherwise. */
   name: string
+  /**
+   * The variant groups at fault, for the variant refusals raised under
+   * `requireCompleteVariantSelection`. Absent everywhere else, so no existing body changes.
+   */
+  groups?: string[]
+}
+
+export type CalculateOrderPricingOptions = {
+  /**
+   * Sprint 2026-09-28 (C6). Set ONLY by the two terminal order routes (`/api/terminal/orders`,
+   * `/api/terminal/rounds`), via createOrder. Every line must answer every required variant group
+   * of its item, and may name no group or option the item does not have. Answered lines are
+   * persisted with the server's canonical `selectedVariants` and a `name`/`displayName` that
+   * carries the variant, so stations, receipts, history and invoices show what was sold.
+   *
+   * Off (the default) is the customer channel and every repricer, whose behaviour is unchanged.
+   */
+  requireCompleteVariantSelection?: boolean
 }
 
 export class UnmatchedMenuItemError extends Error {
@@ -298,6 +324,12 @@ export function unpriceableSelectionsFor(
  * ITEM rather than the internal group name, because "Flat White" is a thing on the menu and
  * "price_group_2" is not.
  */
+/** Names the item AND the group, because a waiter has to know which button to press. */
+function copyVariantRequired(lines: UnmatchedMenuItemLine[]): string {
+  const parts = lines.map((line) => `${line.name} (${listNames(line.groups ?? [])})`)
+  return `Choose ${parts.length === 1 ? 'an option' : 'options'} for ${listNames(parts)} before sending.`
+}
+
 function copyUnpriceable(names: string[]): string {
   const list = listNames(names)
   return names.length === 1
@@ -416,7 +448,9 @@ export async function calculateOrderPricing(
   supabase: SupabaseClient,
   restaurantId: string,
   items: unknown[],
+  options: CalculateOrderPricingOptions = {},
 ): Promise<OrderPricingResult> {
+  const requireComplete = options.requireCompleteVariantSelection === true
   const warnings: string[] = []
   const rawItems = (Array.isArray(items) ? items : []) as Record<string, unknown>[]
 
@@ -462,8 +496,11 @@ export async function calculateOrderPricing(
   // customer sees the item names, an operator needs to know which option went missing.
   const unpriceable: UnmatchedMenuItemLine[] = []
   const unpriceableDetail: string[] = []
+  // C6, terminal only. Keyed by line index so the pricing pass can stamp the canonical selection.
+  const variantRequired: UnmatchedMenuItemLine[] = []
+  const completeChecks = new Map<number, ReturnType<typeof checkCompleteVariantSelection>>()
 
-  for (const item of rawItems) {
+  for (const [index, item] of rawItems.entries()) {
     const menuItemId = extractMenuItemId(item)
     if (!menuItemId) {
       missingId.push({ menuItemId: '', name: cartLineName(item) })
@@ -494,13 +531,47 @@ export async function calculateOrderPricing(
      * rule and for the cases that deliberately stay warnings.
      */
     const unpriceableHere = unpriceableSelectionsFor(item, menuItem)
-    if (unpriceableHere.length > 0) {
+
+    /**
+     * C6. THE TERMINAL'S COMPLETE CHECK, on top of F6 and never instead of it.
+     *
+     * Without it a terminal line with no selection priced at `Number(base_price) || 0` -- and a
+     * variant-only item's base_price is the schema default, 0. So the till sold it for N$0 and
+     * nobody was told. A required group left unanswered is now a refusal naming the group; a
+     * group or option the item does not have is F6's refusal, widened to text groups and to
+     * unknown group NAMES, because on this path a label the server cannot match is a label the
+     * kitchen cannot make either.
+     */
+    const unknownHere: string[] = []
+    if (requireComplete) {
+      const check = checkCompleteVariantSelection(menuItem, extractVariantSelection(item))
+      completeChecks.set(index, check)
+      if (check.missingRequired.length > 0) {
+        variantRequired.push({
+          menuItemId,
+          name: String(menuItem.name || '').trim() || cartLineName(item),
+          groups: check.missingRequired,
+        })
+      }
+      unknownHere.push(...check.unknownGroups, ...check.unknownOptions.map((u) => u.groupName))
+    }
+
+    if (unpriceableHere.length > 0 || unknownHere.length > 0) {
+      const groups = [
+        ...new Set([
+          ...unknownHere,
+          ...unpriceableHere.filter((s) => s.kind === 'variant').map((s) => s.group),
+        ]),
+      ]
       unpriceable.push({
         menuItemId,
         name: String(menuItem.name || '').trim() || cartLineName(item),
+        // Only on the terminal path, so the customer channel's body is byte-for-byte unchanged.
+        ...(requireComplete ? { groups } : {}),
       })
       unpriceableDetail.push(
         ...unpriceableHere.map((s) => `${menuItemId}: ${s.kind} "${s.group}" option "${s.label}"`),
+        ...unknownHere.map((g) => `${menuItemId}: variant group "${g}" or its option is unknown`),
       )
     }
   }
@@ -529,6 +600,17 @@ export async function calculateOrderPricing(
     )
   }
   /**
+   * C6. Before F6: "choose a size" is the first thing a waiter can act on, and a line that is
+   * both unanswered and mis-answered is fixed by opening the same picker.
+   */
+  if (variantRequired.length > 0) {
+    throw new UnmatchedMenuItemError(
+      copyVariantRequired(variantRequired),
+      'MENU_ITEM_VARIANT_REQUIRED',
+      variantRequired,
+    )
+  }
+  /**
    * F6, LAST of the four. It is ordered after the other three because each of those describes the
    * ITEM being wrong, which is a bigger problem than the options on it and is what a customer
    * should be told about first. A line that is both withdrawn and mis-priced is reported as
@@ -550,13 +632,41 @@ export async function calculateOrderPricing(
     )
   }
 
-  const pricedItems: PricedOrderLineItem[] = rawItems.map((item) => {
+  const pricedItems: PricedOrderLineItem[] = rawItems.map((item, index) => {
     const menuItemId = extractMenuItemId(item)
     // Re-read rather than carried through: the loop above established that every line resolves
     // to a chargeable row, so this cannot miss. Non-null asserted because the Map's type cannot
     // express what that loop proved — ESTABLISHED, not asserted to quiet the checker.
     const menuItem = menuItemsById.get(menuItemId)!
-    return priceCatalogLine(item, menuItem, ratesById, fallbackDefault, warnings)
+    const check = completeChecks.get(index)
+    if (!check || check.resolution.length === 0) {
+      return priceCatalogLine(item, menuItem, ratesById, fallbackDefault, warnings)
+    }
+    /*
+     * C6, terminal only. The line is priced from, and persisted with, the SERVER's reading of the
+     * selection: canonical labels in group order, and a name built from the catalog name by the
+     * same buildVariantDisplayName the customer cart uses. `order_lines.name_snapshot` reads
+     * `name`, so this is what every station, receipt, history row and invoice then shows.
+     */
+    const catalogName = String(menuItem.name || '').trim() || cartLineName(item)
+    const displayName = buildVariantDisplayName(catalogName, check.canonical)
+    const priced = priceCatalogLine(
+      {
+        ...item,
+        selectedVariants: check.canonical,
+        name: displayName,
+        displayName,
+        variantResolution: check.resolution,
+      },
+      menuItem,
+      ratesById,
+      fallbackDefault,
+      warnings,
+    )
+    // A client `price` is never read, but a stale one stored beside the real unitPrice would be
+    // shown by any renderer that reads `price` first. Restated from the server, not trusted.
+    if ('price' in priced) priced.price = priced.unitPrice
+    return priced
   })
 
   const subtotal = round2(pricedItems.reduce((sum, item) => sum + item.subtotal, 0))
