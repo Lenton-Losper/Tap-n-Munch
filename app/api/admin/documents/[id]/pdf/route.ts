@@ -9,7 +9,7 @@ import { generateDocumentPdfBytes } from '@/lib/documents/generate-document-pdf'
  * the same PDF this download does. Two parsers over the same jsonb would drift, and the emailed
  * invoice would quietly stop matching the downloaded one.
  */
-import { toBusinessDocumentRow } from '@/lib/documents/business-document-row'
+import { loadDocumentPayments, toBusinessDocumentRow } from '@/lib/documents/business-document-row'
 
 export const dynamic = 'force-dynamic'
 
@@ -79,7 +79,8 @@ export async function GET(
       }
     }
 
-    const document = toBusinessDocumentRow(data as Record<string, unknown>, lineage)
+    const payments = await loadDocumentPayments(supabase, data)
+    const document = toBusinessDocumentRow(data as Record<string, unknown>, lineage, { payments })
     const pdfBytes = await generateDocumentPdfBytes(document)
     const filename = `${document.document_type}-${document.document_number}.pdf`
 

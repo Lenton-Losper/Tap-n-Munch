@@ -1,11 +1,25 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
-import { createBusinessDocument, type LineItemInput } from '@/lib/documents/create-document'
+import { createBusinessDocument } from '@/lib/documents/create-document'
+import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
+import {
+  INVOICE_LINE_COLUMNS,
+  INVOICE_ORDER_COLUMNS,
+  invoicePaymentRecords,
+  planInvoice,
+  type AllocationSettlementRow,
+  type InvoiceOrderRow,
+  type InvoicePlan,
+  type InvoiceRefusalCode,
+  type SaleEventRow,
+} from '@/lib/documents/invoice-projection'
+import type { FinancialLineInput } from '@/lib/orders/order-financials'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
-import { round2, resolveTaxRate } from '@/lib/tax-rates/apply-tax'
+import { settledCentsByOrder } from '@/lib/payments/settled-cents'
+import { resolveTaxRate } from '@/lib/tax-rates/apply-tax'
 import { getTaxRatesForRestaurant, defaultTaxRate } from '@/lib/tax-rates/queries'
 
 /**
- * RAISE A FORMAL INVOICE FROM AN EXISTING ORDER.
+ * RAISE A FORMAL INVOICE FROM AN EXISTING ORDER, OR FROM A WHOLE TAB.
  *
  * ================================================================================================
  * AN INVOICE IS A DOCUMENT. IT IS NOT A PAYMENT.
@@ -14,53 +28,41 @@ import { getTaxRatesForRestaurant, defaultTaxRate } from '@/lib/tax-rates/querie
  * Nothing in this module calls a gateway, mints a merchant order number, touches a payment intent,
  * writes a settlement, or changes `orders.payment_status` / `orders.status`. Creating an invoice
  * for an unpaid order leaves it exactly as unpaid as it was, and creating one for a paid order
- * collects nothing further. The only row written is one `business_documents` row (plus the sequence
- * counter the numbering RPC advances).
+ * collects nothing further. The rows written are: one `business_documents` row (plus the sequence
+ * counter the numbering RPC advances), and -- when money has ALREADY been collected -- the
+ * `document_payments` rows that let the document engine's own balance say so (see step 9).
  *
- * That separation is the point, and it is load-bearing: the moment a document operation can move
- * money, every guard on the payment path has to be restated here, and one of them will be missed.
+ * `document_payments` is the document engine's ledger of what an invoice has been paid, not a
+ * payment: writing one moves no money and is read by nothing on the payment path. It is how the
+ * engine's balance/status recompute (lib/documents/recompute-status.ts) comes to say PAID for a
+ * tab that was settled at the table, which is what the Sprint 2026-09-28 brief requires (it
+ * answers open question 4 of docs/decisions-2026-09-13-invoice-and-payment-surfaces.md).
  *
  * ================================================================================================
- * THE SERVER IS THE ONLY SOURCE OF FIGURES
+ * EVERY FIGURE IS THE PROJECTION'S
  * ================================================================================================
  *
- * The caller supplies an order id and nothing else that can affect money. Line descriptions,
- * quantities, unit prices, tax rates, the total -- all are read from the order row the server
- * loads. A client cannot propose a price, a quantity, a VAT figure, a total, or a restaurant.
+ * The caller supplies an order id or a tab id and nothing else that can affect money. Lines,
+ * quantities, unit prices, what is voided, what is paid and what is outstanding all come from
+ * lib/orders/order-financials.ts through lib/documents/invoice-projection.ts. `orders.total` and
+ * `orders.items` are never billed as stored: both include voided lines, which is the defect the
+ * first version of this module shipped with.
  *
  * ================================================================================================
  * VAT IS NOT RECOMPUTED UNDER A NEW POLICY -- IT IS REPRODUCED, AND THEN CHECKED
  * ================================================================================================
  *
  * `createBusinessDocument` computes per-line VAT from each line's `tax_rate_id` through exactly the
- * same hierarchy order pricing uses. Handing it the order's own `taxRateId` and `unitPrice` should
- * therefore reproduce the order's own figures.
+ * same hierarchy order pricing uses. The document total must then equal the projection's LIVE
+ * total to the cent, and the invoice is voided rather than issued if it does not. It can differ --
+ * 289 of 4,463 paid production orders have a line with no `taxRateId`, which falls back to the
+ * venue's default rate TODAY, and a venue that changed its rate since the sale would produce a
+ * document stating a figure the customer never paid.
  *
- * "Should" is not good enough for a tax document, so it is VERIFIED: the document total must equal
- * `orders.total` to the cent, and the invoice is refused if it does not. It can differ -- 289 of
- * 4,463 paid production orders have at least one line with no `taxRateId`, which falls back to
- * whatever the venue's default rate is TODAY, and a venue that changed its rate since the sale
- * would produce a document stating a figure the customer never paid.
- *
- * No Namibian tax rule is encoded here, and none is invented. The engine's existing behaviour is
- * reused unchanged; this only refuses to issue a document that disagrees with the sale it claims to
- * describe.
+ * No Namibian tax rule is encoded here, and none is invented.
  */
 
-/** Order lifecycle states a formal invoice may be raised from. */
-export const INVOICEABLE_ORDER_STATUSES = ['completed'] as const
-
-export type InvoiceFromOrderRefusalCode =
-  | 'ORDER_NOT_FOUND'
-  | 'ORDER_CANCELLED'
-  | 'ORDER_NOT_FINAL'
-  | 'ORDER_AWAITING_REACCEPTANCE'
-  | 'ORDER_REFUNDED'
-  | 'ORDER_HAS_NO_LINES'
-  | 'ORDER_TOTAL_UNUSABLE'
-  | 'BILLING_PROFILE_INCOMPLETE'
-  | 'INVOICE_ALREADY_EXISTS'
-  | 'DOCUMENT_TOTAL_DISAGREES_WITH_ORDER'
+export type InvoiceFromOrderRefusalCode = InvoiceRefusalCode
 
 export type InvoiceFromOrderResult =
   | { ok: true; document: Record<string, unknown>; warnings: string[] }
@@ -71,26 +73,9 @@ export type InvoiceFromOrderResult =
       message: string
       /** For BILLING_PROFILE_INCOMPLETE: exactly which Settings fields are missing. */
       missingBillingFields?: string[]
-      /** For INVOICE_ALREADY_EXISTS: the document that already bills for this order. */
+      /** For INVOICE_ALREADY_EXISTS: the document that already bills for this order/tab. */
       existingDocument?: { id: string; document_number: string; status: string }
     }
-
-type OrderRow = {
-  id: string
-  restaurant_id: string
-  order_number: number | null
-  status: string | null
-  payment_status: string | null
-  total: number | null
-  items: unknown
-  placed_at: string | null
-  table_number: number | null
-  customer_name: string | null
-  requires_reacceptance: boolean | null
-}
-
-const ORDER_COLUMNS =
-  'id, restaurant_id, order_number, status, payment_status, total, items, placed_at, table_number, customer_name, requires_reacceptance'
 
 /**
  * THE MINIMUM A FORMAL INVOICE MUST CARRY ABOUT THE MERCHANT, and no more.
@@ -100,13 +85,8 @@ const ORDER_COLUMNS =
  * amount and carry no registration number, and the system could not say whether that is a
  * compliance failure or correct output for an unregistered merchant.
  *
- * Bank details are deliberately NOT required. An invoice can be settled by means other than a
- * transfer, and making them mandatory would be inventing a rule this codebase does not state
- * anywhere. They are rendered when present.
- *
- * `vat_number` is conditionally required -- see requiredBillingFieldsFor() -- on the same rule the
- * billing-profile route already enforces: claiming VAT without a registration number puts an
- * unidentifiable VAT charge in front of a customer.
+ * Bank details are deliberately NOT required. `vat_number` is conditionally required -- see
+ * requiredBillingFieldsFor() -- on the same rule the billing-profile route already enforces.
  */
 export const REQUIRED_BILLING_FIELDS = ['registration_number'] as const
 
@@ -114,180 +94,150 @@ export function requiredBillingFieldsFor(chargesVat: boolean): string[] {
   return chargesVat ? [...REQUIRED_BILLING_FIELDS, 'vat_number'] : [...REQUIRED_BILLING_FIELDS]
 }
 
-/**
- * Map an order's stored lines onto document line items.
- *
- * `unitPrice` is carried across unchanged. Under an INCLUSIVE rate -- which is what every priced
- * production line uses -- `applyTaxToAmount` treats `quantity * unit_price` as the gross charged
- * amount and backs the VAT out of it, so the document reproduces the order's gross exactly rather
- * than adding tax on top of a tax-inclusive figure.
- */
-export function orderLinesToInvoiceLines(items: unknown): LineItemInput[] {
-  if (!Array.isArray(items)) return []
-  const lines: LineItemInput[] = []
-  for (const raw of items) {
-    if (!raw || typeof raw !== 'object') continue
-    const item = raw as Record<string, unknown>
+type Supabase = ReturnType<typeof createServerSupabaseClient>
 
-    const quantity = Number(item.quantity)
-    const unitPrice = Number(item.unitPrice ?? item.unit_price ?? item.basePrice)
-    if (!Number.isFinite(quantity) || quantity <= 0) continue
-    if (!Number.isFinite(unitPrice) || unitPrice < 0) continue
+type CommonParams = {
+  /** The restaurant the CALLER is authorized for. Never taken from the request body. */
+  restaurantId: string
+  createdBy: string
+  dueDate?: string | null
+  referenceNote?: string | null
+  /**
+   * Bill-to party. Free-form, entered by staff at the time of raising the invoice, and NOT
+   * persisted to the order -- see the customer-contact note in the route.
+   */
+  billTo?: Record<string, unknown>
+}
 
-    const name = String(item.name ?? '').trim()
-    const taxRateId = item.taxRateId ?? item.tax_rate_id
-    lines.push({
-      // A line with no name is still a real charge; it must not vanish from the document.
-      description: name || 'Item',
-      quantity,
-      unit_price: unitPrice,
-      tax_rate_id: typeof taxRateId === 'string' && taxRateId ? taxRateId : null,
-    })
-  }
-  return lines
+type TabRow = { id: string; restaurant_id: string; table_number: number | null; status: string | null }
+
+type Loaded = {
+  scope: 'order' | 'tab'
+  tab: TabRow | null
+  orders: InvoiceOrderRow[]
+  lines: FinancialLineInput[]
+  settledByOrder: Map<string, number>
 }
 
 export async function createInvoiceFromOrder(
-  supabase: ReturnType<typeof createServerSupabaseClient>,
-  params: {
-    orderId: string
-    /** The restaurant the CALLER is authorized for. Never taken from the request body. */
-    restaurantId: string
-    createdBy: string
-    dueDate?: string | null
-    referenceNote?: string | null
-    /**
-     * Bill-to party. Free-form, entered by staff at the time of raising the invoice, and NOT
-     * persisted to the order -- see the customer-contact note in the route.
-     */
-    billTo?: Record<string, unknown>
-  },
+  supabase: Supabase,
+  params: CommonParams & { orderId: string },
 ): Promise<InvoiceFromOrderResult> {
-  const { orderId, restaurantId, createdBy } = params
-
   // ── 1. The order, read by the server, scoped to the caller's restaurant ────────────────────
   const { data, error } = await supabase
     .from('orders')
-    .select(ORDER_COLUMNS)
-    .eq('id', orderId)
-    .eq('restaurant_id', restaurantId)
+    .select(INVOICE_ORDER_COLUMNS)
+    .eq('id', params.orderId)
+    .eq('restaurant_id', params.restaurantId)
     .maybeSingle()
   if (error) throw error
 
-  const order = data as OrderRow | null
+  const order = data as unknown as InvoiceOrderRow | null
   if (!order) {
     /**
      * The SAME answer for "no such order" and "an order at another venue". Distinguishing them
      * would let a caller enumerate order ids across tenants by reading the refusal.
      */
-    return {
-      ok: false,
-      code: 'ORDER_NOT_FOUND',
-      message: 'That order could not be found at this venue.',
-    }
+    return { ok: false, code: 'ORDER_NOT_FOUND', message: 'That order could not be found at this venue.' }
   }
 
-  // ── 2. Eligibility ────────────────────────────────────────────────────────────────────────
-  const status = String(order.status ?? '').toLowerCase()
+  const loaded = await loadLinesAndSettlements(supabase, { scope: 'order', tab: null, orders: [order] })
+  return issue(supabase, params, loaded)
+}
 
-  if (status === 'cancelled') {
-    return {
-      ok: false,
-      code: 'ORDER_CANCELLED',
-      message:
-        'This order was cancelled, so it cannot be invoiced. Invoicing a cancelled order would ' +
-        'bill a customer for food that was never supplied.',
-    }
+export async function createInvoiceFromTab(
+  supabase: Supabase,
+  params: CommonParams & { tabId: string },
+): Promise<InvoiceFromOrderResult> {
+  const { data: tabData, error: tabError } = await supabase
+    .from('tabs')
+    .select('id, restaurant_id, table_number, status')
+    .eq('id', params.tabId)
+    .eq('restaurant_id', params.restaurantId)
+    .maybeSingle()
+  if (tabError) throw tabError
+  const tab = tabData as TabRow | null
+  if (!tab) {
+    // Same no-enumeration rule as for orders.
+    return { ok: false, code: 'TAB_NOT_FOUND', message: 'That tab could not be found at this venue.' }
   }
 
-  if (!(INVOICEABLE_ORDER_STATUSES as readonly string[]).includes(status)) {
-    /**
-     * IN-FLIGHT ORDERS ARE REFUSED, and this is a deliberate narrowing rather than an oversight.
-     * An order that is pending, preparing or ready can still gain lines, lose lines, be amended or
-     * be cancelled outright. An invoice is immutable once issued and can only be withdrawn through
-     * a credit note, so issuing one against a moving total manufactures corrections.
-     */
-    return {
-      ok: false,
-      code: 'ORDER_NOT_FINAL',
-      message:
-        `This order is still ${order.status ?? 'in progress'}. An invoice can only be raised once ` +
-        'the order is completed, because the amount can still change until then.',
-    }
+  const { data: orderRows, error: ordersError } = await supabase
+    .from('orders')
+    .select(INVOICE_ORDER_COLUMNS)
+    .eq('tab_id', tab.id)
+    .eq('restaurant_id', params.restaurantId)
+  if (ordersError) throw ordersError
+  const orders = ((orderRows ?? []) as unknown as InvoiceOrderRow[]).sort(
+    (a, b) => String(a.placed_at ?? '').localeCompare(String(b.placed_at ?? '')),
+  )
+  if (orders.length === 0) {
+    return { ok: false, code: 'ORDER_HAS_NO_LINES', message: 'This tab has no orders to invoice.' }
   }
 
-  if (order.requires_reacceptance === true) {
-    return {
-      ok: false,
-      code: 'ORDER_AWAITING_REACCEPTANCE',
-      message:
-        'This order was edited and is waiting to be re-accepted. Settle that first — its total is ' +
-        'not final yet.',
-    }
-  }
+  const loaded = await loadLinesAndSettlements(supabase, { scope: 'tab', tab, orders })
+  return issue(supabase, params, loaded)
+}
 
-  // ── 3. Refunds are a credit note's job, never a smaller invoice ───────────────────────────
-  const projections = await getPaymentProjections(supabase, restaurantId, [order.id])
-  const refunded = projections.get(order.id)?.refundedAmount ?? 0
-  if (refunded > 0) {
-    return {
-      ok: false,
-      code: 'ORDER_REFUNDED',
-      message:
-        'Money has been refunded against this order, so a plain invoice would overstate what is ' +
-        'owed. Raise the invoice for the original sale and issue a credit note for the refund.',
-    }
-  }
+async function loadLinesAndSettlements(
+  supabase: Supabase,
+  base: Omit<Loaded, 'lines' | 'settledByOrder'>,
+): Promise<Loaded> {
+  const orderIds = base.orders.map((o) => String(o.id))
+  const { data: lineRows, error: linesError } = await supabase
+    .from('order_lines')
+    .select(INVOICE_LINE_COLUMNS)
+    .in('order_id', orderIds)
+  if (linesError) throw linesError
+  // Fails closed: SettledCentsUnreadable propagates. Not knowing what was collected is not
+  // permission to state that nothing was.
+  const settledByOrder = await settledCentsByOrder(supabase, orderIds)
+  return { ...base, lines: (lineRows ?? []) as unknown as FinancialLineInput[], settledByOrder }
+}
 
-  // ── 4. One invoice per order, unless the first was voided ─────────────────────────────────
-  const { data: existingRows, error: existingError } = await supabase
-    .from('business_documents')
-    .select('id, document_number, status, document_type')
-    .eq('order_id', order.id)
-    .eq('restaurant_id', restaurantId)
-  if (existingError) throw existingError
+async function issue(supabase: Supabase, params: CommonParams, loaded: Loaded): Promise<InvoiceFromOrderResult> {
+  const { restaurantId, createdBy } = params
+  const orderIds = loaded.orders.map((o) => String(o.id))
 
-  const liveInvoice = (existingRows ?? []).find(
-    (d) =>
-      String((d as { document_type?: unknown }).document_type) === 'invoice' &&
-      String((d as { status?: unknown }).status) !== 'void',
-  ) as { id: string; document_number: string; status: string } | undefined
+  // ── 2. Refunds are a credit note's job, never a smaller invoice ───────────────────────────
+  const projections = await getPaymentProjections(supabase, restaurantId, orderIds)
+  const refundedOrderIds = new Set(
+    orderIds.filter((id) => (projections.get(id)?.refundedAmount ?? 0) > 0),
+  )
 
-  if (liveInvoice) {
-    /**
-     * A VOIDED invoice is deliberately not a blocker: `correct_invoice()` voids the original and
-     * issues a replacement, so an order whose only invoice is void has been corrected, not
-     * double-billed. Uniqueness is enforced here rather than by an index because an index cannot
-     * tell a correction from a duplicate.
-     */
+  // ── 3. The plan: eligibility, lines, and the projection's totals ──────────────────────────
+  const plan = planInvoice({
+    scope: loaded.scope,
+    orders: loaded.orders,
+    lines: loaded.lines,
+    settledByOrder: loaded.settledByOrder,
+    refundedOrderIds,
+  })
+  if (!plan.ok) return plan
+
+  // ── 4. One live invoice per order and per tab, unless the earlier one was voided ──────────
+  const existing = await findLiveInvoice(supabase, restaurantId, loaded, plan)
+  if (existing) {
     return {
       ok: false,
       code: 'INVOICE_ALREADY_EXISTS',
-      message: `Invoice ${liveInvoice.document_number} has already been raised for this order.`,
-      existingDocument: {
-        id: String(liveInvoice.id),
-        document_number: String(liveInvoice.document_number),
-        status: String(liveInvoice.status),
-      },
+      message:
+        loaded.scope === 'tab'
+          ? `Invoice ${existing.document_number} already bills for this tab or one of its orders.`
+          : `Invoice ${existing.document_number} has already been raised for this order.`,
+      existingDocument: existing,
     }
   }
 
-  // ── 5. Lines ──────────────────────────────────────────────────────────────────────────────
-  const lineItems = orderLinesToInvoiceLines(order.items)
-  if (lineItems.length === 0) {
+  // ── 5. Payments, read for labelling BEFORE a number is burned ─────────────────────────────
+  const payments = await readPaymentRecords(supabase, restaurantId, loaded, plan)
+  if (!payments) {
     return {
       ok: false,
-      code: 'ORDER_HAS_NO_LINES',
-      message: 'This order has no priced lines to invoice.',
-    }
-  }
-
-  const orderTotal = Number(order.total)
-  if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
-    return {
-      ok: false,
-      code: 'ORDER_TOTAL_UNUSABLE',
-      message: 'This order has no usable total, so an invoice cannot be raised from it.',
+      code: 'PAYMENT_LEDGER_DISAGREES',
+      message:
+        'The payments on these items changed while the invoice was being prepared. Try again in a ' +
+        'moment.',
     }
   }
 
@@ -301,20 +251,14 @@ export async function createInvoiceFromOrder(
 
   /**
    * WHETHER THE DOCUMENT WILL ACTUALLY CHARGE VAT -- resolved the way the engine resolves it, not
-   * guessed from whether a line names a rate.
-   *
-   * A line with NO `tax_rate_id` is not an untaxed line: `resolveTaxRate` falls back to the venue's
-   * default rate, which is the same hierarchy order pricing uses. 289 of 4,463 paid production
-   * orders have at least one such line, and reading them as "no VAT" would issue a VAT-charging
-   * invoice from a venue that has never supplied a VAT number -- exactly the compliance gap
-   * 20260901120000 measured and exactly the one this check exists to prevent.
-   *
-   * So the question is asked of the resolved rate, per line, with a non-zero percentage.
+   * guessed from whether a line names a rate. A line with NO `tax_rate_id` falls back to the
+   * venue's default rate; reading it as "no VAT" would issue a VAT-charging invoice from a venue
+   * that has never supplied a VAT number.
    */
   const taxRates = await getTaxRatesForRestaurant(supabase, restaurantId)
   const ratesById = new Map(taxRates.map((rate) => [rate.id, rate]))
   const fallback = defaultTaxRate(taxRates)
-  const chargesVat = lineItems.some((line) => {
+  const chargesVat = plan.invoiceLines.some((line) => {
     const rate = resolveTaxRate(line.tax_rate_id, ratesById, fallback)
     return rate != null && Number(rate.percentage) > 0
   })
@@ -325,8 +269,7 @@ export async function createInvoiceFromOrder(
   if (missing.length > 0) {
     /**
      * FAILS CLOSED, and before `get_next_document_number` is called. A refusal after the sequence
-     * advanced would leave a gap in the invoice numbering for a document that was never issued,
-     * which is exactly the property gapless numbering exists to provide.
+     * advanced would leave a gap in gapless numbering for a document that was never issued.
      */
     return {
       ok: false,
@@ -342,44 +285,214 @@ export async function createInvoiceFromOrder(
   const created = await createBusinessDocument(supabase, {
     restaurantId,
     type: 'invoice',
-    orderId: order.id,
+    orderId: loaded.scope === 'order' ? orderIds[0] : null,
+    tabId: loaded.scope === 'tab' ? loaded.tab?.id ?? null : null,
+    orderIds: loaded.scope === 'tab' ? plan.coveredOrderIds : null,
+    cancelledLineItems: plan.cancelledLines,
     shipTo: {},
     billTo: params.billTo ?? {},
-    lineItems,
+    lineItems: plan.invoiceLines,
     dueDate: params.dueDate ?? null,
-    referenceNote: params.referenceNote ?? orderReference(order),
+    referenceNote: params.referenceNote ?? scopeReference(loaded, plan),
     createdBy,
   })
+  const documentId = String((created.document as { id: unknown }).id)
 
-  // ── 8. The document must agree with the sale it describes ─────────────────────────────────
-  const documentTotal = Number((created.document as { total?: unknown }).total)
-  if (round2(documentTotal) !== round2(orderTotal)) {
+  // ── 8. The document must agree with the projection's LIVE total ───────────────────────────
+  const documentCents = Math.round(Number((created.document as { total?: unknown }).total) * 100)
+  if (documentCents !== plan.liveCents) {
     /**
-     * The document row has already been written at this point, and it is deliberately NOT deleted:
-     * `business_documents` is an append-only, gapless-numbered ledger and silently removing a row
-     * from it is a worse defect than the one being reported. It is voided instead, which is the
-     * engine's own vocabulary for "issued and withdrawn", leaving the number consumed and the
+     * The row is deliberately NOT deleted: `business_documents` is an append-only, gapless-numbered
+     * ledger. It is voided instead -- "issued and withdrawn" -- leaving the number consumed and the
      * reason discoverable.
      */
-    await supabase.from('business_documents').update({ status: 'void' }).eq('id', String((created.document as { id: unknown }).id))
-
+    await supabase.from('business_documents').update({ status: 'void' }).eq('id', documentId)
     return {
       ok: false,
       code: 'DOCUMENT_TOTAL_DISAGREES_WITH_ORDER',
       message:
-        `The invoice worked out to ${documentTotal.toFixed(2)} but the order was ` +
-        `${orderTotal.toFixed(2)}. This usually means the venue's VAT rate changed after the sale. ` +
-        'The invoice was voided rather than issued — it would have stated a figure the customer ' +
-        'never paid.',
+        `The invoice worked out to ${(documentCents / 100).toFixed(2)} but the bill is ` +
+        `${(plan.liveCents / 100).toFixed(2)}. This usually means the venue's VAT rate changed ` +
+        'after the sale. The invoice was voided rather than issued — it would have stated a figure ' +
+        'the customer never paid.',
     }
   }
 
-  return { ok: true, document: created.document, warnings: created.warnings }
+  // ── 9. What has already been paid, recorded where the document engine reads it ───────────
+  if (payments.length > 0) {
+    const { error: paymentsError } = await supabase.from('document_payments').insert(
+      payments.map((p) => ({
+        document_id: documentId,
+        amount: p.amountCents / 100,
+        method: p.method,
+        reference: p.reference,
+        ...(p.paidAt ? { paid_at: p.paidAt } : {}),
+        recorded_by: createdBy,
+      })),
+    )
+    if (paymentsError) {
+      await supabase.from('business_documents').update({ status: 'void' }).eq('id', documentId)
+      throw paymentsError
+    }
+  }
+  const recomputed = await recomputeDocumentStatus(supabase, documentId)
+
+  /**
+   * THE BALANCE MUST BE THE PROJECTION'S OUTSTANDING. It is total − recorded payments, and both are
+   * the projection's, so this can only fail if a payment row was lost or another writer touched the
+   * document in between. An invoice whose balance says something else is voided, not issued.
+   */
+  if (Math.round(recomputed.balance * 100) !== plan.outstandingCents) {
+    await supabase.from('business_documents').update({ status: 'void' }).eq('id', documentId)
+    return {
+      ok: false,
+      code: 'DOCUMENT_BALANCE_DISAGREES',
+      message:
+        `The invoice's balance came to ${recomputed.balance.toFixed(2)} but ` +
+        `${(plan.outstandingCents / 100).toFixed(2)} is outstanding. The invoice was voided.`,
+    }
+  }
+
+  const document = { ...created.document, status: recomputed.status, balance: recomputed.balance }
+  return { ok: true, document, warnings: created.warnings }
 }
 
-function orderReference(order: OrderRow): string {
-  const number = order.order_number != null ? `#${order.order_number}` : order.id
-  const placed = order.placed_at ? ` placed ${String(order.placed_at).slice(0, 10)}` : ''
-  const table = order.table_number ? ` · table ${order.table_number}` : ''
-  return `FlashTap order ${number}${table}${placed}`
+/**
+ * The live (non-void) invoice that already bills for any order in scope, or for this tab.
+ *
+ * A VOIDED invoice is deliberately not a blocker: `correct_invoice()` voids the original and issues
+ * a replacement that carries the same order_id / tab_id / order_ids (20260913100100,
+ * 20260928140100), so the replacement is what blocks. Uniqueness is enforced here rather than by an
+ * index because an index cannot tell a correction from a duplicate.
+ *
+ * Two parser-free reads (`.in`), not one `.or()`.
+ */
+async function findLiveInvoice(
+  supabase: Supabase,
+  restaurantId: string,
+  loaded: Loaded,
+  plan: InvoicePlan,
+): Promise<{ id: string; document_number: string; status: string } | null> {
+  const covered = new Set(plan.coveredOrderIds)
+  const tabIds = new Set<string>()
+  if (loaded.tab) tabIds.add(String(loaded.tab.id))
+  for (const o of loaded.orders) if (o.tab_id) tabIds.add(String(o.tab_id))
+
+  const { data: byOrder, error: byOrderError } = await supabase
+    .from('business_documents')
+    .select('id, document_number, status, document_type, order_id')
+    .eq('restaurant_id', restaurantId)
+    .in('order_id', [...covered])
+  if (byOrderError) throw byOrderError
+
+  /**
+   * TAB INVOICES ARE LOOKED UP BY TAB, and only by selecting `tab_id, order_ids` -- columns that
+   * exist only after 20260928140000. An order that is not on a tab never issues this read, so a
+   * plain order invoice keeps working against a database the migration has not reached yet.
+   */
+  let byTab: unknown[] = []
+  if (tabIds.size > 0) {
+    const { data, error } = await supabase
+      .from('business_documents')
+      .select('id, document_number, status, document_type, order_id, tab_id, order_ids')
+      .eq('restaurant_id', restaurantId)
+      .in('tab_id', [...tabIds])
+    if (error) throw error
+    byTab = data ?? []
+  }
+
+  type DocRow = {
+    id: unknown
+    document_number: unknown
+    status: unknown
+    document_type: unknown
+    order_id: unknown
+    tab_id?: unknown
+    order_ids?: unknown
+  }
+  for (const d of [...(byOrder ?? []), ...byTab] as DocRow[]) {
+    if (String(d.document_type) !== 'invoice' || String(d.status) === 'void') continue
+    const docOrderIds = Array.isArray(d.order_ids) ? (d.order_ids as unknown[]).map(String) : []
+    const billsThisTab =
+      loaded.scope === 'tab' && loaded.tab != null && String(d.tab_id ?? '') === String(loaded.tab.id)
+    const billsAnOrder =
+      (d.order_id != null && covered.has(String(d.order_id))) || docOrderIds.some((id) => covered.has(id))
+    if (billsThisTab || billsAnOrder) {
+      return { id: String(d.id), document_number: String(d.document_number), status: String(d.status) }
+    }
+  }
+  return null
+}
+
+async function readPaymentRecords(
+  supabase: Supabase,
+  restaurantId: string,
+  loaded: Loaded,
+  plan: InvoicePlan,
+) {
+  const paidOrderIds = plan.perOrder.filter((f) => f.paidCents > 0).map((f) => f.orderId)
+  if (paidOrderIds.length === 0) return []
+
+  // Item-ledger settlements, for method/reference. Same two-step shape as settledCentsByOrder.
+  const allocationSettlements: AllocationSettlementRow[] = []
+  const { data: allocations, error: allocError } = await supabase
+    .from('order_line_allocations')
+    .select('id, order_id')
+    .in('order_id', paidOrderIds)
+    .is('voided_at', null)
+  if (allocError) throw allocError
+  const orderByAllocation = new Map<string, string>()
+  for (const a of (allocations ?? []) as Array<{ id: unknown; order_id: unknown }>) {
+    orderByAllocation.set(String(a.id), String(a.order_id))
+  }
+  if (orderByAllocation.size > 0) {
+    const { data: settlements, error: settleError } = await supabase
+      .from('order_line_allocation_settlements')
+      .select('order_line_allocation_id, amount_cents, method, payment_reference, settled_at')
+      .in('order_line_allocation_id', [...orderByAllocation.keys()])
+    if (settleError) throw settleError
+    for (const s of (settlements ?? []) as Array<Record<string, unknown>>) {
+      const orderId = orderByAllocation.get(String(s.order_line_allocation_id))
+      if (!orderId) continue
+      allocationSettlements.push({
+        order_id: orderId,
+        amount_cents: Number(s.amount_cents),
+        method: s.method != null ? String(s.method) : null,
+        payment_reference: s.payment_reference != null ? String(s.payment_reference) : null,
+        settled_at: s.settled_at != null ? String(s.settled_at) : null,
+      })
+    }
+  }
+
+  // Sale events: identity only (transaction id, time). Their `amount` is not selected -- see
+  // invoicePaymentRecords for why it must never be attributed per order.
+  const { data: events, error: eventsError } = await supabase
+    .from('payment_events')
+    .select('order_ids, transaction_id, business_order_no, created_at')
+    .eq('restaurant_id', restaurantId)
+    .eq('event_type', 'sale')
+    .overlaps('order_ids', paidOrderIds)
+  if (eventsError) throw eventsError
+
+  return invoicePaymentRecords({
+    perOrder: plan.perOrder,
+    orders: loaded.orders,
+    settledByOrder: loaded.settledByOrder,
+    allocationSettlements,
+    saleEvents: (events ?? []) as SaleEventRow[],
+  })
+}
+
+/** "FlashTap tab · table 4 · orders #154, #155 · 2026-09-01" -- the table/order/tab reference. */
+function scopeReference(loaded: Loaded, plan: InvoicePlan): string {
+  const covered = loaded.orders.filter((o) => plan.coveredOrderIds.includes(String(o.id)))
+  const numbers = covered.map((o) => (o.order_number != null ? `#${o.order_number}` : String(o.id)))
+  const table = loaded.tab?.table_number ?? covered.find((o) => o.table_number)?.table_number ?? null
+  const placed = covered.map((o) => String(o.placed_at ?? '').slice(0, 10)).filter(Boolean).sort()[0]
+  const parts =
+    loaded.scope === 'tab'
+      ? ['FlashTap tab', table ? `table ${table}` : null, `orders ${numbers.join(', ')}`]
+      : [`FlashTap order ${numbers[0]}`, table ? `table ${table}` : null]
+  if (placed) parts.push(loaded.scope === 'tab' ? placed : `placed ${placed}`)
+  return parts.filter(Boolean).join(' · ')
 }

@@ -264,7 +264,7 @@ export async function GET(request: Request) {
 
     let query = supabase
       .from('business_documents')
-      .select('id, document_type, document_number, issued_at, due_date, bill_to, total, balance, status')
+      .select('id, document_type, document_number, issued_at, due_date, bill_to, total, balance, status, sent_at')
       .eq('restaurant_id', restaurantId)
       .order('issued_at', { ascending: false })
 
@@ -306,6 +306,7 @@ export async function GET(request: Request) {
         total: row.total,
         balance: row.balance,
         status: row.status,
+        sent_at: row.sent_at ?? null,
       }
     })
 

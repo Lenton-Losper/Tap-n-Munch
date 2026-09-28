@@ -123,7 +123,10 @@ test('an order becomes a formal invoice PDF carrying every mandatory element', a
   expect(doc.line_items).toHaveLength(2)
   expect(doc.total).toBe(78)
   expect(Number(doc.subtotal) + Number(doc.vat_amount)).toBeCloseTo(78, 2)
-  expect(doc.balance).toBe(78)
+  // The order is PAID, so nothing is outstanding. This was `balance === total` until the Sprint
+  // 2026-09-28 brief answered open question 4: a paid invoice shows that it is paid.
+  expect(doc.balance).toBe(0)
+  expect((doc as unknown as { status: string }).status).toBe('paid')
 
   // The order reference travels on the document, so the invoice can be tied back to the sale.
   expect(String(doc.reference_note)).toContain('#640')

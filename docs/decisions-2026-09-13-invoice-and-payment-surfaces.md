@@ -158,13 +158,57 @@ The required-merchant-details rule I did add is **minimal and evidence-based, no
 3. Must invoice numbering be gapless across the whole entity, or per outlet? (It is currently per
    restaurant, per document type.)
 4. May an order already settled at the table be invoiced afterwards, and does that invoice need to
-   show it as already paid? (Today the invoice shows a full `balance` regardless of the order's
-   payment status — see the open question below.)
+   show it as already paid? **ANSWERED — Sprint 2026-09-28 brief:** yes, and yes. See below.
 
-### Open question I did not resolve
+### Open question 4 — ANSWERED by the Sprint 2026-09-28 brief
 
-An invoice raised from an **already-paid** order currently shows `balance = total`, because
-`createBusinessDocument` sets `balance = total` for every new document and `document_payments` is a
-manual ledger with no link to `orders`. Whether such an invoice should show a zero balance, or a
-"paid" marker, or be refused outright, depends on the answer to question 4. It is deliberately left
-as-is rather than guessed.
+*Superseded text (kept for the record):* an invoice raised from an already-paid order showed
+`balance = total`, because `createBusinessDocument` sets `balance = total` for every new document and
+`document_payments` had no link to `orders`. It was left as-is pending question 4.
+
+**The ruling (Sprint 2026-09-28 brief):** a paid invoice must show that it is paid; an unpaid or
+partially paid invoice must show the total, the amount paid and the amount outstanding.
+
+**What was built** (`lib/documents/create-invoice-from-order.ts`, `lib/documents/invoice-projection.ts`):
+
+- Every figure comes from the financial projection (`lib/orders/order-financials.ts`), never from
+  `orders.total` / `orders.items` as stored — both include voided lines.
+- At issue, what has ALREADY been collected is written to `document_payments` (one row per
+  method + reference; a tab settled by one card payment is one row), and the engine's own
+  `recomputeDocumentStatus` then sets `balance` = projection outstanding and `status` = `paid` /
+  `partially_paid` / (unpaid) `draft`. The balance is checked against the projection's outstanding
+  to the cent; a disagreement voids the document.
+- `document_payments` amounts are the projection's per-order paid figures. A `payment_events` row
+  contributes only its transaction id and time — never its `amount`, which can cover several orders
+  (Riviera N$220 + N$500 = N$720).
+- The PDF prints PAID / PARTIALLY PAID / UNPAID, Amount paid, Amount outstanding, the payments
+  received (method + masked reference, as receipts print them), and omits "Kindly make payment" when
+  nothing is outstanding. The email adds Paid / Outstanding rows for a (partially) paid invoice and
+  omits "How to pay" for a fully paid one; **that wording is new and not yet signed** — the signed
+  2026-09-05 copy is unchanged for an unpaid invoice.
+- The send route also sends an invoice that was issued already paid (`sent_at IS NULL` and status
+  `paid`/`partially_paid`); it still refuses anything already sent.
+
+## 6. Tab invoices, cancelled lines and eligibility — Sprint 2026-09-28
+
+- **Tab invoices.** `POST /api/admin/documents/from-order` accepts `tab_id` (exactly one of
+  `order_id` / `tab_id`). The invoice covers every order on the tab except settlement artefacts, and
+  records `tab_id` and the covered `order_ids` (migration `20260928140000`). "One live invoice per
+  order" now means: no live invoice whose `order_id` is the order or whose `order_ids` contains it,
+  and one live invoice per tab. `correct_invoice()` carries all three new columns
+  (`20260928140100`), so a correction still blocks a duplicate.
+- **Cancelled lines** (voided, or on a cancelled order) are stored in `cancelled_line_items`, never in
+  `line_items`, and printed under "Cancelled — not charged" with a 0.00 charged column. Keeping them
+  out of `line_items` is deliberate: every reader of `line_items` (VAT maths, totals, the credit note
+  `correct_invoice` issues) treats a line as charged, and a zero-priced line there reads as "given
+  free".
+- **Eligibility is "can the total still change?"**, replacing "status is completed". An order is final
+  when it is paid, or `completed`, or has a line record for every item and none of them is still
+  inside the amend window (every owning station `outstanding`). Refused regardless: awaiting
+  re-acceptance, refunded, a card payment in flight or held, overpaid (a refund is owed), a payment
+  status that is neither paid nor owing. A round added to the tab after the invoice is a new order it
+  does not cover; it can be invoiced on its own.
+- **Draft order-linked invoices keep their lines**: the PATCH edit route refuses a change to the line
+  items of an invoice with `order_id` or `tab_id` (party, due date and note stay editable).
+- **Discounts:** orders carry no discount field, so none is shown. None was invented.
+- **Still not encoded:** any Namibian tax rule (section 5 stands).

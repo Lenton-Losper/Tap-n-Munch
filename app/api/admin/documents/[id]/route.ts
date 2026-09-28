@@ -9,6 +9,15 @@ import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-
 
 export const dynamic = 'force-dynamic'
 
+function storedLines(value: unknown): LineItemInput[] {
+  return (Array.isArray(value) ? value : []).map((item: Record<string, unknown>) => ({
+    description: String(item.description ?? ''),
+    quantity: Number(item.quantity) || 0,
+    unit_price: Number(item.unit_price) || 0,
+    tax_rate_id: item.tax_rate_id != null ? String(item.tax_rate_id) : null,
+  }))
+}
+
 function unauthorizedResponse(error: unknown) {
   const message = error instanceof Error ? error.message : 'Unauthorized'
   return NextResponse.json({ error: message }, { status: 401 })
@@ -163,14 +172,33 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         }
       }
     } else {
-      lineItems = (Array.isArray(doc.line_items) ? doc.line_items : []).map(
-        (item: Record<string, unknown>) => ({
-          description: String(item.description ?? ''),
-          quantity: Number(item.quantity) || 0,
-          unit_price: Number(item.unit_price) || 0,
-          tax_rate_id: item.tax_rate_id != null ? String(item.tax_rate_id) : null,
-        }),
-      )
+      lineItems = storedLines(doc.line_items)
+    }
+
+    /**
+     * AN INVOICE RAISED FROM AN ORDER OR A TAB KEEPS THE LINES THE BILL GAVE IT.
+     *
+     * Its lines, total and balance were checked against the financial projection when it was
+     * issued (lib/documents/create-invoice-from-order.ts); a hand edit here would re-price it with
+     * nothing checking the result against what the customer actually owes. The party, due date and
+     * note stay editable -- the edit form re-sends the lines unchanged, so only a CHANGE is refused.
+     */
+    if ((doc.order_id || doc.tab_id) && body?.line_items !== undefined) {
+      const key = (items: LineItemInput[]) =>
+        JSON.stringify(
+          items.map((i) => [i.description, Number(i.quantity), Number(i.unit_price), i.tax_rate_id ?? null]),
+        )
+      if (key(lineItems) !== key(storedLines(doc.line_items))) {
+        return NextResponse.json(
+          {
+            error:
+              'This invoice was raised from a FlashTap bill, so its items cannot be edited by hand. ' +
+              'Send it and use Correct, or raise the correction from the bill.',
+            code: 'ORDER_LINKED_LINES_LOCKED',
+          },
+          { status: 409 },
+        )
+      }
     }
 
     // Keep draft edits on the same row (preserve document_number). Reuse create path tax math

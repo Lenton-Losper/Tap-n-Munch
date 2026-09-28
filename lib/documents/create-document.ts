@@ -44,6 +44,18 @@ export type CreateBusinessDocumentInput = {
    * leave a numbered invoice that belongs to no order.
    */
   orderId?: string | null
+  /**
+   * TAB INVOICES ONLY (20260928140000): the tab, the orders covered at issue, and the lines shown
+   * as "Cancelled - not charged". Written in the SAME insert as the number for the reason orderId
+   * is. Each key is written ONLY when supplied, so hand-written documents and plain order invoices
+   * never name a column that a not-yet-migrated database would reject.
+   *
+   * `cancelledLineItems` never reaches computeLineItems: those lines are not charged, and nothing
+   * about them may enter the subtotal, the VAT or the total.
+   */
+  tabId?: string | null
+  orderIds?: string[] | null
+  cancelledLineItems?: unknown[] | null
 }
 
 export type CreateBusinessDocumentResult = {
@@ -114,6 +126,9 @@ export async function createBusinessDocument(
     quoteId,
     createdBy,
     orderId,
+    tabId,
+    orderIds,
+    cancelledLineItems,
   } = input
 
   const { data: restaurant, error: restaurantError } = await supabase
@@ -191,6 +206,11 @@ export async function createBusinessDocument(
     total,
     balance,
     created_by: createdBy,
+    ...(tabId ? { tab_id: tabId } : {}),
+    ...(orderIds && orderIds.length > 0 ? { order_ids: orderIds } : {}),
+    ...(cancelledLineItems && cancelledLineItems.length > 0
+      ? { cancelled_line_items: cancelledLineItems }
+      : {}),
   }
 
   const { data: created, error: insertError } = await supabase

@@ -4,7 +4,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
 import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
-import { recipientEmail } from '@/lib/documents/business-document-row'
+import { loadDocumentPayments, recipientEmail } from '@/lib/documents/business-document-row'
 import { sendDocumentEmail } from '@/lib/documents/sendDocumentEmail'
 
 export const dynamic = 'force-dynamic'
@@ -71,7 +71,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     )
     if (denied) return denied
 
-    if (doc.status !== 'draft') {
+    /**
+     * DRAFTS, AND INVOICES THAT WERE ISSUED ALREADY PAID. An invoice raised from a tab that was
+     * settled at the table is recorded with its payments at creation, so the document engine's
+     * recompute moves it straight to 'paid' / 'partially_paid' (Sprint 2026-09-28 brief). It has
+     * still never been SENT, and "Only drafts can be sent" would make the paid invoice the one
+     * invoice a customer can never be emailed. `sent_at IS NULL` is what "never sent" means; it
+     * still refuses a resend of anything already delivered.
+     */
+    const neverSentPaidInvoice =
+      doc.document_type === 'invoice' &&
+      !doc.sent_at &&
+      (doc.status === 'paid' || doc.status === 'partially_paid')
+    if (doc.status !== 'draft' && !neverSentPaidInvoice) {
       return NextResponse.json(
         { error: `Only draft documents can be sent (current status: ${doc.status})` },
         { status: 409 },
@@ -91,7 +103,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       )
     }
 
-    const sent = await sendDocumentEmail(supabase, doc, to, user.id)
+    const payments = await loadDocumentPayments(supabase, doc)
+    const sent = await sendDocumentEmail(supabase, doc, to, user.id, { payments })
     if (!sent.ok) {
       // Left in draft on purpose: nothing to undo, and Send can be pressed again.
       return NextResponse.json(
@@ -106,7 +119,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const { data: updated, error: updateError } = await supabase
       .from('business_documents')
-      .update({ status: 'sent', sent_at: new Date().toISOString() })
+      // A paid invoice keeps its status; only a draft becomes 'sent'. The recompute below would
+      // restore 'paid' anyway, but a failure between the two writes must not leave it 'sent'.
+      .update(
+        doc.status === 'draft'
+          ? { status: 'sent', sent_at: new Date().toISOString() }
+          : { sent_at: new Date().toISOString() },
+      )
       .eq('id', documentId)
       .select('*')
       .single()
