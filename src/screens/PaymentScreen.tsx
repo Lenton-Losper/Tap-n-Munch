@@ -76,6 +76,11 @@ import {
 } from '../lib/payment';
 import {recordWiretapEvent} from '../lib/wiretap';
 import {prepareRefusalMessage} from '../lib/settlementRefusal';
+import {
+  PAYMENT_HELD_BODY,
+  PAYMENT_HELD_REFERENCE,
+  PAYMENT_HELD_TITLE,
+} from '../constants/settlementRefusalCopy';
 import {printReceiptForOrder, sendReceiptEmailForOrder} from '../lib/receiptPrinting';
 import {
   describeReceiptPrintError,
@@ -136,6 +141,11 @@ export default function PaymentScreen({route, navigation}: Props) {
    * successful" that hides the fact that this attempt was not what settled it.
    */
   const [alreadySettled, setAlreadySettled] = useState(false);
+  /**
+   * The card was charged but the server held the order because the bill changed mid-charge
+   * (409 ORDER_CHANGED_DURING_PAYMENT). Carries the reference the manager needs. Sprint 2026-09-29.
+   */
+  const [heldForReview, setHeldForReview] = useState<{reference: string} | null>(null);
   const [order, setOrder] = useState<Order | null>(null);
   const [loadingOrder, setLoadingOrder] = useState(true);
   const [closingTable, setClosingTable] = useState(false);
@@ -391,7 +401,8 @@ export default function PaymentScreen({route, navigation}: Props) {
   // Auto-print when payment succeeds and developer receipt-printing toggle is on.
   // Print failure never affects payment outcome.
   useEffect(() => {
-    if (receiptPrintingEnabled && machineState.state === 'PAYMENT_SUCCESS') {
+    // Not for a held order: no receipt has been issued for it, and the manager decides what it is.
+    if (receiptPrintingEnabled && machineState.state === 'PAYMENT_SUCCESS' && !heldForReview) {
       attemptPrintReceipt();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -540,6 +551,7 @@ export default function PaymentScreen({route, navigation}: Props) {
        * paid, and a maybe must not be rendered as a settled sale.
        */
       let paymentResult: CompletePaymentResult;
+      let held = false;
       try {
         paymentResult = await completePayment(orderId, token, {
           status: 'success',
@@ -551,18 +563,36 @@ export default function PaymentScreen({route, navigation}: Props) {
         });
       } catch (err) {
         const code = err instanceof ApiRequestError ? err.code : undefined;
-        if (classifySuccessReportError(code) !== 'settled') {
+        /**
+         * THE CARD WAS CHARGED AND THE SERVER HELD THE ORDER (Sprint 2026-09-29 follow-up).
+         *
+         * 409 ORDER_CHANGED_DURING_PAYMENT: the bill changed while the reader was open, so the
+         * server recorded the payment against a hold for a manager to review. Letting this throw
+         * would reach the outer catch, re-verify, and report a FAILED card payment -- then offer
+         * "Try again", which is a second charge. It is none of those: the money was taken.
+         */
+        if (code === 'ORDER_CHANGED_DURING_PAYMENT') {
+          held = true;
+          recordWiretapEvent('payment.exit', {
+            exit: 'order_changed_during_payment',
+            reportsToServer: true,
+            note: 'card charged; server held the order for review; not failed, not retried',
+          });
+          setHeldForReview({reference: opts.voucherNo || opts.reference});
+          paymentResult = {canClose: false, success: true, outcome: 'held_order_changed'};
+        } else if (classifySuccessReportError(code) !== 'settled') {
           throw err;
+        } else {
+          recordWiretapEvent('payment.exit', {
+            exit: 'already_paid_treated_as_settled',
+            reportsToServer: true,
+            note: '#326: order was already paid; rendering settled, not failed',
+          });
+          setAlreadySettled(true);
+          // canClose is unknowable from a 409 body. False is the safe default: it offers no close
+          // button rather than a wrong one, and the table can still be closed from the dashboard.
+          paymentResult = {canClose: false, success: true, outcome: 'already_paid'};
         }
-        recordWiretapEvent('payment.exit', {
-          exit: 'already_paid_treated_as_settled',
-          reportsToServer: true,
-          note: '#326: order was already paid; rendering settled, not failed',
-        });
-        setAlreadySettled(true);
-        // canClose is unknowable from a 409 body. False is the safe default: it offers no close
-        // button rather than a wrong one, and the table can still be closed from the dashboard.
-        paymentResult = {canClose: false, success: true, outcome: 'already_paid'};
       }
 
       if (
@@ -603,7 +633,12 @@ export default function PaymentScreen({route, navigation}: Props) {
 
       const action = getPostPaymentAction(orderForAction, paymentResult.canClose);
 
-      if (action.type === 'auto_return') {
+      if (held) {
+        // Stays on screen with the reference; no auto-return and no close offered.
+        setKioskAutoReturnPending(false);
+        setCanCloseTable(false);
+        paymentSuccess(opts.reference);
+      } else if (action.type === 'auto_return') {
         setKioskAutoReturnDelayMs(action.delayMs);
         setKioskAutoReturnPending(true);
         paymentSuccess(opts.reference);
@@ -1211,12 +1246,25 @@ export default function PaymentScreen({route, navigation}: Props) {
         <View style={[styles.successScreen, {paddingBottom: insets.bottom + Spacing.lg}]}>
           <View style={styles.successContent}>
             <MaterialCommunityIcons
-              name="check-circle"
+              name={heldForReview ? 'alert-circle' : 'check-circle'}
               size={72}
-              color={Colors.green}
+              color={heldForReview ? Colors.amber : Colors.green}
             />
-            <Text style={styles.successTitle}>Payment successful</Text>
+            <Text style={styles.successTitle} testID="payment-success-title">
+              {heldForReview ? PAYMENT_HELD_TITLE : 'Payment successful'}
+            </Text>
             <Text style={styles.successAmount}>{formatAmountPaid(reportAmount())}</Text>
+
+            {heldForReview ? (
+              <>
+                <Text style={styles.alreadySettledNote} testID="payment-held-note">
+                  {PAYMENT_HELD_BODY}
+                </Text>
+                <Text style={styles.alreadySettledNote} testID="payment-held-reference">
+                  {PAYMENT_HELD_REFERENCE.replace('{ref}', heldForReview.reference)}
+                </Text>
+              </>
+            ) : null}
 
             {/*
               #326. Still a success screen — the money is there — but this attempt is not what put

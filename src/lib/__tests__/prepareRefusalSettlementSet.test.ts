@@ -16,6 +16,7 @@ import {
   PREPARE_REFUSAL_CHANGED,
   PREPARE_REFUSAL_HELD,
   PREPARE_REFUSAL_NOTHING_OWED,
+  PREPARE_REFUSAL_ORDER_CHANGED,
   PREPARE_REFUSAL_PAID,
 } from '../../constants/settlementRefusalCopy';
 
@@ -164,6 +165,17 @@ describe('prepare-payment says the set is not claimable', () => {
     });
     expect(launchCalls).toBe(0);
     expect(result.prepareRefusal?.code).toBe('NOTHING_LEFT_TO_CHARGE');
+  });
+
+  it('ORDER_CHANGED_DURING_PREPARE: typed, not_started, no launch, the bill-changed sentence', async () => {
+    const {result, launchCalls} = await run(409, {
+      error: 'This bill changed while the payment was being set up.',
+      code: 'ORDER_CHANGED_DURING_PREPARE',
+    });
+    expect(launchCalls).toBe(0);
+    expect(result.outcomeKind).toBe('not_started');
+    expect(result.prepareRefusal?.code).toBe('ORDER_CHANGED_DURING_PREPARE');
+    expect(prepareRefusalMessage(result.prepareRefusal!).body).toBe(PREPARE_REFUSAL_ORDER_CHANGED);
   });
 
   it('the device sends the whole set to prepare-payment (so the server can see every order)', async () => {

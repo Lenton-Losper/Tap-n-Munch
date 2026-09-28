@@ -75,6 +75,8 @@ export type AmendRefusalReason =
   | 'order_paid'
   /** C3. This line has been settled (split / pay-by-item). */
   | 'line_settled'
+  /** C3, Sprint 2026-09-29. A card charge for this order is in progress; the bill is frozen. */
+  | 'payment_in_flight'
   | string;
 
 export interface RefusedAmendment {

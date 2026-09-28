@@ -97,6 +97,39 @@ const MUTATIONS = [
     to: '    financials: undefined && parseMoneyCents(row.financials),',
     suites: [CARD_SUITE],
   },
+  // ---- Sprint 2026-09-29 follow-up (f-race contract) ----
+  {
+    id: 'T10',
+    what: 'ORDER_CHANGED_DURING_PREPARE is not a typed refusal (falls to ambiguous: verify + FAILED report)',
+    file: 'src/lib/settlementRefusal.ts',
+    from: "  'ORDER_CHANGED_DURING_PREPARE',\n] as const;",
+    to: '] as const;',
+    suites: [LIB_SUITE],
+  },
+  {
+    id: 'T11',
+    what: 'ORDER_CHANGED_DURING_PAYMENT (card charged, order held) is treated as a failure',
+    file: 'src/screens/PaymentScreen.tsx',
+    from: "        if (code === 'ORDER_CHANGED_DURING_PAYMENT') {",
+    to: "        if (code === 'MUTATED_NEVER') {",
+    suites: [PAYMENT_SUITE],
+  },
+  {
+    id: 'T12',
+    what: 'the held payment screen hides the transaction reference',
+    file: 'src/screens/PaymentScreen.tsx',
+    from: "          setHeldForReview({reference: opts.voucherNo || opts.reference});",
+    to: "          setHeldForReview({reference: ''});",
+    suites: [PAYMENT_SUITE],
+  },
+  {
+    id: 'T13',
+    what: 'the amend refusal payment_in_flight loses its specific message (falls to "we do not know why")',
+    file: 'src/constants/amendCopy.ts',
+    from: '  payment_in_flight:\n',
+    to: '  payment_in_flight_MUTATED:\n',
+    suites: ['src/components/__tests__/amendSheetOutcomes.test.tsx'],
+  },
 ];
 
 function runJest(suites) {

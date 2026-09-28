@@ -237,6 +237,7 @@ describe('refusals name the reason and say NOT removed', () => {
     ['window_closed', /Already cooked — NOT removed/],
     ['order_paid', /already paid — NOT removed/],
     ['line_settled', /already been paid for — NOT removed/],
+    ['payment_in_flight', /card payment for this order is in progress — NOT removed/],
     ['not_found', /not found on the tab/],
     ['invalid_quantity', /NOT changed/],
   ])('%s', async (reason, pattern) => {
