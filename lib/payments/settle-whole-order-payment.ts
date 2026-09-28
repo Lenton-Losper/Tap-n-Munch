@@ -125,6 +125,12 @@ export type SettleWholeOrderResult =
         | 'target_unreadable'
         | 'target_changed'
         | 'illegal_transition'
+        /**
+         * N3 (20260928160000). An order in the set was already paid by ANOTHER payment. The RPC
+         * has held the rest of the set (`amount_mismatch_hold`) and written the double-charge
+         * evidence; nothing was applied. Not retryable.
+         */
+        | 'paid_elsewhere'
         | 'intent_conflict'
         | 'rpc_failed'
       detail?: unknown
@@ -321,9 +327,11 @@ export async function settleWholeOrderPayment(
           ? 'illegal_transition'
           : result.reason === 'amount_mismatch'
             ? 'amount_mismatch'
-            : result.reason === 'orders_missing'
-              ? 'target_unreadable'
-              : 'intent_conflict'
+            : result.reason === 'order_paid_by_other_payment'
+              ? 'paid_elsewhere'
+              : result.reason === 'orders_missing'
+                ? 'target_unreadable'
+                : 'intent_conflict'
     return { ok: false, reason, detail: result, target }
   }
 

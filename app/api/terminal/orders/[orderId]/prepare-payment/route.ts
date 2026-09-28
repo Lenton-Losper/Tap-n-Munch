@@ -21,6 +21,7 @@ import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaura
  * That module's own header explains it at length — this is the second site to depend on it.
  */
 import { isMissingFinaticCredentialsError } from '@/lib/payments/finatic-credentials-error'
+import { isHeldForReviewPaymentStatus } from '@/lib/payments/payment-integrity'
 import {
   PREPARE_PAYMENT_OUTCOME_CODES,
   PREPARE_PAYMENT_STAFF_MESSAGE,
@@ -291,6 +292,43 @@ export async function POST(
       }
 
       /**
+       * EVERY ORDER IN THE SET MUST STILL BE CLAIMABLE, NOT ONLY THE ONE IN THE URL (Sprint
+       * 2026-09-28 brief, N3).
+       *
+       * ensureTerminalMerchantOrderNo refuses a paid or cancelled LEAD; nothing looked at the rest.
+       * A paid or cancelled sibling was merely left out of the charge below, which hid the fact that
+       * the terminal's picture of the tab was stale -- somebody else had just taken money for it.
+       * A HELD sibling was worse: held orders owe money, so it was CHARGED, on top of a gateway
+       * payment that already exists against it (that is what the hold means).
+       *
+       * Refused before any expectation or intent is written, so nothing is charged. The waiter
+       * refreshes the tab and charges what is actually still open.
+       */
+      const notClaimable = orderRow.filter((r) => {
+        const ps = String(r.payment_status ?? '').trim().toLowerCase()
+        const st = String(r.status ?? '').trim().toLowerCase()
+        return (
+          ps === 'paid' || ps === 'cancelled' || st === 'cancelled' || isHeldForReviewPaymentStatus(ps)
+        )
+      })
+      if (notClaimable.length > 0) {
+        return NextResponse.json(
+          {
+            error:
+              'Part of this bill has already been paid, cancelled, or is held for review. ' +
+              'Refresh the table and take payment for what is still open.',
+            code: 'SETTLEMENT_SET_NOT_CLAIMABLE',
+            orders: notClaimable.map((r) => ({
+              order_id: String(r.id),
+              payment_status: r.payment_status ?? null,
+              status: r.status ?? null,
+            })),
+          },
+          { status: 409 },
+        )
+      }
+
+      /**
        * ================================================================================================
        * WHAT IS STILL OWED, NOT WHAT THE ORDER ONCE COST
        * ================================================================================================
@@ -336,8 +374,9 @@ export async function POST(
       /**
        * AN ORDER THAT OWES NOTHING IS NOT PART OF THE CHARGE.
        *
-       * A fully voided order, one the item ledger has already collected, or one that is already paid
-       * contributes nothing -- and cannot carry an expectation of zero, because
+       * A fully voided order, or one the item ledger has already collected, contributes nothing
+       * (an already-paid or cancelled order no longer gets this far -- it is refused above) -- and
+       * cannot carry an expectation of zero, because
        * orders_pending_charge_sane requires pending_charge_cents to be NULL or positive. It is left
        * out of the settlement set (and so out of the intent, pending_settlement_id and every gate),
        * which keeps "the set the gateway amount was computed over is the set that gets paid" true.

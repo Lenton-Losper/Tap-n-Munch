@@ -40,6 +40,9 @@ const MIGRATIONS = [
   'supabase/migrations/20260919093000_settle_validate_before_write.sql',
   // Sprint 2026-09-28: the per-order settled charge the financial projection reads for `paid`.
   'supabase/migrations/20260928135000_orders_settled_charge_cents.sql',
+  // Sprint 2026-09-28 N3: an order in the charged set already paid by ANOTHER payment is held and
+  // recorded, never absorbed. Copies 20260919093000's body, so it must apply after it.
+  'supabase/migrations/20260928160000_settle_refuses_order_paid_elsewhere.sql',
   // amend_order_lines: the original, the void_reason column the route writes, and the redefinition
   // that refuses paid lines. The ORIGINAL is applied first so the suite exercises the real
   // CREATE OR REPLACE path production will take -- a second definition would be an overload.
@@ -397,6 +400,39 @@ const MUTATIONS = {
       sql.replace(
         '          AND settled_at IS NULL;\n\n        IF v_new_quantity = 0 THEN',
         '          AND settled_at IS NULL AND false;\n\n        IF v_new_quantity = 0 THEN',
+      ),
+  },
+  /**
+   * N3 (20260928160000). An order already paid by another payment -- cash taken by a second
+   * terminal while the card was being charged -- is held and recorded, not silently absorbed.
+   */
+  MP1: {
+    what: 'an order in the charged set already paid by ANOTHER payment is absorbed in silence again',
+    expect: [
+      'paid_elsewhere/refused',
+      'paid_elsewhere/double_charge_recorded',
+      'paid_elsewhere/sibling_not_paid',
+      'paid_elsewhere_card/refused',
+    ],
+    apply: (sql) =>
+      sql.replace('  IF jsonb_array_length(v_elsewhere) > 0 THEN', '  IF false THEN'),
+  },
+  MP3: {
+    what: 'cash already taken for an order is read as this card charge (the method clause removed)',
+    expect: ['paid_elsewhere_cash_noref/refused'],
+    apply: (sql) =>
+      sql.replace(
+        "          (e->>'payment_method' IS NOT NULL AND lower(e->>'payment_method') <> v_method)\n       OR",
+        '          false\n       OR',
+      ),
+  },
+  MP2: {
+    what: 'a tab-settle sibling is not recognised as THIS charge through the lead (false double-charge alarm)',
+    expect: ['paid_elsewhere_tabsettle/not_refused', 'paid_elsewhere_tabsettle/no_false_alarm'],
+    apply: (sql) =>
+      sql.replace(
+        "     AND e->>'paycloud_merchant_order_no' = v_ref\n     AND (e->>'payment_method' IS NULL",
+        "     AND false\n     AND (e->>'payment_method' IS NULL",
       ),
   },
   M8: {

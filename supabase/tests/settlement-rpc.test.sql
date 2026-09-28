@@ -802,6 +802,176 @@ END;
 $$;
 
 -- ==================================================================================================
+-- N3 (20260928160000). AN ORDER IN THE CHARGED SET ALREADY PAID BY ANOTHER PAYMENT.
+--
+-- Terminal A prepares #154+#155 (N$720) and launches the reader; terminal B takes CASH for #154;
+-- A's card is charged N$720. Before the fix the settlement paid #155, CONTINUEd past #154 and
+-- returned `settled` -- #154 paid twice with no refused_already_paid row anywhere.
+--
+-- The negative controls matter as much: a replay of THIS charge, and the device's own tab-settle
+-- card claim (one generated reference across the tab, the merchant order number on the lead only),
+-- must NOT be read as a second payment. Otherwise every ordinary card tab would be put on hold.
+-- (Mutations MP1 and MP2 must break this.)
+-- ==================================================================================================
+CREATE OR REPLACE FUNCTION public._t_paid_elsewhere()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE r jsonb; n integer; aud record;
+BEGIN
+  -- ---- A. cash by another terminal while the card was being charged -----------------------------
+  PERFORM public._seed_riviera();
+  UPDATE public.orders SET paycloud_merchant_order_no = 'MO-PE'
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000155';
+  INSERT INTO public.terminal_payment_intents
+    (id, restaurant_id, tab_id, merchant_order_no, amount_cents, scope, order_ids, status)
+  VALUES ('33333333-3333-4333-8333-3333333333a1', '11111111-1111-4111-8111-111111111111',
+          '22222222-2222-4222-8222-222222222222', 'MO-PE', 72000, 'orders',
+          ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+                'aaaaaaaa-0000-4000-8000-000000000155']::uuid[], 'launched');
+  -- Terminal B's cash settle, exactly as the tab settle route writes it.
+  UPDATE public.orders
+     SET payment_status = 'paid', payment_method = 'cash', payment_reference = 'FT-CASH-B',
+         status = 'completed', paid_at = now(), completed_at = now()
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000154';
+
+  r := public.settle_order_payment(
+    '11111111-1111-4111-8111-111111111111',
+    ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+          'aaaaaaaa-0000-4000-8000-000000000155']::uuid[],
+    72000, 72000, 'TXN-PE', 'MO-PE', 'card', 'MO-PE',
+    '33333333-3333-4333-8333-3333333333a1',
+    'paycloud_webhook_valid_signature', 'term-1', 0, NULL, ARRAY[]::uuid[], '2.37');
+
+  PERFORM public._expect('paid_elsewhere/refused', (r->>'ok')::boolean IS FALSE, r::text);
+  PERFORM public._expect('paid_elsewhere/reason',
+    r->>'reason' = 'order_paid_by_other_payment', r->>'reason');
+  PERFORM public._expect('paid_elsewhere/sibling_not_paid',
+    (SELECT payment_status FROM public.orders
+      WHERE id = 'aaaaaaaa-0000-4000-8000-000000000155') = 'amount_mismatch_hold',
+    'the still-owing order must be HELD, not paid and not left collectable');
+  PERFORM public._expect('paid_elsewhere/cash_payment_untouched',
+    (SELECT payment_method = 'cash' AND payment_reference = 'FT-CASH-B' AND payment_status = 'paid'
+       FROM public.orders WHERE id = 'aaaaaaaa-0000-4000-8000-000000000154'),
+    'the order already paid in cash was rewritten');
+  SELECT count(*) INTO n FROM public.payment_events;
+  PERFORM public._expect('paid_elsewhere/no_ledger_row', n = 0, 'a held settlement wrote a ledger row');
+  SELECT count(*) INTO n FROM public.audit_logs WHERE action = 'payment.settlement_applied';
+  PERFORM public._expect('paid_elsewhere/not_reported_applied', n = 0,
+    'a held settlement wrote a settlement_applied row');
+  PERFORM public._expect('paid_elsewhere/intent_not_consumed',
+    (SELECT consumed_at IS NULL FROM public.terminal_payment_intents
+      WHERE id = '33333333-3333-4333-8333-3333333333a1'), 'the intent was consumed');
+
+  SELECT * INTO aud FROM public.audit_logs
+   WHERE action = 'payment.refused_already_paid'
+     AND entity_id = 'aaaaaaaa-0000-4000-8000-000000000154';
+  PERFORM public._expect('paid_elsewhere/double_charge_recorded', aud.id IS NOT NULL,
+    'no payment.refused_already_paid row names the order that was paid twice');
+  PERFORM public._expect('paid_elsewhere/record_names_both_payments',
+    aud.metadata->>'existingReference' = 'FT-CASH-B'
+      AND aud.metadata->>'existingMethod' = 'cash'
+      AND aud.metadata->>'attemptedReference' = 'MO-PE'
+      AND (aud.metadata->>'distinctGatewayTransaction')::boolean,
+    COALESCE(aud.metadata::text, '(no row)'));
+  PERFORM public._expect('paid_elsewhere/record_names_the_amount',
+    (aud.metadata->>'orderChargeCents')::integer = 22000,
+    COALESCE(aud.metadata::text, '(no row)'));
+  SELECT count(*) INTO n FROM public.audit_logs
+   WHERE action = 'payment.settlement_held_paid_elsewhere';
+  PERFORM public._expect('paid_elsewhere/settlement_row', n = 1, format('%s settlement rows', n));
+
+  -- A retried confirmation of the same charge does not multiply the evidence.
+  r := public.settle_order_payment(
+    '11111111-1111-4111-8111-111111111111',
+    ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+          'aaaaaaaa-0000-4000-8000-000000000155']::uuid[],
+    72000, 72000, 'TXN-PE', 'MO-PE', 'card', 'MO-PE',
+    '33333333-3333-4333-8333-3333333333a1',
+    'paycloud_webhook_valid_signature', 'term-1', 0, NULL, ARRAY[]::uuid[], '2.37');
+  PERFORM public._expect('paid_elsewhere/retry_still_refused',
+    r->>'reason' = 'order_paid_by_other_payment', r::text);
+  SELECT count(*) INTO n FROM public.audit_logs WHERE action = 'payment.refused_already_paid';
+  PERFORM public._expect('paid_elsewhere/retry_one_record', n = 1, format('%s rows after a retry', n));
+  SELECT count(*) INTO n FROM public.orders WHERE payment_status = 'paid';
+  PERFORM public._expect('paid_elsewhere/retry_pays_nothing', n = 1, format('%s paid', n));
+
+  -- ---- B. the other order carries ANOTHER card charge's merchant order number -------------------
+  PERFORM public._seed_riviera();
+  UPDATE public.orders
+     SET payment_status = 'paid', payment_method = 'card', payment_reference = 'MO-OTHER',
+         paycloud_merchant_order_no = 'MO-OTHER', status = 'completed'
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000155';
+  r := public.settle_order_payment(
+    '11111111-1111-4111-8111-111111111111',
+    ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+          'aaaaaaaa-0000-4000-8000-000000000155']::uuid[],
+    72000, 72000, 'TXN-PE2', 'MO-PE2', 'card', 'MO-PE2', NULL,
+    'terminal_verify_payment', 'term-1', 0, NULL, ARRAY[]::uuid[], '2.37');
+  PERFORM public._expect('paid_elsewhere_card/refused',
+    r->>'reason' = 'order_paid_by_other_payment', r::text);
+  PERFORM public._expect('paid_elsewhere_card/sibling_held',
+    (SELECT payment_status FROM public.orders
+      WHERE id = 'aaaaaaaa-0000-4000-8000-000000000154') = 'amount_mismatch_hold', 'not held');
+
+  -- ---- B2. cash recorded with NO reference: the method alone identifies another payment ---------
+  PERFORM public._seed_riviera();
+  UPDATE public.orders
+     SET payment_status = 'paid', payment_method = 'cash', payment_reference = NULL,
+         status = 'completed'
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000155';
+  r := public.settle_order_payment(
+    '11111111-1111-4111-8111-111111111111',
+    ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+          'aaaaaaaa-0000-4000-8000-000000000155']::uuid[],
+    72000, 72000, 'TXN-PE3', 'MO-PE3', 'card', 'MO-PE3', NULL,
+    'terminal_verify_payment', 'term-1', 0, NULL, ARRAY[]::uuid[], '2.37');
+  PERFORM public._expect('paid_elsewhere_cash_noref/refused',
+    r->>'reason' = 'order_paid_by_other_payment', r::text);
+
+  -- ---- C. NEGATIVE CONTROL: a replay of THIS charge (no intent) is not a second payment ---------
+  PERFORM public._seed_riviera();
+  r := public.settle_order_payment(
+    '11111111-1111-4111-8111-111111111111',
+    ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+          'aaaaaaaa-0000-4000-8000-000000000155']::uuid[],
+    72000, 72000, 'TXN-RP', 'MO-RP', 'card', 'MO-RP', NULL,
+    'terminal_verify_payment', 'term-1', 0, NULL, ARRAY[]::uuid[], '2.37');
+  r := public.settle_order_payment(
+    '11111111-1111-4111-8111-111111111111',
+    ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+          'aaaaaaaa-0000-4000-8000-000000000155']::uuid[],
+    72000, 72000, 'TXN-RP', 'MO-RP', 'card', 'MO-RP', NULL,
+    'paycloud_webhook_valid_signature', 'term-1', 0, NULL, ARRAY[]::uuid[], '2.37');
+  PERFORM public._expect('paid_elsewhere_replay/not_refused', (r->>'ok')::boolean, r::text);
+  SELECT count(*) INTO n FROM public.audit_logs WHERE action = 'payment.refused_already_paid';
+  PERFORM public._expect('paid_elsewhere_replay/no_false_alarm', n = 0,
+    format('%s refused_already_paid rows for a replay of the same charge', n));
+
+  -- ---- D. NEGATIVE CONTROL: the device's own tab-settle card claim, then the webhook ------------
+  -- One generated settlement reference across both orders; the merchant order number on the lead.
+  PERFORM public._seed_riviera();
+  UPDATE public.orders
+     SET payment_status = 'paid', payment_method = 'card', payment_reference = 'FT-TAB-1',
+         status = 'completed'
+   WHERE id IN ('aaaaaaaa-0000-4000-8000-000000000154', 'aaaaaaaa-0000-4000-8000-000000000155');
+  UPDATE public.orders SET paycloud_merchant_order_no = 'MO-TS'
+   WHERE id = 'aaaaaaaa-0000-4000-8000-000000000155';
+  r := public.settle_order_payment(
+    '11111111-1111-4111-8111-111111111111',
+    ARRAY['aaaaaaaa-0000-4000-8000-000000000154',
+          'aaaaaaaa-0000-4000-8000-000000000155']::uuid[],
+    72000, 72000, 'TXN-TS', 'MO-TS', 'card', 'MO-TS', NULL,
+    'paycloud_webhook_valid_signature', 'term-1', 0, NULL, ARRAY[]::uuid[], '2.37');
+  PERFORM public._expect('paid_elsewhere_tabsettle/not_refused',
+    COALESCE(r->>'reason', '') <> 'order_paid_by_other_payment', r::text);
+  SELECT count(*) INTO n FROM public.audit_logs WHERE action = 'payment.refused_already_paid';
+  PERFORM public._expect('paid_elsewhere_tabsettle/no_false_alarm', n = 0,
+    format('%s refused_already_paid rows for the device''s own tab settle', n));
+  SELECT count(*) INTO n FROM public.orders WHERE payment_status = 'amount_mismatch_hold';
+  PERFORM public._expect('paid_elsewhere_tabsettle/nothing_held', n = 0, format('%s held', n));
+END;
+$$;
+
+-- ==================================================================================================
 -- RUN THEM ALL. Each in its own subtransaction so one failure cannot hide the others.
 -- ==================================================================================================
 DO $$
@@ -820,7 +990,8 @@ DECLARE
     '_t_absent_gateway_amount',
     '_t_db_constraints',
     '_t_security_grants',
-    '_t_settled_charge_recorded'
+    '_t_settled_charge_recorded',
+    '_t_paid_elsewhere'
   ];
 BEGIN
   FOREACH t IN ARRAY tests LOOP

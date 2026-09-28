@@ -18,6 +18,7 @@ import { confirmWebhookOrderViaFinaticFallback } from '@/lib/payments/webhook-si
  * assemble a second version of any of them.
  */
 import { settleWholeOrderPayment } from '@/lib/payments/settle-whole-order-payment'
+import { recordOrdersPaidByAnotherPayment } from '@/lib/payments/paid-by-another-payment'
 
 function webhookAck() {
   return new Response('success', {
@@ -213,7 +214,12 @@ async function applyGatewayConfirmedOrders(
    * failed RPC, a tab that moved mid-flight -- is transient, and ACKing those would discard a real
    * payment with a success log.
    */
-  const permanent = settled.reason === 'amount_mismatch' || settled.reason === 'illegal_transition'
+  // `paid_elsewhere` (N3): the settlement RPC has already held the rest of the set and recorded the
+  // double charge; the gateway will confirm the same thing on every retry.
+  const permanent =
+    settled.reason === 'amount_mismatch' ||
+    settled.reason === 'illegal_transition' ||
+    settled.reason === 'paid_elsewhere'
   return {
     retryable: !permanent,
     permanentRefusal: permanent,
@@ -377,6 +383,18 @@ export async function POST(req: Request) {
           source: resolved.source,
           path,
         })
+        /**
+         * STILL ACKED, NO LONGER SILENT (Sprint 2026-09-28, N3). "Every order is paid" is a
+         * duplicate only when THIS charge paid them. When another payment did -- cash taken on a
+         * second terminal while this card was being charged -- the charge just confirmed is a
+         * probable double charge, and this is the one place the server learns of it.
+         */
+        await recordOrdersPaidByAnotherPayment(supabase, {
+          orderIds: resolved.orderIds,
+          reference: merchantOrderNo,
+          source: 'paycloud_webhook_valid_signature:already_paid',
+          gatewayConfirmed: true,
+        })
         return webhookAck()
       }
     }
@@ -512,6 +530,14 @@ export async function POST(req: Request) {
       merchantOrderNo,
       orderIds: fallback.orderIds,
       sigFailReason,
+    })
+    // The same evidence as the signature-valid leg ([[webhook-has-two-paths-fork-both]]), marked
+    // unconfirmed: on this leg nothing has yet verified that the charge happened.
+    await recordOrdersPaidByAnotherPayment(supabase, {
+      orderIds: fallback.orderIds,
+      reference: merchantOrderNo,
+      source: 'paycloud_webhook_fallback:already_paid',
+      gatewayConfirmed: false,
     })
     return webhookAck()
   }
