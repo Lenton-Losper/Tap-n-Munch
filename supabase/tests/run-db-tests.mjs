@@ -435,6 +435,26 @@ const MUTATIONS = {
         "     AND false\n     AND (e->>'payment_method' IS NULL",
       ),
   },
+  /**
+   * RIVIERA #160 END TO END (riviera-modena-chain.test.sql). The same defects as M4 / MA3 / M14,
+   * required to be caught by the incident's OWN assertions -- so the Modena walk-through is proven
+   * load-bearing in its own right, not only covered by neighbouring fixtures.
+   */
+  MC1: {
+    what: 'the settlement expects Σ orders.total: the live N$965 card payment is refused',
+    expect: ['modena_void/settle_965_ok', 'modena_void/all_four_paid', 'modena_void/ledger_is_965'],
+    apply: (sql) => MUTATIONS.M4.apply(sql),
+  },
+  MC2: {
+    what: 'a cooked Modena can still be voided (the amend window removed)',
+    expect: ['modena_refused/window_closed', 'modena_refused/no_void_event'],
+    apply: (sql) => MUTATIONS.MA3.apply(sql),
+  },
+  MC3: {
+    what: 'the gratuity is recorded inside the order charge (720 + tip)',
+    expect: ['tip720/orders_record_food_only', 'tip720/ledger_minus_tip_is_settled_food'],
+    apply: (sql) => MUTATIONS.M14.apply(sql),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -540,6 +560,8 @@ function runSuite() {
   psql(readRepo('supabase/tests/settlement-rpc.test.sql'))
   // Runs second: it reuses the settlement file's _test_results, _expect() and _seed().
   psql(readRepo('supabase/tests/amend-rpc.test.sql'))
+  // Riviera #160 end to end through the real amend and settlement functions. Reuses _seed().
+  psql(readRepo('supabase/tests/riviera-modena-chain.test.sql'))
   const total = Number(psqlValue('SELECT count(*) FROM public._test_results;'))
   const failed = psqlValue(
     "SELECT string_agg(name || '  ::  ' || COALESCE(detail,''), E'\\n') " +
@@ -626,6 +648,83 @@ if (!baseAmend.passed) {
   process.exit(1)
 }
 console.log('  amend-race probe: one winner per line, paid-in-flight refused, no deadlock with a settlement')
+
+/**
+ * THE MODENA SNAPSHOT (supabase/tests/riviera-modena-chain.test.sql). What the real RPCs wrote for
+ * Riviera #160, which the jest chain replays as their answer. Checked against the committed fixture
+ * on every baseline run: a function change that moves those rows fails HERE until the fixture is
+ * regenerated with --write-modena-snapshot, so the route tests can never keep passing against rows
+ * the database no longer produces.
+ */
+const MODENA_SNAPSHOT = '__tests__/fixtures/riviera-modena-rpc-snapshot.json'
+
+/**
+ * Generated ids (replacement orders, lines, events, the ledger row) are random per run. Each is
+ * replaced by a stable alias in order of first appearance -- the snapshot's own ORDER BYs make that
+ * order deterministic -- and every fixed seed id is kept as it is.
+ */
+function normaliseModenaSnapshot(raw) {
+  // jsonb orders keys by length, which would put branch_a before the reductions that created its
+  // orders. Rebuilt in execution order, so every id is aliased where it was first written.
+  const text = JSON.stringify({
+    seed: raw.seed,
+    reductions: raw.reductions,
+    branch_a: raw.branch_a,
+    branch_b: raw.branch_b,
+    riviera_720: raw.riviera_720,
+    riviera_720_tip: raw.riviera_720_tip,
+  })
+  const seeded = /^(11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|55555555-5555-4555-8555-555555555555|66666666-6666-4666-8666-666666666666|77777777-7777-4777-8777-777777777777|eeeeeeee-0000-4000-8000-0000000001[0-9a-f]{2}|dddddddd-0000-4000-8000-0000000001d[0-7]|abab0001-0000-4000-8000-000000000015)$/
+  const aliases = new Map()
+  const out = text.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, (id) => {
+    if (seeded.test(id)) return id
+    if (!aliases.has(id)) {
+      aliases.set(id, `f0000000-0000-4000-8000-${String(aliases.size + 1).padStart(12, '0')}`)
+    }
+    return aliases.get(id)
+  })
+  // settle_order_payment reports its order-id sets ordered by id, and the generated ids are random,
+  // so those arrays are sorted after aliasing. Nothing replays their order.
+  const sortIdSets = (value, key) => {
+    if (Array.isArray(value)) {
+      const mapped = value.map((v) => sortIdSets(v, null))
+      return key && key.endsWith('order_ids') && mapped.every((v) => typeof v === 'string')
+        ? [...mapped].sort()
+        : mapped
+    }
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, sortIdSets(v, k)]))
+    }
+    return value
+  }
+  return sortIdSets(JSON.parse(out), null)
+}
+
+{
+  const snapshot = normaliseModenaSnapshot(JSON.parse(psqlValue('SELECT public._modena_snapshot()::text;')))
+  const rendered = `${JSON.stringify(snapshot, null, 2)}
+`
+  if (process.argv.includes('--write-modena-snapshot')) {
+    writeFileSync(join(REPO, MODENA_SNAPSHOT), rendered)
+    console.log(`  modena snapshot written to ${MODENA_SNAPSHOT}`)
+  } else {
+    let committed = null
+    try {
+      committed = readRepo(MODENA_SNAPSHOT)
+    } catch {
+      committed = null
+    }
+    if (committed !== rendered) {
+      console.error(
+        `FAIL: ${MODENA_SNAPSHOT} does not match what amend_order_lines / settle_order_payment ` +
+          'produce now. If the change is intended, regenerate it with --write-modena-snapshot and ' +
+          're-run the jest chain (__tests__/e2e-riviera-modena-chain.test.ts) against it.',
+      )
+      process.exit(1)
+    }
+    console.log('  modena snapshot: the rows the jest chain replays are what the RPCs write today')
+  }
+}
 
 if (!which) process.exit(0)
 

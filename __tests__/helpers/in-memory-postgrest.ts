@@ -81,7 +81,24 @@ export class InMemoryDb {
   }
 }
 
-type Filter = { kind: 'eq' | 'neq' | 'is_null'; column: string; value: unknown }
+type Filter = {
+  kind: 'eq' | 'neq' | 'is_null' | 'not_null' | 'gt' | 'gte' | 'lt' | 'lte' | 'not_in'
+  column: string
+  value: unknown
+}
+
+/**
+ * Postgres comparison for the range filters: numerically when both sides are numbers (order
+ * numbers, cents), otherwise as text -- which is what ISO timestamps need and what they get.
+ */
+function compareValues(a: unknown, b: unknown): number {
+  const an = typeof a === 'number' ? a : typeof a === 'string' && a.trim() !== '' ? Number(a) : NaN
+  const bn = typeof b === 'number' ? b : typeof b === 'string' && b.trim() !== '' ? Number(b) : NaN
+  if ((typeof a === 'number' || typeof b === 'number') && Number.isFinite(an) && Number.isFinite(bn)) {
+    return an - bn
+  }
+  return String(a ?? '').localeCompare(String(b ?? ''))
+}
 
 class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   private filters: Filter[] = []
@@ -124,6 +141,43 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
     }
     this.filters.push({ kind: 'is_null', column, value: null })
     return this
+  }
+  /**
+   * Range filters (`.gt('expires_at', now)`, `.gte('placed_at', start)`). A NULL never satisfies a
+   * comparison, exactly as in SQL -- a token with no expiry is not "later than now".
+   */
+  gt(column: string, value: unknown) {
+    this.filters.push({ kind: 'gt', column, value })
+    return this
+  }
+  gte(column: string, value: unknown) {
+    this.filters.push({ kind: 'gte', column, value })
+    return this
+  }
+  lt(column: string, value: unknown) {
+    this.filters.push({ kind: 'lt', column, value })
+    return this
+  }
+  lte(column: string, value: unknown) {
+    this.filters.push({ kind: 'lte', column, value })
+    return this
+  }
+  /**
+   * PostgREST negation. Only the two shapes callers use: `.not(col, 'is', null)` (order-number
+   * allocation) and `.not(col, 'in', '(a,b)')` (prepare-payment's stale-row release). Anything
+   * else throws rather than being silently ignored.
+   */
+  not(column: string, operator: string, value: unknown) {
+    if (operator === 'is' && value === null) {
+      this.filters.push({ kind: 'not_null', column, value: null })
+      return this
+    }
+    if (operator === 'in' && typeof value === 'string' && /^\(.*\)$/.test(value)) {
+      const values = value.slice(1, -1).split(',').map((v) => v.trim()).filter(Boolean)
+      this.filters.push({ kind: 'not_in', column, value: values })
+      return this
+    }
+    throw new Error(`in-memory .not() does not model (${column}, ${operator}, ${String(value)})`)
   }
   in(column: string, values: readonly unknown[]) {
     this.inFilters.push({ column, values })
@@ -196,6 +250,13 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
         // row whose voided_at is the empty string. For a filter that excludes voided rows from a
         // billing read, matching too much is the dangerous direction.
         if (f.kind === 'is_null') return r[f.column] == null
+        if (f.kind === 'not_null') return r[f.column] != null
+        if (f.kind === 'not_in') return !(f.value as string[]).includes(String(r[f.column] ?? ''))
+        if (f.kind === 'gt' || f.kind === 'gte' || f.kind === 'lt' || f.kind === 'lte') {
+          if (r[f.column] == null) return false
+          const c = compareValues(r[f.column], f.value)
+          return f.kind === 'gt' ? c > 0 : f.kind === 'gte' ? c >= 0 : f.kind === 'lt' ? c < 0 : c <= 0
+        }
         return f.kind === 'eq'
           ? String(r[f.column] ?? '') === String(f.value)
           : String(r[f.column] ?? '') !== String(f.value)
@@ -221,9 +282,12 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
     if (this.orderBy) {
       const { column, ascending } = this.orderBy
       out = [...out].sort((a, b) => {
-        const av = String(a[column] ?? '')
-        const bv = String(b[column] ?? '')
-        return ascending ? av.localeCompare(bv) : bv.localeCompare(av)
+        // Numbers sort as numbers: order #1000 is after #999, as Postgres has it.
+        const c =
+          typeof a[column] === 'number' && typeof b[column] === 'number'
+            ? (a[column] as number) - (b[column] as number)
+            : String(a[column] ?? '').localeCompare(String(b[column] ?? ''))
+        return ascending ? c : -c
       })
     }
     if (this.limitN != null) out = out.slice(0, this.limitN)
@@ -307,6 +371,9 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
 
   async single() {
     const r = this.resolve()
+    // A failed write reports ITS error (a 23505 from a unique rule), not "no rows": the real client
+    // does, and createOrder's idempotent-replay branch keys off exactly that code.
+    if (r.error) return { data: null, error: r.error }
     const arr = (r.data ?? []) as Row[]
     if (!arr[0]) {
       return { data: null, error: { code: 'PGRST116', message: 'no rows returned' } }
