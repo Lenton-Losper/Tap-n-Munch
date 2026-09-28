@@ -20,6 +20,8 @@ import { POST } from '@/app/api/payments/push-to-terminal/route'
 const CALLER_RESTAURANT = 'rest-uuid-1'
 
 let orderRow: Record<string, unknown>
+/** order_lines for ord-1; empty unless a test voids something. */
+let mockLineRows: Array<Record<string, unknown>> = []
 /** Every UPDATE the route issues: patch + the columns it filtered on. */
 let updates: Array<{ patch: Record<string, unknown>; filterCols: string[] }> = []
 /** Simulates another request having already claimed the column (lost race). */
@@ -72,6 +74,20 @@ function makeSupabaseMock() {
           insert: async () => ({ error: null }),
         }
         return b
+      }
+      // The charge is the order's OUTSTANDING figure (Sprint 2026-09-28), which also reads its
+      // lines and item-ledger allocations. None exist here, so the order owes its total.
+      if (table === 'order_lines' || table === 'order_line_allocations') {
+        const empty: any = {
+          select: () => empty,
+          in: () => empty,
+          is: () => empty,
+          order: () => empty,
+          range: () => empty,
+          then: (resolve: (v: unknown) => unknown) =>
+            Promise.resolve({ data: table === 'order_lines' ? mockLineRows : [], error: null }).then(resolve),
+        }
+        return empty
       }
       if (table !== 'orders') throw new Error(`unexpected table ${table}`)
       return {
@@ -130,12 +146,16 @@ jest.mock('@/lib/supabase/server', () => ({ createServerSupabaseClient: () => ma
 
 /** Captures the merchant_order_no actually sent to Finatic. */
 let sentMerchantOrderNo: string | undefined
+/** And the amount the reader was asked for. */
+let sentAmount: unknown
 
 beforeEach(() => {
   process.env.PAYCLOUD_APP_ID = 'APP1' // route reads app id from env, not credentials
   updates = []
   raceWinnerValue = null
   sentMerchantOrderNo = undefined
+  sentAmount = undefined
+  mockLineRows = []
   orderRow = {
     id: 'ord-1',
     restaurant_id: CALLER_RESTAURANT,
@@ -146,6 +166,7 @@ beforeEach(() => {
   global.fetch = jest.fn(async (_url: unknown, init: Record<string, unknown>) => {
     const body = JSON.parse(String((init as { body: string }).body))
     sentMerchantOrderNo = body.merchant_order_no
+    sentAmount = body.order_amount
     return {
       ok: true,
       status: 200,
@@ -232,5 +253,38 @@ describe('push-to-terminal -- merchant order number must not rotate', () => {
     // Under the old logic these differed on every call, orphaning the first webhook.
     expect(first).toBeDefined()
     expect(second).toBe(first)
+  })
+})
+
+describe('push-to-terminal -- the reader is asked for what is still OWED (Sprint 2026-09-28)', () => {
+  it('an unamended order is charged its total, and the expectation is recorded', async () => {
+    const res = await push()
+    expect(res.status).toBe(200)
+    expect(sentAmount).toBe(100)
+    expect(updates.some((u) => u.patch.pending_charge_cents === 10000)).toBe(true)
+  })
+
+  it('an amended order is charged its live figure, not the stored total', async () => {
+    orderRow.items = [
+      { name: 'Steak', quantity: 1, total: 70 },
+      { name: 'Wine', quantity: 1, total: 30 },
+    ]
+    mockLineRows = [
+      { id: 'l0', order_id: 'ord-1', source_item_index: 0, kitchen_state: 'voided', bar_state: null },
+      { id: 'l1', order_id: 'ord-1', source_item_index: 1, kitchen_state: null, bar_state: 'ready' },
+    ]
+    const res = await push()
+    expect(res.status).toBe(200)
+    expect(sentAmount).toBe(30)
+    // The webhook verifies against this record; without it it would expect the stale N$100.
+    expect(updates.some((u) => u.patch.pending_charge_cents === 3000)).toBe(true)
+  })
+
+  it('an order whose every line was voided is not pushed at all', async () => {
+    orderRow.items = [{ name: 'Steak', quantity: 1, total: 100 }]
+    mockLineRows = [{ id: 'l0', order_id: 'ord-1', source_item_index: 0, kitchen_state: 'voided', bar_state: null }]
+    const res = await push()
+    expect(res.status).toBe(400)
+    expect(sentAmount).toBeUndefined()
   })
 })

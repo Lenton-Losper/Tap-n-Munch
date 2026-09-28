@@ -44,6 +44,20 @@ function makeSupabaseMock(): any {
         }
         return b
       }
+      // The charge is the order's OUTSTANDING figure (Sprint 2026-09-28), which also reads its
+      // lines and item-ledger allocations. None exist here, so the order owes its total.
+      if (table === 'order_lines' || table === 'order_line_allocations') {
+        const empty: any = {
+          select: () => empty,
+          in: () => empty,
+          is: () => empty,
+          order: () => empty,
+          range: () => empty,
+          then: (resolve: (v: unknown) => unknown) =>
+            Promise.resolve({ data: [], error: null }).then(resolve),
+        }
+        return empty
+      }
       if (table !== 'orders') throw new Error(`unexpected table ${table}`)
       return {
         select() {

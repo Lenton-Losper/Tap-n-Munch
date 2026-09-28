@@ -9,6 +9,7 @@ import {
 } from '@/lib/api/require-staff-permission'
 import { PERMISSIONS } from '@/lib/permissions'
 import { recordPaymentStatusChange } from '@/lib/orders/record-payment-status-change'
+import { centsToMajor, projectOrderRows, type FinancialOrderInput } from '@/lib/orders/order-financials'
 
 const ECR_ORDER_URL = 'https://open.finatic.africa/api/entry/ecrorder'
 
@@ -83,7 +84,30 @@ export async function POST(req: Request) {
       )
     }
 
-    const resolvedAmount = Number(order.total)
+    /**
+     * WHAT IS STILL OWED, NOT orders.total (Sprint 2026-09-28).
+     *
+     * amend_order_lines never rewrites an order, so `total` keeps counting lines staff voided, and
+     * items paid one by one are already in the till. The reader is asked for the order's
+     * OUTSTANDING figure from the one financial projection, and that figure is recorded as
+     * pending_charge_cents in the claim below, so the webhook verifies the same number it charged
+     * (it falls back to the stale total only when nothing is recorded). An unamended, unsplit
+     * order is charged its total exactly as before.
+     *
+     * FAILS CLOSED: nothing has been charged yet, so a refusal costs a retry.
+     */
+    let outstandingCents: number
+    try {
+      const financials = await projectOrderRows(supabase, [order as unknown as FinancialOrderInput])
+      outstandingCents = financials.get(String(order.id))?.outstandingCents ?? 0
+    } catch (projectionErr) {
+      console.error('[PUSH-TO-TERMINAL] could not read what is still owed', projectionErr)
+      return NextResponse.json(
+        { error: 'Could not work out what is still owed. Try again.', code: 'SETTLED_TOTAL_UNREADABLE' },
+        { status: 503 },
+      )
+    }
+    const resolvedAmount = centsToMajor(outstandingCents)
     if (!Number.isFinite(resolvedAmount) || resolvedAmount <= 0) {
       console.log('[PUSH-TO-TERMINAL] Returning 400 because:', 'Invalid amount')
       return NextResponse.json({ error: 'Invalid amount' }, { status: 400 })
@@ -97,7 +121,12 @@ export async function POST(req: Request) {
     const { data: claimedOrder, error: claimError } = await supabase
       .from('orders')
       // terminal_pushed_at starts the in-flight window that cash settlement respects.
-      .update({ payment_status: 'terminal_pending', terminal_pushed_at: new Date().toISOString() })
+      // pending_charge_cents: what the reader is about to be asked for, so every gate verifies it.
+      .update({
+        payment_status: 'terminal_pending',
+        terminal_pushed_at: new Date().toISOString(),
+        pending_charge_cents: outstandingCents,
+      })
       .eq('id', normalizedOrderId)
       .eq('payment_status', previousPaymentStatus)
       .select('*')
@@ -135,7 +164,7 @@ export async function POST(req: Request) {
     const releaseClaim = async () => {
       const { error: releaseError } = await supabase
         .from('orders')
-        .update({ payment_status: previousPaymentStatus, terminal_pushed_at: null })
+        .update({ payment_status: previousPaymentStatus, terminal_pushed_at: null, pending_charge_cents: null })
         .eq('id', normalizedOrderId)
         .eq('payment_status', 'terminal_pending')
       if (releaseError) {
@@ -297,7 +326,7 @@ export async function POST(req: Request) {
         console.log('[PUSH-TO-TERMINAL] Returning 400 because:', finaticReason)
         await supabase
           .from('orders')
-          .update({ payment_status: previousPaymentStatus, terminal_status: 'failed', terminal_pushed_at: null })
+          .update({ payment_status: previousPaymentStatus, terminal_status: 'failed', terminal_pushed_at: null, pending_charge_cents: null })
           .eq('id', normalizedOrderId)
           .eq('payment_status', 'terminal_pending')
         return NextResponse.json(
@@ -312,6 +341,8 @@ export async function POST(req: Request) {
     } catch (err) {
       console.error('[PUSH-TO-TERMINAL] Finatic call threw error:', err)
       console.error('[PUSH-TO-TERMINAL] Finatic call failed:', err)
+      // pending_charge_cents is deliberately KEPT here: a call that threw may still have reached the
+      // reader, and if it charged, the webhook must verify the figure it was actually asked for.
       await supabase
         .from('orders')
         .update({ payment_status: previousPaymentStatus, terminal_status: 'failed', terminal_pushed_at: null })
