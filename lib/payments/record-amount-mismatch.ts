@@ -29,6 +29,8 @@ export type AmountMismatchSource =
   | 'terminal_verify_payment'
   | 'paycloud_webhook'
   | 'reconcile_orphan_payments'
+  /** Sprint 2026-09-29 task 4: app/api/payments/reconcile, staff-triggered, after a charge. */
+  | 'staff_reconcile'
 
 export type RecordAmountMismatchParams = {
   restaurantId: string

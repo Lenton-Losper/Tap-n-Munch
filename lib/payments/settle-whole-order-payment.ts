@@ -100,6 +100,20 @@ export type SettleWholeOrderParams = {
   appVersion?: string | null
   /** Extra audit metadata merged into the refusal rows. */
   extraAuditMetadata?: Record<string, unknown>
+  /**
+   * Whether an E04111-auto-cancelled order may be recovered to paid. Default true (the webhook,
+   * verify-payment and the orphan cron). The staff reconciliation passes false: it refuses a
+   * cancelled order outright (Sprint 2026-09-29 brief, task 4), and this keeps a cancel that lands
+   * between its check and the RPC from being revived anyway.
+   */
+  allowCancelledRecovery?: boolean
+  /**
+   * THE SET THE CALLER ALREADY BOUND AND VERIFIED. When given, the target re-resolved here must be
+   * exactly this set, or nothing is applied (`target_changed`). The staff reconciliation binds the
+   * reference to its orders and checks the amount BEFORE calling; without this pin a
+   * `pending_settlement_id` change in between would settle a set nobody verified.
+   */
+  expectedOrderIds?: readonly string[]
 }
 
 export type SettleWholeOrderResult =
@@ -170,6 +184,20 @@ export async function settleWholeOrderPayment(
   }
 
   const target = resolved.target
+
+  if (params.expectedOrderIds) {
+    const pinned = new Set(params.expectedOrderIds.map(String))
+    const same =
+      pinned.size === target.orderIds.length && target.orderIds.every((id) => pinned.has(String(id)))
+    if (!same) {
+      console.error(`[settleWholeOrderPayment:${params.source}] target moved since it was verified`, {
+        merchantOrderNo: params.merchantOrderNo,
+        verified: [...pinned],
+        now: target.orderIds,
+      })
+      return { ok: false, reason: 'target_changed', detail: 'target_differs_from_verified_set', target }
+    }
+  }
   /**
    * FROM THE TARGET, not from the argument. When the caller passed null this is the venue derived
    * from the rows; when it passed one, resolveSettlementTarget has already proved they agree.
@@ -260,7 +288,7 @@ export async function settleWholeOrderPayment(
    * copy of a rule that has already been got wrong once. The function refuses `cancelled -> paid`
    * for any id not in this list.
    */
-  const allowCancelledRecovery = target.orders
+  const allowCancelledRecovery = params.allowCancelledRecovery === false ? [] : target.orders
     .filter((row) => isCancelledOnE04111Evidence(row as Parameters<typeof isCancelledOnE04111Evidence>[0]))
     .map((row) => String(row.id))
 

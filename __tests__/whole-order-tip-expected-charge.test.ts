@@ -209,9 +209,14 @@ describe('THE COLUMNS ARE SELECTED, NOT MERELY WRITTEN', () => {
     expect(EXPECTED_CHARGE_COLUMNS).toContain('pending_tip_cents')
   })
 
-  it('reconcile reads whole rows, so it needs no column list', () => {
+  it('reconcile selects the recorded gratuity and settles through the shared target', () => {
+    // Sprint 2026-09-29 brief, task 4: reconcile no longer reads `select('*')` and sums in place.
+    // Its expectation is the projection's outstanding plus the gratuity the prepared charge carried
+    // (pending_tip_cents, SELECTED here), and the write is settleWholeOrderPayment, whose target
+    // selects TARGET_ORDER_COLUMNS (asserted above).
     const code = readFileSync(join(process.cwd(), 'app/api/payments/reconcile/route.ts'), 'utf8')
-    expect(code).toMatch(/\.select\('\*'\)/)
+    expect(code).toMatch(/\.select\('[^']*pending_tip_cents[^']*'\)/)
+    expect(code).toMatch(/settleWholeOrderPayment\(/)
   })
 
   it('and the helper names the columns a caller must select', () => {
@@ -240,7 +245,7 @@ describe('NO GATE COMPARES AGAINST order.total ANY MORE', () => {
     const code = readFileSync(join(process.cwd(), rel), 'utf8')
     const statements = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
     // Either directly, or through the shared target / writer that does it for them. The two
-    // gateway gates delegate as of 2026-09-19; reconcile still sums in place.
+    // gateway gates delegate as of 2026-09-19; reconcile as of Sprint 2026-09-29.
     expect(statements).toMatch(
       /expectedChargeFor(Orders)?\(|resolveSettlementTarget\(|settleWholeOrderPayment\(/,
     )
