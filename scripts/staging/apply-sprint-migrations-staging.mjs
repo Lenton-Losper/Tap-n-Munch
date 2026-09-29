@@ -49,6 +49,7 @@ const PLAN = [
   '20260929130000_settle_promotes_device_sale_row.sql',
   '20260929130100_refund_cap_is_verified_amount.sql',
   '20260929140000_manual_payment_releases_stale_card_attempt.sql',
+  '20260929150000_revoke_anon_authenticated_line_rpcs.sql',
 ]
 /** Applied on staging, deliberately absent from production. Their presence identifies staging. */
 const STAGING_ONLY = ['20260705210000', '20260705220000']

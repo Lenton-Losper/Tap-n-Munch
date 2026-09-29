@@ -229,6 +229,14 @@ BEGIN
 END
 $$;
 
+-- SUPABASE'S DEFAULT PRIVILEGES, reproduced (2026-09-29). On a Supabase project every function the
+-- postgres role creates in `public` is granted EXECUTE to anon, authenticated and service_role
+-- DIRECTLY, so `REVOKE ALL ... FROM PUBLIC` alone leaves anon able to call it. Without this line the
+-- suite's "only service_role can execute" assertions passed against a database that never granted
+-- anon anything -- which is how amend_order_lines, settle_order_line_allocations and
+-- order_is_fully_paid_by_allocations shipped callable by anon (closed by 20260929150000).
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon, authenticated, service_role;
+
 -- ==================================================================================================
 -- amend_order_lines (20260829150000, redefined by 20260928150000). Added for amend-rpc.test.sql.
 -- ==================================================================================================

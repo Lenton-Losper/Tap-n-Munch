@@ -71,6 +71,8 @@ const MIGRATIONS = [
   // F-MANUAL follow-up: a manual payment refuses a card attempt in flight and releases a stale one.
   // Reads 20260929120000's columns and sets its non-gateway marker, so it sorts after that series.
   'supabase/migrations/20260929140000_manual_payment_releases_stale_card_attempt.sql',
+  // Closes anon/authenticated EXECUTE on the three line/allocation RPCs (Supabase default grants).
+  'supabase/migrations/20260929150000_revoke_anon_authenticated_line_rpcs.sql',
 ]
 
 /**
@@ -847,6 +849,23 @@ const MUTATIONS = {
     expect: [],
     apply: (sql) => sql.replace('   FOR v_attempt IN 1..2 LOOP\n', '   FOR v_attempt IN 1..1 LOOP\n'),
   },
+  MG1: {
+    what: '20260929150000 revokes PUBLIC only (the original bug): anon/authenticated keep EXECUTE via Supabase default grants',
+    expect: [
+      'line_rpc_grants/amend_order_lines/anon_cannot_execute',
+      'line_rpc_grants/settle_order_line_allocations/anon_cannot_execute',
+      'line_rpc_grants/order_is_fully_paid_by_allocations/anon_cannot_execute',
+      'amend_security/anon_cannot_execute',
+      'security/allocations_rpc_still_locked_down',
+    ],
+    apply: (sql) =>
+      ['public.amend_order_lines(uuid, uuid, integer, text, uuid, jsonb)',
+       'public.settle_order_line_allocations(uuid, uuid, uuid[], text, text, uuid)',
+       'public.order_is_fully_paid_by_allocations(uuid)'].reduce(
+        (acc, sig) => acc.replace(`REVOKE ALL ON FUNCTION ${sig} FROM PUBLIC, anon, authenticated;`, `REVOKE ALL ON FUNCTION ${sig} FROM PUBLIC;`),
+        sql,
+      ),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -961,6 +980,8 @@ function runSuite() {
   psql(readRepo('supabase/tests/charge-edit-race.test.sql'))
   // Fourth: the non-gateway ledger (20260929100000). Reuses the same helpers, cleans up after itself.
   psql(readRepo('supabase/tests/manual-ledger.test.sql'))
+  // 20260929150000: the three line/allocation RPCs are service_role only (real default grants).
+  psql(readRepo('supabase/tests/line-rpc-grants.test.sql'))
   const total = Number(psqlValue('SELECT count(*) FROM public._test_results;'))
   const failed = psqlValue(
     "SELECT string_agg(name || '  ::  ' || COALESCE(detail,''), E'\\n') " +
