@@ -159,6 +159,8 @@ jest.mock('@/lib/supabase/server', () => ({
         in: () => b,
         is: () => b,
         or: () => b,
+        // Sprint 2026-09-29: paid orders' refunds are read with .overlaps() on payment_events.
+        overlaps: () => b,
         // The financial projection pages its reads with .order().range(); both chain.
         order: () => b,
         range: () => b,
