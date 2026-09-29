@@ -80,7 +80,7 @@ import {
 // Sprint 2026-09-28: staff voids never rewrite an order, so money shown here goes through the one
 // financial projection -- live value, with the placed total beside it when voids moved it.
 import {
-  computeOrderFinancials,
+  projectOrderWithInputs,
   readProjectionInputs,
   type FinancialOrderInput,
 } from '@/lib/orders/order-financials'
@@ -1529,15 +1529,14 @@ export function OrdersDashboard() {
     const ids = openOrderIdsKey.split(',')
     void (async () => {
       try {
-        const inputs = await readProjectionInputs(supabase, ids)
+        const inputs = await readProjectionInputs(
+          supabase,
+          allOrders.filter((o) => ids.includes(String(o.id))) as unknown as FinancialOrderInput[],
+        )
         if (cancelled) return
         const next: Record<string, { live: number; original: number }> = {}
         for (const order of allOrders) {
-          const fin = computeOrderFinancials(
-            order as unknown as FinancialOrderInput,
-            inputs.lines,
-            inputs.allocationSettledByOrder.get(String(order.id)) ?? 0,
-          )
+          const fin = projectOrderWithInputs(order as unknown as FinancialOrderInput, inputs)
           if (fin.voidedCents > 0) {
             next[String(order.id)] = { live: fin.liveCents / 100, original: fin.originalCents / 100 }
           }

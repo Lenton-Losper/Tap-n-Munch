@@ -63,7 +63,7 @@ function mockRecordManualPayment(a: Record<string, unknown>) {
   if (!['unpaid', 'pending', 'cash_pending', 'failed'].includes(String(o.payment_status))) {
     return { data: { ok: false, reason: 'not_settleable' }, error: null }
   }
-  // 20260929100100: a card charge prepared inside the in-flight window refuses.
+  // 20260929140000: a card charge prepared inside the in-flight window refuses.
   if (o.pending_charge_cents != null && Date.now() - Date.parse(String(o.pending_charge_at)) < 5 * 60 * 1000) {
     return { data: { ok: false, reason: 'payment_in_flight' }, error: null }
   }
@@ -389,7 +389,7 @@ describe('Mark-as-Paid writes exactly one non-gateway ledger row', () => {
   })
 })
 
-describe('Mark-as-Paid never races a card attempt (team-lead ruling, 20260929100100)', () => {
+describe('Mark-as-Paid never races a card attempt (team-lead ruling, 20260929140000)', () => {
   it('a card charge prepared inside the window: 409 PAYMENT_IN_FLIGHT, nothing recorded', async () => {
     const id = oneOrder()
     Object.assign(order(id), { pending_charge_cents: 22000, pending_charge_at: new Date().toISOString() })

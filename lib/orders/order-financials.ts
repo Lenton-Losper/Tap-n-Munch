@@ -469,16 +469,61 @@ export async function readRefundFractions(
   return out
 }
 
-/** The projection's other two inputs for orders the caller has already read. Throws on failure. */
+/** Everything the projection reads besides the orders themselves. */
+export type ProjectionInputs = {
+  lines: FinancialLineInput[]
+  allocationSettledByOrder: Map<string, number>
+  /** REFUNDS (see the header). Absent orders had none. */
+  refundFractionByOrder: Map<string, number>
+}
+
+/**
+ * THE ONE READ of the projection's inputs, for orders the caller has already read. Every loader in
+ * this module goes through it, and so does every route that keeps its own order read -- so lines,
+ * item settlements and refunds cannot be applied on one path and forgotten on another (the refunds
+ * were, until Sprint 2026-09-29). The rows need `id` and `payment_status`: refunds are only asked
+ * for paid ones. Throws on failure.
+ */
 export async function readProjectionInputs(
   supabase: FinancialsSupabase,
-  orderIds: readonly string[],
-): Promise<{ lines: FinancialLineInput[]; allocationSettledByOrder: Map<string, number> }> {
-  const [lines, allocationSettledByOrder] = await Promise.all([
+  rows: readonly Pick<FinancialOrderInput, 'id' | 'payment_status'>[],
+): Promise<ProjectionInputs> {
+  const orderIds = rows.map((r) => String(r.id)).filter(Boolean)
+  const [lines, allocationSettledByOrder, refundFractionByOrder] = await Promise.all([
     readFinancialLines(supabase, orderIds),
     readAllocationSettled(supabase, orderIds),
+    readRefundFractions(supabase, rows as readonly FinancialOrderInput[]),
   ])
-  return { lines, allocationSettledByOrder }
+  return { lines, allocationSettledByOrder, refundFractionByOrder }
+}
+
+/** One order projected from inputs read by readProjectionInputs. */
+export function projectOrderWithInputs(
+  order: FinancialOrderInput,
+  inputs: Pick<ProjectionInputs, 'lines' | 'allocationSettledByOrder'> &
+    Partial<Pick<ProjectionInputs, 'refundFractionByOrder'>>,
+): OrderFinancials {
+  const id = String(order.id)
+  return computeOrderFinancials(
+    order,
+    inputs.lines,
+    inputs.allocationSettledByOrder.get(id) ?? 0,
+    inputs.refundFractionByOrder?.get(id) ?? 0,
+  )
+}
+
+/** A tab projected from inputs read by readProjectionInputs. */
+export function projectTabWithInputs(
+  orders: readonly FinancialOrderInput[],
+  inputs: Pick<ProjectionInputs, 'lines' | 'allocationSettledByOrder'> &
+    Partial<Pick<ProjectionInputs, 'refundFractionByOrder'>>,
+): TabFinancials {
+  return computeTabFinancials(
+    orders,
+    inputs.lines,
+    inputs.allocationSettledByOrder,
+    inputs.refundFractionByOrder ?? new Map(),
+  )
 }
 
 /**
@@ -491,17 +536,9 @@ export async function projectOrderRows(
   supabase: FinancialsSupabase,
   rows: readonly FinancialOrderInput[],
 ): Promise<Map<string, OrderFinancials>> {
-  const ids = rows.map((r) => String(r.id))
-  const [lines, settled, refunds] = await Promise.all([
-    readFinancialLines(supabase, ids),
-    readAllocationSettled(supabase, ids),
-    readRefundFractions(supabase, rows),
-  ])
+  const inputs = await readProjectionInputs(supabase, rows)
   const out = new Map<string, OrderFinancials>()
-  for (const row of rows) {
-    const id = String(row.id)
-    out.set(id, computeOrderFinancials(row, lines, settled.get(id) ?? 0, refunds.get(id) ?? 0))
-  }
+  for (const row of rows) out.set(String(row.id), projectOrderWithInputs(row, inputs))
   return out
 }
 
@@ -548,13 +585,7 @@ export async function loadTabFinancials(
     if (restaurantId) query = query.eq('restaurant_id', restaurantId)
     return query.eq('tab_id', tabId).order('id', { ascending: true })
   }, 'orders')
-  const ids = rows.map((r) => String(r.id))
-  const [lines, settled, refunds] = await Promise.all([
-    readFinancialLines(supabase, ids),
-    readAllocationSettled(supabase, ids),
-    readRefundFractions(supabase, rows),
-  ])
-  return computeTabFinancials(rows, lines, settled, refunds)
+  return projectTabWithInputs(rows, await readProjectionInputs(supabase, rows))
 }
 
 /**

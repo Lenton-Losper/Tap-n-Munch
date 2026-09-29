@@ -13,7 +13,7 @@ import {
   type FinaticOrderPaidResult,
 } from '@/lib/payments/query-finatic-order-paid'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
-import { findOrdersWithMoney } from '@/lib/orders/paid-order-cancellation'
+import { findOrdersWithMoney, recordAutoCancelRefusals } from '@/lib/orders/paid-order-cancellation'
 import { stagingFinaticQueryStub } from '@/lib/payments/staging-finatic-stub'
 /**
  * The audit action the other three cancel paths already write when a Finatic answer is not one we
@@ -473,6 +473,13 @@ export async function handleTerminalPaymentFailed(
       orderId: params.orderId,
       unreadable: moneyHeld === null,
     })
+    if (moneyHeld !== null) {
+      await recordAutoCancelRefusals(
+        supabase as never,
+        [{ id: params.orderId, restaurant_id: params.restaurantId }],
+        'handle_terminal_payment_failed',
+      )
+    }
     return { outcome: 'cancel_conflict' }
   }
 

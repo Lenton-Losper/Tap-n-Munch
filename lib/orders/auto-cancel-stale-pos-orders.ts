@@ -14,7 +14,7 @@ import {
   VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS,
 } from '@/lib/payments/payment-integrity'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
-import { findOrdersWithMoney } from '@/lib/orders/paid-order-cancellation'
+import { findOrdersWithMoney, recordAutoCancelRefusals } from '@/lib/orders/paid-order-cancellation'
 import {
   CANCEL_BASIS_NOTE,
   ORDER_CANCELLED_ACTION,
@@ -508,6 +508,11 @@ async function cancelByIds(
     console.error('[autoCancelStalePosOrders] NOT cancelled: money is recorded against these orders', {
       order_ids: [...moneyHeld],
     })
+    const { data: refusedRows } = await supabase
+      .from('orders')
+      .select('id, restaurant_id')
+      .in('id', [...moneyHeld])
+    await recordAutoCancelRefusals(supabase as never, (refusedRows ?? []) as never, 'auto_cancel_stale_pos_orders')
   }
   const cancellableIds = ids.filter((id) => !moneyHeld.has(String(id)))
   if (!cancellableIds.length) return []

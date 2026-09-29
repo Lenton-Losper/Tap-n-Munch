@@ -32,9 +32,9 @@
 -- DEPENDENCIES AND SAFETY
 -- ==================================================================================================
 --
--- Reads orders.pending_charge_at, added by 20260929120000 (f-race). The functions are plpgsql and
--- bind columns at call time, so this file applies in version order; it must be CALLED only once
--- 20260929120000 is applied -- which the deploy applies in the same run.
+-- Reads orders.pending_charge_at, added by 20260929120000 (f-race), and sets the transaction-local
+-- non-gateway marker that migration's paid guard honours -- so its VERSION sorts after that series
+-- (renamed from 20260929100100 at the lead's direction).
 --
 -- Additive: one new function; record_manual_order_payment (this sprint's own, 20260929100000) is
 -- redefined from its exact body with the release step added and its grants restated. Nothing else
@@ -230,7 +230,7 @@ BEGIN
       'payment_status', v_order.payment_status);
   END IF;
 
-  -- A MANUAL PAYMENT IS A FRESH CHARGE AT THE LIVE AMOUNT (team-lead ruling, 20260929100100). It
+  -- A MANUAL PAYMENT IS A FRESH CHARGE AT THE LIVE AMOUNT (team-lead ruling, 20260929140000). It
   -- never races a card attempt that may really be running, and it never settles a stale one: a
   -- prepared charge inside the in-flight window refuses; an older one is released here, in this
   -- transaction, before the order is claimed.
@@ -241,6 +241,12 @@ BEGIN
       'in_flight_order_ids', v_release->'in_flight_order_ids',
       'uncertain_intent_ids', v_release->'uncertain_intent_ids');
   END IF;
+
+  -- NOT A GATEWAY CHARGE. The transaction-local marker f-race's paid guard (20260929120000,
+  -- orders_refuse_paid_on_changed_charge) honours: a manual payment is recorded at the live figure
+  -- computed above, never against a prepared card charge. Local to this transaction (third argument
+  -- true), so it ends with the RPC; it cannot be set through a PostgREST table write.
+  PERFORM set_config('flashtap.non_gateway_payment', 'on', true);
 
   UPDATE public.orders
      SET payment_status       = 'paid',

@@ -35,13 +35,17 @@ type Evidence = 'none' | 'allocation' | 'ledger' | 'sale' | 'refunded_sale' | 'u
 
 function makeSupabase(evidence: Evidence, candidate: Row) {
   const updates: Row[] = []
+  const audits: Row[] = []
   const client = {
     from(table: string) {
       const st = { didUpdate: false, eventType: '' }
       const chain: Record<string, unknown> = {}
       const self = () => chain
       chain.select = () => self()
-      chain.insert = () => ({ error: null })
+      chain.insert = (rows: Row | Row[]) => {
+        if (table === 'audit_logs') audits.push(...(Array.isArray(rows) ? rows : [rows]))
+        return { error: null }
+      }
       chain.update = (patch: Row) => {
         st.didUpdate = true
         updates.push({ table, ...patch })
@@ -90,7 +94,9 @@ function makeSupabase(evidence: Evidence, candidate: Row) {
     },
   }
   const cancelWrites = () => updates.filter((u) => u.table === 'orders' && u.payment_status === 'cancelled')
-  return { client: client as never, cancelWrites }
+  // The refusal, written down (Sprint 2026-09-29): one row per order left alone over money.
+  const refusals = () => audits.filter((a) => a.action === 'order.auto_cancel_refused_money_present')
+  return { client: client as never, cancelWrites, refusals }
 }
 
 const posCandidate = () => ({
@@ -119,10 +125,13 @@ describe('stale-POS sweep (autoCancelStalePosOrders)', () => {
   })
 
   it.each(MONEY)('does NOT cancel when the evidence is: %s', async (evidence) => {
-    const { client, cancelWrites } = makeSupabase(evidence, posCandidate())
+    const { client, cancelWrites, refusals } = makeSupabase(evidence, posCandidate())
     const result = await autoCancelStalePosOrders(client, { verifyWithFinatic: false })
     expect(result.cancelledIds).not.toContain(ORDER)
     expect(cancelWrites()).toHaveLength(0)
+    // Money present is written down; an unreadable state has nothing to name and is only logged.
+    expect(refusals()).toHaveLength(evidence === 'unreadable' ? 0 : 1)
+    if (evidence !== 'unreadable') expect(refusals()[0]).toMatchObject({ restaurant_id: RESTAURANT, entity_id: ORDER })
   })
 
   it('a gateway sale REFUNDED IN FULL no longer holds the order', async () => {
@@ -141,10 +150,11 @@ describe('hosted-checkout expiry (expireHostedPendingOrders)', () => {
   })
 
   it.each(MONEY)('does NOT expire when the evidence is: %s', async (evidence) => {
-    const { client, cancelWrites } = makeSupabase(evidence, hostedCandidate())
+    const { client, cancelWrites, refusals } = makeSupabase(evidence, hostedCandidate())
     const result = await expireHostedPendingOrders(client)
     expect(result.expiredCount).toBe(0)
     expect(cancelWrites()).toHaveLength(0)
+    expect(refusals()).toHaveLength(evidence === 'unreadable' ? 0 : 1)
   })
 })
 
@@ -170,9 +180,10 @@ describe('terminal payment-failed (handleTerminalPaymentFailed)', () => {
   })
 
   it.each(MONEY)('refuses (cancel_conflict) when the evidence is: %s', async (evidence) => {
-    const { client, cancelWrites } = makeSupabase(evidence, { id: ORDER })
+    const { client, cancelWrites, refusals } = makeSupabase(evidence, { id: ORDER })
     const res = await handleTerminalPaymentFailed(client, userCancel(), noFinatic)
     expect(res.outcome).toBe('cancel_conflict')
     expect(cancelWrites()).toHaveLength(0)
+    expect(refusals()).toHaveLength(evidence === 'unreadable' ? 0 : 1)
   })
 })

@@ -415,7 +415,7 @@ END;
 $$;
 
 -- ==================================================================================================
--- ML8-ML11. A MANUAL PAYMENT IS A FRESH CHARGE AT THE LIVE AMOUNT (20260929100100).
+-- ML8-ML11. A MANUAL PAYMENT IS A FRESH CHARGE AT THE LIVE AMOUNT (20260929140000).
 -- ==================================================================================================
 
 -- A card attempt on order 1: prepared (the stamp trigger sets pending_charge_at = now()) and an
@@ -472,8 +472,14 @@ BEGIN
   UPDATE public.orders SET items = '[{"name":"Burger","quantity":1,"total":220}]'::jsonb
    WHERE id = 'bbbbbbbb-0000-4000-8000-000000000001';
   -- A standalone card machine: the one non-gateway method the paid guard does not exempt by method.
+  -- The marker is transaction-local and this whole file is one transaction: clear it first, so only
+  -- THIS call can have set it.
+  PERFORM set_config('flashtap.non_gateway_payment', '', true);
   r := public._ml_mark_paid('bbbbbbbb-0000-4000-8000-000000000001', 'pending', 22000, 'card');
   PERFORM public._expect('ml_stale/paid', COALESCE((r->>'ok')::boolean, false), r::text);
+  PERFORM public._expect('ml_stale/non_gateway_marker_set',
+    current_setting('flashtap.non_gateway_payment', true) = 'on',
+    format('marker is %L', current_setting('flashtap.non_gateway_payment', true)));
   SELECT * INTO o FROM public.orders WHERE id = 'bbbbbbbb-0000-4000-8000-000000000001';
   PERFORM public._expect('ml_stale/attempt_released',
     o.pending_charge_cents IS NULL AND o.pending_charge_basis IS NULL AND o.pending_charge_at IS NULL

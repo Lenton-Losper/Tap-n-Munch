@@ -244,3 +244,44 @@ export async function findOrdersWithMoney(
   }
   return withMoney
 }
+
+/** audit_logs.action for an automatic cancel refused because money is recorded against the order. */
+export const AUTO_CANCEL_REFUSED_ACTION = 'order.auto_cancel_refused_money_present'
+
+/**
+ * WRITTEN DOWN, NOT ONLY LOGGED. An order a sweep would have cancelled but did not, because money is
+ * recorded against it, is exactly what a human needs to find: it sits pending with money on it.
+ * Best effort -- the refusal is what protects the money, the row is how someone finds out -- so a
+ * failed insert is logged and never thrown into the sweep.
+ */
+export async function recordAutoCancelRefusals(
+  supabase: Supabase,
+  orders: ReadonlyArray<{ id: unknown; restaurant_id: unknown }>,
+  source: string,
+): Promise<void> {
+  const rows = orders.filter((o) => String(o.restaurant_id ?? '').trim())
+  if (rows.length === 0) return
+  try {
+    const { error } = await supabase.from('audit_logs').insert(
+      rows.map((o) => ({
+        restaurant_id: String(o.restaurant_id),
+        action: AUTO_CANCEL_REFUSED_ACTION,
+        entity_type: 'order',
+        entity_id: String(o.id),
+        metadata: {
+          source,
+          automated: true,
+          reason: 'money_recorded_against_order',
+          note:
+            'An automatic cancel was refused: a settled item, a non-gateway payment or an ' +
+            'unrefunded card sale is recorded against this order. It was left as it is; resolve ' +
+            'it by hand (Held for review, or settle the rest).',
+          refused_at: new Date().toISOString(),
+        },
+      })),
+    )
+    if (error) console.error('[recordAutoCancelRefusals] audit insert failed', { source, error: error.message })
+  } catch (thrown) {
+    console.error('[recordAutoCancelRefusals] audit insert threw', { source, thrown })
+  }
+}

@@ -524,7 +524,7 @@ export async function POST(
 
     /**
      * A NON-GATEWAY SETTLEMENT IS A FRESH CHARGE AT THE LIVE AMOUNT (team-lead ruling,
-     * 20260929100100). It must neither race a card attempt that may be running nor settle over a
+     * 20260929140000). It must neither race a card attempt that may be running nor settle over a
      * dead one. When any selected order carries a prepared card charge, release_stale_card_attempts
      * decides, under the orders' row locks: inside the in-flight window (or an intent whose answer
      * is unknown) -> 409 PAYMENT_IN_FLIGHT and nothing is written; older -> the attempt is released

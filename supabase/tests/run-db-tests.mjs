@@ -59,9 +59,8 @@ const MIGRATIONS = [
   'supabase/migrations/20260929120100_settle_holds_order_changed_since_charge.sql',
   'supabase/migrations/20260929120200_amend_refuses_payment_in_flight.sql',
   // F-MANUAL follow-up: a manual payment refuses a card attempt in flight and releases a stale one.
-  // Its version sorts before the 120000 series, and plpgsql binds pending_charge_at at call time; it
-  // is listed last so the suite exercises it against the redefinitions above.
-  'supabase/migrations/20260929100100_manual_payment_releases_stale_card_attempt.sql',
+  // Reads 20260929120000's columns and sets its non-gateway marker, so it sorts after that series.
+  'supabase/migrations/20260929140000_manual_payment_releases_stale_card_attempt.sql',
 ]
 
 /**
@@ -532,6 +531,12 @@ const MUTATIONS = {
     expect: ['ml_live_intent/refused'],
     apply: (sql) =>
       sql.replace('     AND created_at > now() - v_window;', '     AND false;'),
+  },
+  ML12: {
+    what: 'record_manual_order_payment no longer declares itself a non-gateway payment (the FTCHG marker)',
+    expect: ['ml_stale/non_gateway_marker_set'],
+    apply: (sql) =>
+      sql.replace("  PERFORM set_config('flashtap.non_gateway_payment', 'on', true);\n", ''),
   },
   ML7r: {
     what: 'as ML7, in two sessions: Mark-as-Paid lands on a card charge being prepared',

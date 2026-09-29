@@ -17,7 +17,7 @@ import {
 import { preLaunchRestaurant } from '@/lib/reporting/pre-launch-restaurants'
 import { readOrderPaymentProgress } from '@/lib/payments/read-order-payment-progress'
 import {
-  computeOrderFinancials,
+  projectOrderWithInputs,
   readProjectionInputs,
   type FinancialOrderInput,
 } from '@/lib/orders/order-financials'
@@ -160,13 +160,12 @@ async function loadOrderHistory(req: Request): Promise<Response> {
    */
   const liveByOrder = new Map<string, { live: number; voided: number }>()
   try {
-    const inputs = await readProjectionInputs(supabase, pageOrderIds)
+    const inputs = await readProjectionInputs(
+      supabase,
+      (orders || []) as unknown as FinancialOrderInput[],
+    )
     for (const order of orders || []) {
-      const fin = computeOrderFinancials(
-        order as unknown as FinancialOrderInput,
-        inputs.lines,
-        inputs.allocationSettledByOrder.get(String(order.id)) ?? 0,
-      )
+      const fin = projectOrderWithInputs(order as unknown as FinancialOrderInput, inputs)
       liveByOrder.set(String(order.id), { live: fin.liveCents / 100, voided: fin.voidedCents / 100 })
     }
   } catch (e) {

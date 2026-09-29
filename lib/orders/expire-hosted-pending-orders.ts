@@ -1,6 +1,6 @@
 import type { createServerSupabaseClient } from '@/lib/supabase/server'
 import { ORDER_CANCELLED_ACTION } from '@/lib/orders/cancel-order-with-trail'
-import { findOrdersWithMoney } from '@/lib/orders/paid-order-cancellation'
+import { findOrdersWithMoney, recordAutoCancelRefusals } from '@/lib/orders/paid-order-cancellation'
 
 const TEN_MIN_MS = 10 * 60 * 1000
 
@@ -56,7 +56,7 @@ export async function expireHostedPendingOrders(
   // The candidates first, so the money check below can run before anything is written.
   const { data: candidates, error: candidateError } = await supabase
     .from('orders')
-    .select('id')
+    .select('id, restaurant_id')
     .eq('payment_status', 'pending')
     .eq('payment_channel', 'hosted')
     .lt('placed_at', tenMinutesAgo)
@@ -76,6 +76,11 @@ export async function expireHostedPendingOrders(
     console.error('[EXPIRE-HOSTED] NOT cancelled: money is recorded against these orders', {
       order_ids: [...moneyHeld],
     })
+    await recordAutoCancelRefusals(
+      supabase,
+      (candidates ?? []).filter((o: { id: unknown }) => moneyHeld.has(String(o.id))),
+      'expire_hosted_pending_orders',
+    )
   }
   const cancellableIds = candidateIds.filter((id) => !moneyHeld.has(id))
   if (cancellableIds.length === 0) return { expiredCount: 0, closedTabCount: 0, auditFailureCount: 0 }

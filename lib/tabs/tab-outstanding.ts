@@ -61,6 +61,8 @@ export type TabProjectionInputs = {
   lines?: readonly FinancialLineInput[]
   /** Σ item-ledger settlement cents per order id (settledCentsByOrder). */
   allocationSettledByOrder?: ReadonlyMap<string, number>
+  /** Refunded fraction per order (readProjectionInputs, Sprint 2026-09-29). */
+  refundFractionByOrder?: ReadonlyMap<string, number>
 }
 
 function projectTab(rows: readonly TabOrderRow[] | null | undefined, inputs?: TabProjectionInputs) {
@@ -77,7 +79,12 @@ function projectTab(rows: readonly TabOrderRow[] | null | undefined, inputs?: Ta
     settled_charge_cents:
       row.settled_charge_cents == null ? null : Number(row.settled_charge_cents),
   }))
-  return computeTabFinancials(orders, inputs?.lines ?? [], inputs?.allocationSettledByOrder ?? new Map())
+  return computeTabFinancials(
+    orders,
+    inputs?.lines ?? [],
+    inputs?.allocationSettledByOrder ?? new Map(),
+    inputs?.refundFractionByOrder ?? new Map(),
+  )
 }
 
 /** The columns this module needs. Kept here so callers cannot under-select and get a wrong sum. */

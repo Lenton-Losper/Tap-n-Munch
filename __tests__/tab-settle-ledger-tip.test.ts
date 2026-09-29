@@ -37,7 +37,7 @@ let mockFtchg = false
 const IN_FLIGHT_WINDOW_MS = 5 * 60 * 1000
 
 /**
- * A MODEL of release_stale_card_attempts (20260929100100) -- the function itself, with its lock,
+ * A MODEL of release_stale_card_attempts (20260929140000) -- the function itself, with its lock,
  * its intents and its audit row, is proven against Postgres by manual-ledger.test.sql and
  * manual-ledger-race.test.sh. This proves the route's side: it asks, obeys, and fails closed.
  */

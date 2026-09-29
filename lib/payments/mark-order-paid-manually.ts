@@ -219,7 +219,7 @@ export async function markOrderPaidManually(
         return refuse(409, 'ALREADY_PAID', 'This order is already paid.')
       case 'payment_in_flight':
         /**
-         * A MANUAL PAYMENT IS A FRESH CHARGE, NEVER A RACE (team-lead ruling, 20260929100100). A
+         * A MANUAL PAYMENT IS A FRESH CHARGE, NEVER A RACE (team-lead ruling, 20260929140000). A
          * card charge was prepared for this order inside the in-flight window, or its gateway
          * answer is still unknown: a reader may be charging the customer right now. An older,
          * dead attempt is released by the transaction itself and never reaches here.

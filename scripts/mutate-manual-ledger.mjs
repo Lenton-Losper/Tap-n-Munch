@@ -185,6 +185,18 @@ const MUTATIONS = {
     what: 'Mark-as-Paid no longer reports a card attempt in flight as PAYMENT_IN_FLIGHT',
     edits: [[MANUAL, "      case 'payment_in_flight':", "      case 'payment_in_flight_disabled':"]],
   },
+  FM22: {
+    what: 'readProjectionInputs stops reading refunds (every caller keeping its own order read is gross again)',
+    edits: [[FINANCIALS, '    readRefundFractions(supabase, rows as readonly FinancialOrderInput[]),', '    Promise.resolve(new Map<string, number>()),']],
+  },
+  FM23: {
+    what: 'projectOrderWithInputs ignores the refund input it was handed',
+    edits: [[FINANCIALS, '    inputs.refundFractionByOrder?.get(id) ?? 0,', '    0,']],
+  },
+  FM24: {
+    what: 'an automatic cancel refused over money is no longer written to audit_logs',
+    edits: [[GUARD, '  if (rows.length === 0) return\n  try {', '  if (rows.length >= 0) return\n  try {']],
+  },
 }
 
 function runSuites() {

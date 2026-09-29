@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A MANUAL PAYMENT AND A CARD ATTEMPT IN TWO REAL SESSIONS (Sprint 2026-09-29, 20260929100100).
+# A MANUAL PAYMENT AND A CARD ATTEMPT IN TWO REAL SESSIONS (Sprint 2026-09-29, 20260929140000).
 # Sibling of charge-edit-race.test.sh. Seeds through manual-ledger.test.sql's _ml_seed() /
 # _ml_card_attempt() / _ml_mark_paid(), which run-db-tests.mjs defines before calling this.
 #

@@ -12,7 +12,13 @@ import {
   computeOrderFinancials,
   loadOrderFinancials,
   loadTabFinancials,
+  projectOrderWithInputs,
+  projectTabWithInputs,
+  readProjectionInputs,
+  type FinancialOrderInput,
 } from '@/lib/orders/order-financials'
+import { attachGuestFinancials } from '@/lib/guest-orders/guest-financials'
+import { computeTabFigures } from '@/lib/tabs/tab-outstanding'
 
 const RESTAURANT = 'a1999166-ddfa-40d1-ad1f-2f01282a1652'
 const TAB = '0000cccc-0000-4000-8000-000000000061'
@@ -138,5 +144,43 @@ describe('order financials net of refunds', () => {
       0.25,
     )
     expect(f).toMatchObject({ paidCents: 7500, refundedCents: 2500 })
+  })
+})
+
+/**
+ * THE ROUTES THAT KEEP THEIR OWN ORDER READ (order history, the terminal tables view, guest
+ * financials, tab-outstanding) go through the same readProjectionInputs -> project*WithInputs path
+ * as the loaders, so refunds cannot be applied on one and forgotten on another (Sprint 2026-09-29).
+ */
+describe('callers of readProjectionInputs are net of refunds too', () => {
+  it('readProjectionInputs + projectOrderWithInputs: a refunded order is paid 0', async () => {
+    const [a] = seed([{ settled_charge_cents: 22000, status: 'cancelled' }])
+    db.rows('payment_events').push(sale([a], 220), refund(220, 1))
+    const rows = db.rows('orders') as unknown as FinancialOrderInput[]
+    const inputs = await readProjectionInputs(db.client(), rows)
+    expect(projectOrderWithInputs(rows[0], inputs)).toMatchObject({ paidCents: 0, refundedCents: 22000, overpaidCents: 0 })
+  })
+
+  it('projectTabWithInputs: the tab view sums the refunded figures', async () => {
+    const [a, b] = seed([{ settled_charge_cents: 22000 }, { settled_charge_cents: 50000 }])
+    db.rows('payment_events').push(sale([a, b], 720), refund(720, 1))
+    const rows = db.rows('orders') as unknown as FinancialOrderInput[]
+    const tab = projectTabWithInputs(rows, await readProjectionInputs(db.client(), rows))
+    expect(tab).toMatchObject({ paidCents: 0, refundedCents: 72000, overpaidCents: 0 })
+  })
+
+  it('guest financials: a refunded-then-cancelled order is not shown as overpaid to the customer', async () => {
+    const [a] = seed([{ settled_charge_cents: 22000, status: 'cancelled' }])
+    db.rows('payment_events').push(sale([a], 220), refund(220, 1))
+    const [out] = await attachGuestFinancials(db.client() as never, db.rows('orders').map((o) => ({ ...o })))
+    expect(out.financials).toMatchObject({ paid_cents: 0, overpaid_cents: 0, live_cents: 0 })
+  })
+
+  it('tab-outstanding: a refund changes what was paid, never what is owed', async () => {
+    const [a] = seed([{ settled_charge_cents: 22000 }, { payment_status: 'pending', status: 'preparing' }])
+    db.rows('payment_events').push(sale([a], 220), refund(220, 1))
+    const rows = db.rows('orders') as unknown as FinancialOrderInput[]
+    const inputs = await readProjectionInputs(db.client(), rows)
+    expect(computeTabFigures(rows as never, [], inputs).payable).toBe(500)
   })
 })
