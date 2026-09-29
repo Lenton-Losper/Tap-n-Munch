@@ -55,6 +55,8 @@ const MIGRATIONS = [
   'supabase/migrations/20260929120000_order_charge_basis.sql',
   'supabase/migrations/20260929120100_settle_holds_order_changed_since_charge.sql',
   'supabase/migrations/20260929120200_amend_refuses_payment_in_flight.sql',
+  // Copies 20260829170000's settle_order_line_allocations (the first entry above) plus the locks.
+  'supabase/migrations/20260929120300_allocation_settle_locks_orders.sql',
 ]
 
 /**
@@ -534,6 +536,41 @@ const MUTATIONS = {
     expect: [],
     apply: (sql) => MUTATIONS.MR5.apply(sql),
   },
+  /**
+   * 20260929120300 -- WHAT THE MEASUREMENT FOUND. Removing both new locks left round 6 GREEN: the
+   * item settlement's INSERT into order_line_allocation_settlements takes FOR KEY SHARE on its tab
+   * through the `tab_id` foreign key, and settle_order_payment's tab FOR UPDATE conflicts with that,
+   * so the two were ALREADY serialised -- by a side effect of a foreign key nobody wrote for this.
+   * The explicit locks make it a stated guarantee instead of an accident (the FK is nullable,
+   * ON DELETE SET NULL). So the mutation removes the accident too, and must go RED; MR7b is the
+   * control that the order lock alone holds once the accident is gone (must stay GREEN).
+   */
+  MR7: {
+    what: 'an item settlement takes no locks (and the FK side effect is gone): it lands inside a card settlement',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql
+        .replace('  PERFORM 1 FROM public.tabs WHERE id = p_tab_id FOR UPDATE;\n', '')
+        .replace(
+          '      AND ola.tab_id = p_tab_id\n  )\n  ORDER BY o.id\n  FOR UPDATE;',
+          '      AND ola.tab_id = p_tab_id\n  )\n  ORDER BY o.id;',
+        ),
+    sqlAfterMigrations:
+      'ALTER TABLE public.order_line_allocation_settlements DROP CONSTRAINT order_line_allocation_settlements_tab_id_fkey;',
+  },
+  MR7b: {
+    what: 'CONTROL: FK side effect gone and the tab lock removed -- the order lock alone must still serialise',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    // INVERTED: must stay GREEN. Run by hand (`--mutate=MR7b`), skipped by --mutate=all.
+    manualOnly: true,
+    expect: [],
+    apply: (sql) => sql.replace('  PERFORM 1 FROM public.tabs WHERE id = p_tab_id FOR UPDATE;\n', ''),
+    sqlAfterMigrations:
+      'ALTER TABLE public.order_line_allocation_settlements DROP CONSTRAINT order_line_allocation_settlements_tab_id_fkey;',
+  },
   MR6: {
     what: 'the charge basis ignores voided lines (a staff void mid-charge is invisible to settlement)',
     expect: ['void_held/reason', 'void_held/nothing_paid'],
@@ -749,7 +786,9 @@ console.log('  charge-edit-race probe: edits and voids refused mid-charge, stale
 if (!which) process.exit(0)
 
 // ---- mutations -----------------------------------------------------------------------------
-const names = which === 'all' ? Object.keys(MUTATIONS) : [which]
+// `manualOnly` entries are measurements that must stay GREEN (defence in depth), not kills.
+const names =
+  which === 'all' ? Object.keys(MUTATIONS).filter((n) => !MUTATIONS[n].manualOnly) : [which]
 let bad = 0
 
 for (const name of names) {

@@ -173,6 +173,39 @@ check "round5 the order is held for review" \
 check "round5 the hold is recorded" \
   "$(q "SELECT count(*) FROM public.audit_logs WHERE action = 'payment.held_order_changed_since_charge_prepared';")" "1"
 
+echo "=== round 6: an item settlement lands while a whole-order card settlement runs ==="
+# Order #162 (N$120; N$40 already collected by item, N$40 allocated to guest-2 and unsettled). The
+# card charge is prepared for the N$80 outstanding. Guest-2 then pays their N$40 by item while the
+# card confirmation is being settled. The item settlement must hold the order lock, so the card
+# settlement waits and then sees the order changed (held) -- never pays N$80 for N$40 still owed.
+ORDER162=bbbbbbbb-0000-4000-8000-000000000162
+q "SELECT public._seed_amend();" >/dev/null
+q "UPDATE public.orders SET pending_charge_cents = 8000 WHERE id = '$ORDER162';" >/dev/null
+"${PSQL[@]}" > "$TMP/a.out" 2> "$TMP/a.err" <<SQL &
+BEGIN;
+SELECT public.settle_order_line_allocations('$RID', '$TAB',
+  ARRAY['dddddddd-0000-4000-8000-000000000006']::uuid[], 'cash', 'CASH-G2', NULL)::text;
+SELECT pg_sleep(1.5);
+COMMIT;
+SQL
+PID_A=$!
+sleep 0.5
+q "SELECT public.settle_order_payment('$RID', ARRAY['$ORDER162']::uuid[], 8000, 8000,
+     'TXN-R6', 'MO-R6', 'card', 'MO-R6', NULL, 'paycloud_webhook_valid_signature', 'term-1', 0,
+     NULL, ARRAY[]::uuid[], '2.39')::text;" > "$TMP/b.out" 2> "$TMP/b.err" &
+PID_B=$!
+wait $PID_A; EXIT_A=$?
+wait $PID_B; EXIT_B=$?
+echo "  item settle(exit $EXIT_A): $(tr -d '\n' < "$TMP/a.out" | head -c 200) $(head -c 200 "$TMP/a.err")"
+echo "  card settle(exit $EXIT_B): $(tr -d '\n' < "$TMP/b.out" | head -c 300) $(head -c 200 "$TMP/b.err")"
+check "round6 both sessions returned cleanly" "$EXIT_A$EXIT_B" "00"
+check "round6 the item settlement applied" \
+  "$(grep -o '"amount_cents": 4000' "$TMP/a.out" | wc -l | tr -d ' ')" "1"
+check "round6 the card settlement waited and was held, not applied" \
+  "$(grep -o '"reason": "order_changed_since_preparation"' "$TMP/b.out" | wc -l | tr -d ' ')" "1"
+check "round6 the order is not paid" \
+  "$(q "SELECT payment_status FROM public.orders WHERE id = '$ORDER162';")" "amount_mismatch_hold"
+
 rm -rf "$TMP"
 if [ "$FAIL" = "0" ]; then echo "RESULT=OK"; else echo "RESULT=FAILED"; fi
 exit $FAIL
