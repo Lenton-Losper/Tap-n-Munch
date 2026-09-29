@@ -373,6 +373,8 @@ export async function POST(
             noGatewayAttempt,
             // D-4: recorded in the audit trail, never consulted. See the note where it is parsed.
             gatewayResult,
+            // D1 (owner ruling 2026-09-29): on a TAB a declined card releases the attempt only.
+            releaseAttemptOnly: Boolean((order as { tab_id?: string | null }).tab_id),
           },
           { stagingFinaticStub: body?.__stagingFinaticStub },
         )
@@ -413,6 +415,20 @@ export async function POST(
           success: true,
           canClose,
           outcome: 'corrected_to_paid',
+        })
+      }
+
+      if (failedResult.outcome === 'attempt_released_order_kept') {
+        /**
+         * D1: definitively not paid, and the order is STILL OWED. success:true because recording the
+         * failure succeeded; `outcome` is the discriminator (2.41 terminals map it to not-paid; a
+         * 2.40 terminal reads an unknown outcome as "not confirmed", the safe direction).
+         */
+        return NextResponse.json({
+          success: true,
+          canClose: false,
+          outcome: 'attempt_released_order_kept',
+          released_order_ids: failedResult.releasedOrderIds,
         })
       }
 

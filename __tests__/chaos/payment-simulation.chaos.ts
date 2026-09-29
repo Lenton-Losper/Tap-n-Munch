@@ -590,7 +590,9 @@ describe('payment simulation (card, Finatic simulated at the wire)', () => {
     expect(sql(`SELECT count(*)::int AS n FROM terminal_payment_intents WHERE tab_id = '${tabId}'`)[0].n).toBe(1)
   })
 
-  knownDefect('S2-D1 DEFECT: a declined card CANCELS the prepared lead order of a tab, so the tab stops owing for food already served', async (row) => {
+  // D1 FIXED (2026-09-29, owner ruling): was knownDefect. A declined card on a TAB releases the failed
+  // attempt only; the lead order stays owed.
+  scenario('S2-D1 a declined card on a tab never cancels the lead order: the attempt is released, the tab still owes all of it', async (row) => {
     const { tabId, a, b, A, B, expected } = s2
     row.expected = expected
     const orders = ordersOf([a, b])
@@ -610,6 +612,14 @@ describe('payment simulation (card, Finatic simulated at the wire)', () => {
     // CORRECT BEHAVIOUR: a decline takes no money and removes no debt. Both orders still owe.
     expect({ lead: byId[a].payment_status, leadStatus: byId[a].status }).toEqual({ lead: 'pending', leadStatus: 'pending' })
     expect(f.tab.outstanding_cents).toBe(expected)
+    // The failed attempt itself is released (the owner's rule), so the tab can be charged afresh.
+    const pend = sql<{ id: string; c: number | null; sid: string | null }>(`SELECT id, pending_charge_cents AS c, pending_settlement_id AS sid FROM orders WHERE id IN ('${a}','${b}')`)
+    expect(pend.every((o) => o.c === null && o.sid === null)).toBe(true)
+    const intents = sql<{ status: string }>(`SELECT status FROM terminal_payment_intents WHERE tab_id = '${tabId}'`)
+    expect(intents.map((i) => i.status)).toEqual(['failed'])
+    const kept = sql<{ n: number }>(`SELECT count(*)::int AS n FROM audit_logs WHERE entity_id = '${a}' AND action = 'payment.attempt_failed_order_kept'`)
+    expect(kept[0].n).toBe(1)
+    row.result = 'PASS'
   })
 
   // ----------------------------------------------------------------------------------------------

@@ -228,6 +228,26 @@ const MUTATIONS = {
       to: "    .not('payment_status', 'is', null)\n",
     },
   },
+  PS4: {
+    scenario: 'payment-simulation',
+    what: 'D1: the payment-failure route no longer asks for release-only on a tab (a decline cancels the lead order)',
+    expect: 'S2-D1',
+    ts: {
+      file: 'app/api/terminal/orders/[orderId]/payment/route.ts',
+      from: '            releaseAttemptOnly: Boolean((order as { tab_id?: string | null }).tab_id),\n',
+      to: '            releaseAttemptOnly: false && Boolean((order as { tab_id?: string | null }).tab_id),\n',
+    },
+  },
+  PS5: {
+    scenario: 'payment-simulation',
+    what: 'D1: the handler ignores releaseAttemptOnly and cancels the tab order',
+    expect: 'S2-D1',
+    ts: {
+      file: 'lib/payments/handle-terminal-payment-failed.ts',
+      from: '  if (params.releaseAttemptOnly === true) {\n',
+      to: '  if (false && params.releaseAttemptOnly === true) {\n',
+    },
+  },
   B1: {
     what: 'a partial payment is not deducted from the remaining balance',
     expect: 'C03 pay about half by item: balance reduced by exactly that',

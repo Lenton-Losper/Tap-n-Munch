@@ -43,6 +43,14 @@ export type HandleTerminalPaymentFailedParams = {
   cancellationReason?: string
   /** audit_logs.action on cancel. Defaults to payment.failed. */
   auditAction?: string
+  /**
+   * D1 (owner ruling 2026-09-29): a DECLINED / FAILED payment on a TAB order releases the failed
+   * payment attempt only -- the order stays owed. Set by the payment-failure route when the order
+   * belongs to a tab. An explicit staff cancel (the status route) never sets it, so a real cancel
+   * still cancels. When true, every branch that would have cancelled the order instead releases the
+   * attempt and returns `attempt_released_order_kept`.
+   */
+  releaseAttemptOnly?: boolean
   /** markOrderPaidConfirmed source when Finatic confirms paid. */
   correctionSource?: string
   /** Extra text for the correction audit metadata. */
@@ -123,6 +131,12 @@ export type HandleTerminalPaymentFailedResult =
     }
   | {
       outcome: 'cancel_conflict'
+    }
+  | {
+      /** D1: the failed attempt was released; the order was NOT cancelled and is still owed. */
+      outcome: 'attempt_released_order_kept'
+      releasedOrderIds: string[]
+      failedIntentIds: string[]
     }
 
 export type HandleTerminalPaymentFailedOptions = {
@@ -467,6 +481,95 @@ export async function handleTerminalPaymentFailed(
    * that money away. Those orders are left exactly as they are. An unreadable payment state cancels
    * NOTHING this run -- the sweep retries next tick, which is recoverable; a cancelled payment is not.
    */
+  /**
+   * D1 -- A DECLINED CARD NEVER CANCELS A TAB ORDER (owner ruling, 2026-09-29).
+   *
+   * Everything above this point decides only whether MONEY moved: Finatic said paid (corrected),
+   * or its answer is not established (left pending). Reaching here means the attempt definitively
+   * took nothing. For a single POS sale that has always meant "the sale did not happen" (#635) and
+   * the order is cancelled below. For a TAB order it does not: the food was ordered and served, and
+   * a card not working changes nothing about what is owed. The live simulation (payment-simulation
+   * S2-D1) showed the old path cancelling the tab's lead order -- N$130.50 of served food silently
+   * stopped being owed and the next charge was for the remainder only.
+   *
+   * So on a tab, only the failed ATTEMPT is released, exactly the fields release_stale_card_attempts
+   * (20260929140000) clears: the prepared charge on every order in the attempt's settlement set, and
+   * the attempt's launched intent -> failed. The order keeps its status and payment_status.
+   */
+  if (params.releaseAttemptOnly === true) {
+    const { data: lead, error: leadError } = await supabase
+      .from('orders')
+      .select('id, pending_settlement_id, pending_charge_cents')
+      .eq('id', params.orderId)
+      .eq('restaurant_id', params.restaurantId)
+      .maybeSingle()
+    if (leadError) throw leadError
+    const settlementId = (lead as { pending_settlement_id?: string | null } | null)?.pending_settlement_id ?? null
+    // The attempt's order set, read with parser-free filters (never .or(): #242/#254).
+    const attemptOrderIds = new Set<string>([params.orderId])
+    if (settlementId) {
+      const { data: siblings, error: siblingsError } = await supabase
+        .from('orders')
+        .select('id')
+        .eq('restaurant_id', params.restaurantId)
+        .eq('pending_settlement_id', settlementId)
+      if (siblingsError) throw siblingsError
+      for (const r of (siblings ?? []) as Array<{ id: string }>) attemptOrderIds.add(String(r.id))
+    }
+    const { data: released, error: releaseError } = await supabase
+      .from('orders')
+      .update({
+        pending_charge_cents: null,
+        pending_tip_cents: 0,
+        pending_tip_staff_user_id: null,
+        pending_settlement_id: null,
+      })
+      .eq('restaurant_id', params.restaurantId)
+      .in('id', [...attemptOrderIds])
+      .in('payment_status', [...CLAIMABLE_PAYMENT_STATUSES])
+      .select('id')
+    if (releaseError) throw releaseError
+    const releasedOrderIds = ((released ?? []) as Array<{ id: string }>).map((r) => String(r.id))
+
+    const { data: failedIntents, error: intentError } = await supabase
+      .from('terminal_payment_intents')
+      .update({ status: 'failed', resolved_at: new Date().toISOString() })
+      .eq('restaurant_id', params.restaurantId)
+      .eq('status', 'launched')
+      .overlaps('order_ids', [params.orderId])
+      .select('id')
+    if (intentError) throw intentError
+    const failedIntentIds = ((failedIntents ?? []) as Array<{ id: string }>).map((r) => String(r.id))
+
+    const { error: keptAuditError } = await supabase.from('audit_logs').insert({
+      restaurant_id: params.restaurantId,
+      action: 'payment.attempt_failed_order_kept',
+      entity_type: 'order',
+      entity_id: params.orderId,
+      metadata: {
+        source: 'terminal_payment_failed',
+        rule: 'D1: a declined card on a tab releases the attempt only; the order stays owed',
+        evidence_basis: skipVerification
+          ? 'terminal_asserted'
+          : merchantOrderNo
+            ? 'gateway_verified'
+            : 'no_attempt_recorded',
+        requestedCancellationReason: cancellationReason,
+        businessOrderNo: merchantOrderNo || null,
+        reference: params.reference || null,
+        amount: params.amount ?? null,
+        gatewayResult: params.gatewayResult ?? null,
+        terminalId,
+        releasedOrderIds,
+        failedIntentIds,
+      },
+    })
+    if (keptAuditError) {
+      console.error('[handleTerminalPaymentFailed] attempt_failed_order_kept audit failed:', keptAuditError)
+    }
+    return { outcome: 'attempt_released_order_kept', releasedOrderIds, failedIntentIds }
+  }
+
   const moneyHeld = await findOrdersWithMoney(supabase as never, [params.orderId])
   if (moneyHeld === null || moneyHeld.has(params.orderId)) {
     console.error('[handleTerminalPaymentFailed] NOT cancelled: money is recorded against this order, or its payment state is unreadable', {
