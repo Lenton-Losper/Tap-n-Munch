@@ -156,8 +156,15 @@ async function loadOrderHistory(req: Request): Promise<Response> {
    * WHAT EACH ORDER IS WORTH AFTER STAFF VOIDS (Sprint 2026-09-28). amend_order_lines never
    * rewrites an order, so `total` -- kept below as `order_amount`, the historical figure -- still
    * counts voided lines. `live_amount` is the projection's figure. Display only; a failed read
-   * leaves it null and the screen shows the stored total as before. The revenue summary below is
-   * deliberately NOT changed: it reports money collected and awaits an owner ruling.
+   * leaves it null and the screen shows the stored total as before.
+   *
+   * THE REVENUE SUMMARY BELOW NOW REPORTS PROJECTION PAID (Sprint 2026-09-29 chaos brief, which
+   * requires terminal, dashboard, order history and invoice to agree and the ledger to reconcile).
+   * This supersedes the 2026-09-28 note that left it unchanged pending an owner ruling: each paid
+   * order contributes the projection's ledger-backed paid figure (recorded charge + item
+   * settlements), not its original `total`. Legacy paid orders with no `settled_charge_cents` keep
+   * their stored total (the projection's legacy_total basis). Cash-up, reports, items-sold and
+   * analytics are UNCHANGED and still await the owner ruling.
    */
   const liveByOrder = new Map<string, { live: number; voided: number }>()
   try {
