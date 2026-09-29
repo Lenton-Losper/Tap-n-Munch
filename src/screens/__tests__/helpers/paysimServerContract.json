@@ -1,0 +1,139 @@
+{
+  "_meta": {
+    "source": "flashtap web __tests__/chaos/payment-simulation.chaos.ts via supabase/tests/chaos-e2e.mjs",
+    "orderId": "fc9a93c1-30f8-4119-9381-cd5b7129910a",
+    "merchantOrderNo": "FT17907071765607247",
+    "chargeCents": 10700
+  },
+  "prepare": {
+    "status": 200,
+    "body": {
+      "orderId": "fc9a93c1-30f8-4119-9381-cd5b7129910a",
+      "merchantOrderNo": "FT17907071765607247",
+      "created": true,
+      "chargeCents": 10700,
+      "tipCents": 0,
+      "orderIds": [
+        "fc9a93c1-30f8-4119-9381-cd5b7129910a"
+      ],
+      "excludedOrderIds": [],
+      "outcome": null,
+      "staffMessage": null
+    }
+  },
+  "attemptStarted": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "recorded": true,
+      "startedAt": "2026-09-29T18:39:36.620Z",
+      "businessOrderNo": "FT17907071765607247"
+    }
+  },
+  "callbackSuccess": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "canClose": true
+    }
+  },
+  "sale": {
+    "status": 200,
+    "body": {
+      "id": "516967cc-fe5c-4dac-973e-92dee3208403",
+      "restaurant_id": "c4a05000-0000-4000-8000-000000000001",
+      "event_type": "sale",
+      "business_order_no": "FT17907071765607247",
+      "origin_business_order_no": "FT17907071765607247",
+      "transaction_id": "PAYSIM-TXN-2",
+      "terminal_id": "c4a05000-0000-4000-8000-00000000e001",
+      "app_version": "2.40",
+      "amount": 107,
+      "currency": "NAD",
+      "idempotency_key": "FT17907071765607247",
+      "initiated_by": null,
+      "reason_code": "sale",
+      "reason_note": null,
+      "gateway_result_code": null,
+      "gateway_result_message": null,
+      "raw_gateway_response": null,
+      "created_at": "2026-09-29T18:39:36.852755+00:00",
+      "order_ids": [
+        "fc9a93c1-30f8-4119-9381-cd5b7129910a"
+      ],
+      "origin": "terminal_device",
+      "device_amount_check": "matched_intent"
+    }
+  },
+  "callbackDeclined": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "canClose": false,
+      "outcome": "cancelled"
+    }
+  },
+  "verifyNoRecord": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "paid": false,
+      "applied": false,
+      "outcome": "left_pending_finatic_uncertain",
+      "verified": true,
+      "isE04111": true,
+      "gatewayCode": "E04111",
+      "code": "payment_not_confirmed",
+      "staffMessage": "no confirmation yet. this can still change - check again shortly. do not take a second payment on the strength of this.",
+      "source": "finatic",
+      "merchantOrderNo": "FT17907071765607247",
+      "transactionId": null,
+      "status": "no_gateway_record"
+    }
+  },
+  "callbackUncertain": {
+    "status": 200,
+    "body": {
+      "success": false,
+      "canClose": false,
+      "outcome": "left_pending_finatic_uncertain",
+      "reason": "PayCloud query failed: E04111 [E04111]Merchant order number is invalid"
+    }
+  },
+  "verifyPaid": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "paid": true,
+      "applied": true,
+      "outcome": null,
+      "verified": true,
+      "code": null,
+      "staffMessage": null,
+      "source": "finatic",
+      "merchantOrderNo": "FT17907071765607247",
+      "transactionId": "PAYSIM-TXN-3",
+      "status": "2",
+      "amount": 278.5,
+      "expectedAmount": 278.5
+    }
+  },
+  "verifyAlreadyPaid": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "paid": true,
+      "source": "supabase",
+      "merchantOrderNo": "FT17907071765607247",
+      "transactionId": null,
+      "status": "paid"
+    }
+  },
+  "callbackAlreadyPaid": {
+    "status": 409,
+    "body": {
+      "error": "Order is already paid",
+      "code": "ALREADY_PAID"
+    }
+  }
+}
