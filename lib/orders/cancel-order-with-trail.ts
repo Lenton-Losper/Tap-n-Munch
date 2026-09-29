@@ -109,6 +109,12 @@ export async function cancelOrderWithTrail(
     actorUserId: string | null
     /** Merged into the audit row's metadata. Never written to the order. */
     metadata?: Record<string, unknown>
+    /**
+     * A card sale that has been FULLY REFUNDED keeps its payment_status (Sprint 2026-09-29 brief):
+     * the sale and its refund are the payment history, and 'cancelled' would erase the first half.
+     * Only set after lib/orders/paid-order-cancellation.ts said so.
+     */
+    preservePaymentStatus?: boolean
   },
 ): Promise<CancelWithTrailResult> {
   const cancelledAt = new Date().toISOString()
@@ -117,13 +123,23 @@ export async function cancelOrderWithTrail(
     .from('orders')
     .update({
       status: 'cancelled',
-      payment_status: 'cancelled',
+      ...(params.preservePaymentStatus ? {} : { payment_status: 'cancelled' }),
       cancelled_at: cancelledAt,
       cancellation_reason: params.cancellationReason,
     })
     .eq('id', params.orderId)
     .eq('restaurant_id', params.restaurantId)
   if (params.guard === 'require_pending') query = query.eq('payment_status', 'pending')
+  /**
+   * 'none' NEVER MEANS "OVER A PAYMENT" (Sprint 2026-09-29 brief). It was written for an order that
+   * can sit at cash_pending as well as pending; it also matched a PAID order, and wrote the payment
+   * away as 'cancelled'. A paid order now matches nothing here -- the caller's own check is what
+   * explains why, this is what makes it true under a race. NULL is kept matchable on purpose: seven
+   * legacy rows carry no payment_status and could always be cancelled.
+   */
+  if (params.guard === 'none' && !params.preservePaymentStatus) {
+    query = query.or('payment_status.is.null,payment_status.neq.paid')
+  }
   const { data, error } = await query.select()
 
   if (error) throw error

@@ -84,6 +84,11 @@ class FakeQuery {
     this.preds.push((r) => vals.includes(r[col]))
     return this
   }
+  // Sprint 2026-09-29: the projection reads refunds with .overlaps() on payment_events.
+  overlaps(col: string, vals: unknown[]) {
+    this.preds.push((r) => Array.isArray(r[col]) && (r[col] as unknown[]).some((v) => vals.includes(v)))
+    return this
+  }
   is(col: string, val: unknown) {
     this.preds.push((r) => (r[col] ?? null) === val)
     return this

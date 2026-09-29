@@ -56,6 +56,7 @@ function fakeSupabase(orders: OrderRow[], opts: { ordersReadFails?: boolean } = 
             eq: () => c,
             in: () => c,
             is: () => c,
+            overlaps: () => c,
             order: () => c,
             range: () => c,
             then: (res: (v: unknown) => unknown) => Promise.resolve(result).then(res),
@@ -69,7 +70,8 @@ function fakeSupabase(orders: OrderRow[], opts: { ordersReadFails?: boolean } = 
               : { data: orders, error: null },
           )
         }
-        if (table === 'order_lines' || table === 'order_line_allocations') {
+        // Sprint 2026-09-29: the projection is net of refunds, read from payment_events for paid orders.
+        if (table === 'order_lines' || table === 'order_line_allocations' || table === 'payment_events') {
           return chain({ data: [], error: null })
         }
         throw new Error(`unexpected table ${table}`)

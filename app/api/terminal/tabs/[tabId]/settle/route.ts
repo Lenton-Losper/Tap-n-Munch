@@ -5,6 +5,7 @@ import { generatePaymentReference } from '@/lib/payment-reference'
 import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import { parseTipCents, recordTip } from '@/lib/payments/tips'
 import { recordGatewaySaleEvent } from '@/lib/payments/record-gateway-sale-event'
+import { recordNonGatewayPaymentEvent } from '@/lib/payments/record-non-gateway-payment-event'
 import {
   centsToMajor,
   FINANCIAL_ORDER_COLUMNS,
@@ -157,7 +158,7 @@ export async function POST(
       // The payment columns the claim below overwrites are read too, so a claim that has to be
       // undone (a partial claim -- see SETTLE_CLAIM_CONFLICT) can be put back exactly as it was.
       .select(
-        `${FINANCIAL_ORDER_COLUMNS}, terminal_pushed_at, payment_method, payment_reference, payment_voucher_no, paid_at, completed_at`,
+        `${FINANCIAL_ORDER_COLUMNS}, terminal_pushed_at, payment_method, payment_reference, payment_voucher_no, paid_at, completed_at, pending_charge_cents`,
       )
       .eq('tab_id', tabId)
       .eq('restaurant_id', terminal.restaurantId)
@@ -307,9 +308,9 @@ export async function POST(
     // audit_logs.metadata.amount below, both `numeric` with no scale. The comparison on the
     // next line is unaffected either way -- amountsMatch works in integer cents (#180).
     const outstandingCentsOf = (id: unknown) => financials.get(String(id))?.outstandingCents ?? 0
-    const expectedAmount = roundToCents(
-      centsToMajor((tabOrders ?? []).reduce((sum, o) => sum + outstandingCentsOf(o.id), 0)),
-    )
+    // The same figure in integer cents, for the ledgers: what the BILL is, gratuity excluded.
+    const expectedCents = (tabOrders ?? []).reduce((sum, o) => sum + outstandingCentsOf(o.id), 0)
+    const expectedAmount = roundToCents(centsToMajor(expectedCents))
 
     /**
      * A settlement that would collect nothing is refused rather than recorded. Every item is
@@ -521,6 +522,51 @@ export async function POST(
     // would put a card-shaped reference on a payment no card was used for.
     const paymentVoucherNo = usesGateway ? voucherNo || gatewayReference || null : null
 
+    /**
+     * A NON-GATEWAY SETTLEMENT IS A FRESH CHARGE AT THE LIVE AMOUNT (team-lead ruling,
+     * 20260929140000). It must neither race a card attempt that may be running nor settle over a
+     * dead one. When any selected order carries a prepared card charge, release_stale_card_attempts
+     * decides, under the orders' row locks: inside the in-flight window (or an intent whose answer
+     * is unknown) -> 409 PAYMENT_IN_FLIGHT and nothing is written; older -> the attempt is released
+     * (charge cleared, launched intent expired, audited) before the claim below.
+     *
+     * Asked only when there is something to release, so every settlement with no card history is
+     * exactly as before. FAILS CLOSED: an error is a refusal, never a settlement over an attempt.
+     */
+    if (!usesGateway && (tabOrders ?? []).some((o) => (o as { pending_charge_cents?: unknown }).pending_charge_cents != null)) {
+      const { data: release, error: releaseError } = await supabase.rpc('release_stale_card_attempts', {
+        p_restaurant_id: terminal.restaurantId,
+        p_order_ids: orderIds,
+        p_source: 'terminal/tabs/settle',
+        p_actor_user_id: attributedStaffUserId,
+      })
+      if (releaseError) {
+        console.error('[terminal/tabs/settle] could not check for a card attempt in flight', releaseError)
+        return NextResponse.json(
+          { error: 'Could not check for a card payment in progress. Try again.', code: 'CARD_ATTEMPT_UNREADABLE' },
+          { status: 503 },
+        )
+      }
+      const released = (release ?? {}) as { ok?: boolean; in_flight_order_ids?: string[] }
+      if (released.ok !== true) {
+        return NextResponse.json(
+          {
+            error:
+              'A card payment for part of this selection may still be in progress. Wait for it to ' +
+              'finish or cancel it on the terminal, then take the payment.',
+            code: 'PAYMENT_IN_FLIGHT',
+            order_ids: released.in_flight_order_ids ?? [],
+          },
+          { status: 409 },
+        )
+      }
+      // The released orders no longer carry the charge; the claim below must restore THAT state
+      // if it ever has to be undone, not the dead attempt.
+      for (const o of tabOrders ?? []) {
+        ;(o as Record<string, unknown>).pending_charge_cents = null
+      }
+    }
+
     // The rows as READ, copied before the claim, so a partial claim can be undone exactly.
     const priorById = new Map(
       (tabOrders ?? []).map((o) => [String(o.id), { ...(o as Record<string, unknown>) }]),
@@ -562,6 +608,71 @@ export async function POST(
     }
 
     const { data: claimed, error: ordersError } = await claimQuery.select('id')
+
+    /**
+     * THE CARD WAS CHARGED FOR AN ORDER THAT HAS SINCE CHANGED (team-lead ruling, Sprint 2026-09-29).
+     *
+     * orders_refuse_paid_on_changed_charge (20260929120000) raises FTCHG when a card payment would
+     * mark paid an order whose items, voids or item settlements moved after the charge was prepared.
+     * The claim is one statement, so NOTHING was claimed -- and the reader has already taken the
+     * money. Answering 500 would invite a retry and leave the charge recorded nowhere. Instead every
+     * order in the charged selection is HELD for review (amount_mismatch_hold, what
+     * markOrderPaidConfirmed does for the same refusal), so none of them can be charged again, and the
+     * charge is written down for staff to reconcile.
+     */
+    if (ordersError && String((ordersError as { code?: unknown }).code ?? '') === 'FTCHG') {
+      const { data: heldRows, error: holdError } = await supabase
+        .from('orders')
+        .update({ payment_status: 'amount_mismatch_hold' })
+        .in('id', orderIds)
+        .eq('tab_id', tabId)
+        .eq('restaurant_id', terminal.restaurantId)
+        .in('payment_status', [...settleableStatuses])
+        .select('id')
+      if (holdError) {
+        console.error('[terminal/tabs/settle] could not hold orders changed during payment', holdError)
+      }
+      const heldIds = (heldRows ?? []).map((r) => String(r.id))
+      const { error: heldAuditError } = await supabase.from('audit_logs').insert({
+        restaurant_id: terminal.restaurantId,
+        action: 'payment.held_order_changed_since_charge_prepared',
+        entity_type: 'tabs',
+        entity_id: tabId,
+        metadata: {
+          source: 'terminal/tabs/settle',
+          reason: 'order_changed_since_preparation',
+          requested_order_ids: orderIds,
+          held_order_ids: heldIds,
+          card_charged: true,
+          amount: expectedAmount,
+          client_amount: Number.isFinite(amount) ? amount : null,
+          tip_cents: tipCents,
+          business_order_no: businessOrderNo || null,
+          voucher_no: voucherNo || null,
+          gateway_reference: gatewayReference || null,
+          terminal_id: terminal.terminalId,
+          note:
+            'The card was charged, but an order in this selection changed after the charge was ' +
+            'prepared. Nothing was marked paid; the orders are held for review. Check what the ' +
+            'customer owes against what was charged and refund or collect the difference.',
+          recorded_at: new Date().toISOString(),
+        },
+      })
+      if (heldAuditError) {
+        console.error('[terminal/tabs/settle] held-order audit failed', heldAuditError)
+      }
+      return NextResponse.json(
+        {
+          error:
+            'The card was charged, but an order changed while it was being paid. The orders are ' +
+            'held for review; nothing was marked paid.',
+          code: 'ORDER_CHANGED_DURING_PAYMENT',
+          card_charged: true,
+          held_order_ids: heldIds,
+        },
+        { status: 409 },
+      )
+    }
 
     if (ordersError) {
       return NextResponse.json(
@@ -678,6 +789,107 @@ export async function POST(
         },
         { status: 409 },
       )
+    }
+
+    /**
+     * ================================================================================================
+     * THE NON-GATEWAY LEDGER ROW -- NO LEDGER, NO SETTLEMENT (Sprint 2026-09-29 brief)
+     * ================================================================================================
+     *
+     * EVERY SUCCESSFUL PAYMENT MUST HAVE AN IMMUTABLE FINANCIAL LEDGER RECORD. The F2 ruling below
+     * ("THAT LEAVES CASH WITH NO LEDGER ROW") is reversed for that half: cash and PayToday now get a
+     * `non_gateway_payment_events` row. The other half of F2 stands -- the row is NOT in
+     * payment_events, so nothing that reconciles against Finatic can mistake it for a gateway sale.
+     *
+     * REQUIRED, and written right after the claim so a failure can still be undone. Nothing has moved
+     * through a gateway on this path: the cash is in the waiter's hand, and a refused settlement is
+     * one they retry. So when the row cannot be written the claim is put back exactly as it was read
+     * (conditioned on this request's own reference, like the N2 undo above) and the request fails --
+     * a paid order with no ledger row is exactly what the invariant forbids. The ledger row itself is
+     * immutable and so is never the thing undone: it is written LAST of the things that can fail.
+     *
+     * Amount = the server's bill (Σ outstanding) + the gratuity, the same "what was collected"
+     * meaning payment_events.amount has for a card; tip_cents says which part was the gratuity.
+     */
+    let nonGatewayLedgerEventId: string | null = null
+    if (!usesGateway) {
+      const ledger = await recordNonGatewayPaymentEvent(supabase, {
+        restaurantId: terminal.restaurantId,
+        origin: 'terminal_tab_settle',
+        method,
+        billCents: expectedCents,
+        tipCents,
+        orderIds: claimedIds,
+        tabId,
+        paymentReference,
+        idempotencyKey: `terminal_tab_settle:${paymentReference}`,
+        recordedBy: attributedStaffUserId,
+        actorAttribution: attributedStaffUserId ? 'staff_authorized' : 'terminal_only',
+        terminalId: terminal.terminalId,
+        source: 'terminal/tabs/settle',
+      })
+      if (!ledger.recorded) {
+        const unrevertedIds: string[] = []
+        for (const id of claimedIds) {
+          const prior = priorById.get(id) as Record<string, unknown> | undefined
+          const { data: undone, error: undoError } = await supabase
+            .from('orders')
+            .update({
+              payment_status: prior?.payment_status ?? null,
+              payment_method: prior?.payment_method ?? null,
+              payment_reference: prior?.payment_reference ?? null,
+              payment_voucher_no: prior?.payment_voucher_no ?? null,
+              status: prior?.status ?? null,
+              paid_at: prior?.paid_at ?? null,
+              completed_at: prior?.completed_at ?? null,
+              terminal_pushed_at: prior?.terminal_pushed_at ?? null,
+              settled_charge_cents: prior?.settled_charge_cents ?? null,
+            })
+            .eq('id', id)
+            .eq('restaurant_id', terminal.restaurantId)
+            .eq('payment_reference', paymentReference)
+            .select('id')
+          if (undoError || !undone || undone.length === 0) unrevertedIds.push(id)
+        }
+        console.error('[terminal/tabs/settle] non-gateway ledger row NOT written; settlement undone', {
+          tabId,
+          order_ids: claimedIds,
+          payment_reference: paymentReference,
+          unreverted_order_ids: unrevertedIds,
+          error: ledger.error,
+        })
+        const { error: ledgerAuditError } = await supabase.from('audit_logs').insert({
+          restaurant_id: terminal.restaurantId,
+          action: 'payment.settle_ledger_not_recorded',
+          entity_type: 'tabs',
+          entity_id: tabId,
+          metadata: {
+            order_ids: claimedIds,
+            // Non-empty means orders are left PAID with no ledger row. Staff must reconcile.
+            unreverted_order_ids: unrevertedIds,
+            method,
+            amount: expectedAmount,
+            tip_cents: tipCents,
+            payment_reference: paymentReference,
+            terminal_id: terminal.terminalId,
+            staff_user_id: attributedStaffUserId,
+            error: ledger.error ?? null,
+            recorded_at: new Date().toISOString(),
+          },
+        })
+        if (ledgerAuditError) {
+          console.error('[terminal/tabs/settle] ledger-failure audit insert failed', ledgerAuditError)
+        }
+        return NextResponse.json(
+          {
+            error: 'The payment could not be recorded, so nothing was settled. Try again.',
+            code: 'PAYMENT_LEDGER_NOT_RECORDED',
+            unreverted_order_ids: unrevertedIds,
+          },
+          { status: 503 },
+        )
+      }
+      nonGatewayLedgerEventId = ledger.eventId
     }
 
     /**
@@ -886,10 +1098,17 @@ export async function POST(
      * them would be one that can never be matched to anything -- worse than an absence, because it
      * looks reconciled.
      *
-     * THAT LEAVES CASH WITH NO LEDGER ROW, and the `payments` insert above is not one. Measured
-     * 2026-09-19: `payments` holds 14 rows against 5,389 paid orders. See F10 in
-     * docs/payment-hardening-remediation.md -- a durable record of cash collection is a gap this
-     * sprint names rather than closes.
+     * CASH AND PAYTODAY: CLOSED (Sprint 2026-09-29 brief). This used to read "THAT LEAVES CASH WITH NO
+     * LEDGER ROW ... a gap this sprint names rather than closes". They now get their row in
+     * `non_gateway_payment_events`, written and required right after the claim (above).
+     *
+     * THE AMOUNT IS WHAT THE CARD WAS CHARGED: the bill PLUS the gratuity (Sprint 2026-09-29 brief,
+     * task 3). It used to be `expectedAmount`, the bill alone, while settle_order_payment() records
+     * `p_gateway_amount_cents` -- the charge, tip included -- for the same kind of row. So a tipped
+     * tab settle wrote a sale row that disagreed with the charge, the device's own recordSaleEvent
+     * (which reports the charged amount) then hit this row's key with a different amount and got a
+     * 409, and the refundable balance derived from it was short by the tip. The gratuity part stays
+     * derivable exactly as for the RPC's rows: payment_tips.tip_cents under this payment_reference.
      *
      * NOT AWAITED FOR ITS SUCCESS -- the settlement has already happened. The outcome is carried
      * into the audit metadata and the response, the same contract `payment_record_written` has.
@@ -903,8 +1122,9 @@ export async function POST(
         // inventing one would produce a row that matches no Finatic transaction (see F17).
         businessOrderNo: businessOrderNo || null,
         transactionId: voucherNo || gatewayReference || null,
-        // THE SERVER'S FIGURE. `amount` is the client's and is only ever a cross-check.
-        amount: expectedAmount,
+        // THE SERVER'S FIGURE -- the bill it validated plus the gratuity it recorded. `amount` is
+        // the client's and is only ever a cross-check.
+        amount: roundToCents(centsToMajor(expectedCents + tipCents)),
         terminalId: terminal.terminalId,
         source: 'terminal/tabs/settle',
       })
@@ -1012,6 +1232,8 @@ export async function POST(
         // than inferred: a card sale with no payment_events row is precisely the silent gap that
         // left 1,630 paid orders unreconcilable against Finatic.
         ...(usesGateway ? { sale_event: saleEventOutcome } : {}),
+        // Sprint 2026-09-29: the immutable ledger row of a cash / PayToday settlement.
+        ...(!usesGateway ? { ledger_event_id: nonGatewayLedgerEventId } : {}),
         /**
          * The gratuity, if one was keyed. Present ONLY when there was one, so an absent key means
          * "no tip" and never "a tip we lost". `tip_recorded` carries the outcome verbatim --
@@ -1112,6 +1334,8 @@ export async function POST(
        * idempotency branch instead of inserting one.
        */
       ...(usesGateway ? { sale_event: saleEventOutcome } : {}),
+      // Additive. The non_gateway_payment_events row that records a cash / PayToday settlement.
+      ...(!usesGateway ? { ledger_event_id: nonGatewayLedgerEventId } : {}),
       // Same contract as payment_record_written: absent means no gratuity was keyed, and a value
       // other than 'recorded' means one was taken and needs reconciling. The terminal can print
       // the receipt either way -- the settlement succeeded.

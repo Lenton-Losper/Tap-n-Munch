@@ -37,8 +37,12 @@ const MUTATIONS = {
     edits: [[STATUS_ROUTE, "    if (nextPayment !== 'cancelled') {", '    if (false /* N1a */) {']],
   },
   N1b: {
-    what: 'a manual payment is kept when its audit row could not be written (no trail)',
-    edits: [[MANUAL, '  if (!auditWritten) {', '  if (false /* N1b */) {']],
+    // Sprint 2026-09-29 (F-MANUAL): the audit row, the ledger row and the claim are now ONE
+    // transaction (record_manual_order_payment), so "kept without a trail" cannot happen in the
+    // database; its SQL half is run-db-tests.mjs --mutate=ML1. What the route can still get wrong
+    // is reporting a failed transaction as anything but a failure.
+    what: 'a failed Mark-as-Paid transaction is not reported as PAYMENT_TRAIL_NOT_RECORDED',
+    edits: [[MANUAL, '  if (rpcError) {', '  if (false as boolean) {']],
   },
   N1c: {
     what: 'a cancelled order can be marked paid by hand',

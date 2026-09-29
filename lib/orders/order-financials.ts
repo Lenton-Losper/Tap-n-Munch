@@ -27,7 +27,8 @@
  *                re-summing items would silently drop them.
  *   fulfilled    Σ items[i].total over live lines every owning station has marked ready/collected.
  *   paid         Σ item-level allocation settlements + the whole-order charge when the order is
- *                paid (see PAID BASIS).
+ *                paid (see PAID BASIS), NET OF REFUNDS (see REFUNDS).
+ *   refunded     the part of that gross paid figure given back through a gateway refund.
  *   outstanding  owesMoney(payment_status) ? max(0, live − paid) : 0.
  *   overpaid     max(0, paid − live). Exposed, never clamped away: a void after payment is money the
  *                customer is owed back, and hiding it is how a refund goes unrecorded.
@@ -48,6 +49,23 @@
  * Before that was recorded, every gateway, cash and reconcile path charged `total − allocSettled`,
  * so for a legacy paid order `paid = original` is what was actually taken -- including any voided
  * lines it was overcharged for. That is reported as `overpaid`, which is the truth.
+ *
+ * ================================================================================================
+ * REFUNDS (Sprint 2026-09-29 brief)
+ * ================================================================================================
+ *
+ * `paid` used to ignore refunds entirely. A card sale refunded in full and then cancelled read as
+ * live 0, paid N -> overpaid N: "the customer is owed N back" for money that had already gone back,
+ * which invites a second refund. `paid` is now what the venue still holds.
+ *
+ * THE SOURCE is the one get-payment-projection.ts uses: `payment_events` sale rows and their
+ * `refund_succeeded` rows, keyed by origin_business_order_no. A refund is recorded against a SALE,
+ * and one sale can cover several orders, so a refund cannot be attributed to an order exactly. It is
+ * applied as a FRACTION of the sale -- min(1, Σ refunded / sale amount) -- to each covered order's
+ * gross paid figure. A full refund is therefore exact (every covered order refunds to 0); a partial
+ * refund of a multi-order sale is proportional, and may differ by a cent per order after rounding.
+ * The newest sale naming an order wins, as in the payment projection. Only PAID orders are asked:
+ * nothing else can have been charged and refunded.
  *
  * ================================================================================================
  * COVERAGE
@@ -102,7 +120,10 @@ export type OrderFinancials = {
   voidedCents: number
   liveCents: number
   fulfilledCents: number
+  /** Net of refundedCents. */
   paidCents: number
+  /** Given back through gateway refunds; already subtracted from paidCents. */
+  refundedCents: number
   outstandingCents: number
   overpaidCents: number
   lineCoverage: 'full' | 'partial' | 'none'
@@ -118,6 +139,7 @@ export type TabFinancials = {
   liveCents: number
   fulfilledCents: number
   paidCents: number
+  refundedCents: number
   outstandingCents: number
   overpaidCents: number
   orders: OrderFinancials[]
@@ -169,11 +191,13 @@ function itemTotalCents(item: Record<string, unknown>): number {
  * route, the invoice, the tests and the Riviera regression without a database.
  *
  * `allocationSettledCents` is Σ order_line_allocation_settlements for this order (settledCentsByOrder).
+ * `refundFraction` is the share of this order's sale given back (readRefundFractions), 0..1.
  */
 export function computeOrderFinancials(
   order: FinancialOrderInput,
   lines: readonly FinancialLineInput[],
   allocationSettledCents = 0,
+  refundFraction = 0,
 ): OrderFinancials {
   const items = Array.isArray(order.items) ? (order.items as unknown[]) : []
   const orderLines = lines.filter((l) => String(l.order_id) === String(order.id))
@@ -230,6 +254,11 @@ export function computeOrderFinancials(
     }
   }
 
+  // REFUNDS. See the header: a fraction of the sale, applied to the gross paid figure.
+  const fraction = Math.min(1, Math.max(0, Number(refundFraction) || 0))
+  const refundedCents = Math.min(paidCents, Math.round(paidCents * fraction))
+  paidCents -= refundedCents
+
   const owes = !cancelled && owesMoney(order.payment_status)
   const outstandingCents = owes ? Math.max(0, liveCents - paidCents) : 0
   const overpaidCents = Math.max(0, paidCents - liveCents)
@@ -241,6 +270,7 @@ export function computeOrderFinancials(
     liveCents,
     fulfilledCents,
     paidCents,
+    refundedCents,
     outstandingCents,
     overpaidCents,
     lineCoverage:
@@ -257,11 +287,19 @@ export function computeTabFinancials(
   orders: readonly FinancialOrderInput[],
   lines: readonly FinancialLineInput[],
   allocationSettledByOrder: ReadonlyMap<string, number> = new Map(),
+  refundFractionByOrder: ReadonlyMap<string, number> = new Map(),
 ): TabFinancials {
   const per = orders
-    .map((o) => computeOrderFinancials(o, lines, allocationSettledByOrder.get(String(o.id)) ?? 0))
+    .map((o) =>
+      computeOrderFinancials(
+        o,
+        lines,
+        allocationSettledByOrder.get(String(o.id)) ?? 0,
+        refundFractionByOrder.get(String(o.id)) ?? 0,
+      ),
+    )
     .filter((f) => !f.isSettlementArtefact)
-  const sum = (k: keyof Pick<OrderFinancials, 'originalCents' | 'voidedCents' | 'liveCents' | 'fulfilledCents' | 'paidCents' | 'outstandingCents' | 'overpaidCents'>) =>
+  const sum = (k: keyof Pick<OrderFinancials, 'originalCents' | 'voidedCents' | 'liveCents' | 'fulfilledCents' | 'paidCents' | 'refundedCents' | 'outstandingCents' | 'overpaidCents'>) =>
     per.reduce((s, f) => s + f[k], 0)
   return {
     originalCents: sum('originalCents'),
@@ -269,6 +307,7 @@ export function computeTabFinancials(
     liveCents: sum('liveCents'),
     fulfilledCents: sum('fulfilledCents'),
     paidCents: sum('paidCents'),
+    refundedCents: sum('refundedCents'),
     outstandingCents: sum('outstandingCents'),
     overpaidCents: sum('overpaidCents'),
     orders: per,
@@ -368,16 +407,123 @@ async function readAllocationSettled(
   }
 }
 
-/** The projection's other two inputs for orders the caller has already read. Throws on failure. */
+const REFUND_CHUNK = 200
+
+/**
+ * THE REFUND INPUT: for each PAID order that a refunded sale covers, the refunded fraction of that
+ * sale (see REFUNDS in the header). Orders with no refund are absent -- read as 0. Only the paid
+ * rows are asked, so a read that could not have found anything is never made. Throws on failure:
+ * not being able to see a refund is not permission to report the money as still held.
+ */
+export async function readRefundFractions(
+  supabase: FinancialsSupabase,
+  rows: readonly FinancialOrderInput[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  const paidIds = [...new Set(rows.filter((r) => isPaidPaymentStatus(r.payment_status)).map((r) => String(r.id)))]
+  if (paidIds.length === 0) return out
+  const wanted = new Set(paidIds)
+
+  type Sale = { business_order_no: unknown; amount: unknown; order_ids: unknown; created_at: unknown }
+  const sales: Sale[] = []
+  for (let i = 0; i < paidIds.length; i += REFUND_CHUNK) {
+    const { data, error } = await supabase
+      .from('payment_events')
+      .select('business_order_no, amount, order_ids, created_at')
+      .eq('event_type', 'sale')
+      .overlaps('order_ids', paidIds.slice(i, i + REFUND_CHUNK))
+    if (error) throw new FinancialsUnreadable(`payment_events (sales): ${error.message}`)
+    sales.push(...((data ?? []) as Sale[]))
+  }
+  if (sales.length === 0) return out
+
+  // Newest sale naming an order wins -- the payment projection's rule.
+  sales.sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
+  const saleByOrder = new Map<string, Sale>()
+  for (const sale of sales) {
+    for (const id of Array.isArray(sale.order_ids) ? (sale.order_ids as unknown[]).map(String) : []) {
+      if (wanted.has(id) && !saleByOrder.has(id)) saleByOrder.set(id, sale)
+    }
+  }
+
+  const origins = [...new Set([...saleByOrder.values()].map((s) => String(s.business_order_no ?? '')).filter(Boolean))]
+  const refundedByOrigin = new Map<string, number>()
+  for (let i = 0; i < origins.length; i += REFUND_CHUNK) {
+    const { data, error } = await supabase
+      .from('payment_events')
+      .select('origin_business_order_no, amount')
+      .eq('event_type', 'refund_succeeded')
+      .in('origin_business_order_no', origins.slice(i, i + REFUND_CHUNK))
+    if (error) throw new FinancialsUnreadable(`payment_events (refunds): ${error.message}`)
+    for (const r of (data ?? []) as Array<{ origin_business_order_no: unknown; amount: unknown }>) {
+      const origin = String(r.origin_business_order_no ?? '')
+      refundedByOrigin.set(origin, (refundedByOrigin.get(origin) ?? 0) + (toCents(r.amount) ?? 0))
+    }
+  }
+
+  for (const [orderId, sale] of saleByOrder) {
+    const refunded = refundedByOrigin.get(String(sale.business_order_no ?? '')) ?? 0
+    const saleCents = toCents(sale.amount) ?? 0
+    if (refunded > 0 && saleCents > 0) out.set(orderId, Math.min(1, refunded / saleCents))
+  }
+  return out
+}
+
+/** Everything the projection reads besides the orders themselves. */
+export type ProjectionInputs = {
+  lines: FinancialLineInput[]
+  allocationSettledByOrder: Map<string, number>
+  /** REFUNDS (see the header). Absent orders had none. */
+  refundFractionByOrder: Map<string, number>
+}
+
+/**
+ * THE ONE READ of the projection's inputs, for orders the caller has already read. Every loader in
+ * this module goes through it, and so does every route that keeps its own order read -- so lines,
+ * item settlements and refunds cannot be applied on one path and forgotten on another (the refunds
+ * were, until Sprint 2026-09-29). The rows need `id` and `payment_status`: refunds are only asked
+ * for paid ones. Throws on failure.
+ */
 export async function readProjectionInputs(
   supabase: FinancialsSupabase,
-  orderIds: readonly string[],
-): Promise<{ lines: FinancialLineInput[]; allocationSettledByOrder: Map<string, number> }> {
-  const [lines, allocationSettledByOrder] = await Promise.all([
+  rows: readonly Pick<FinancialOrderInput, 'id' | 'payment_status'>[],
+): Promise<ProjectionInputs> {
+  const orderIds = rows.map((r) => String(r.id)).filter(Boolean)
+  const [lines, allocationSettledByOrder, refundFractionByOrder] = await Promise.all([
     readFinancialLines(supabase, orderIds),
     readAllocationSettled(supabase, orderIds),
+    readRefundFractions(supabase, rows as readonly FinancialOrderInput[]),
   ])
-  return { lines, allocationSettledByOrder }
+  return { lines, allocationSettledByOrder, refundFractionByOrder }
+}
+
+/** One order projected from inputs read by readProjectionInputs. */
+export function projectOrderWithInputs(
+  order: FinancialOrderInput,
+  inputs: Pick<ProjectionInputs, 'lines' | 'allocationSettledByOrder'> &
+    Partial<Pick<ProjectionInputs, 'refundFractionByOrder'>>,
+): OrderFinancials {
+  const id = String(order.id)
+  return computeOrderFinancials(
+    order,
+    inputs.lines,
+    inputs.allocationSettledByOrder.get(id) ?? 0,
+    inputs.refundFractionByOrder?.get(id) ?? 0,
+  )
+}
+
+/** A tab projected from inputs read by readProjectionInputs. */
+export function projectTabWithInputs(
+  orders: readonly FinancialOrderInput[],
+  inputs: Pick<ProjectionInputs, 'lines' | 'allocationSettledByOrder'> &
+    Partial<Pick<ProjectionInputs, 'refundFractionByOrder'>>,
+): TabFinancials {
+  return computeTabFinancials(
+    orders,
+    inputs.lines,
+    inputs.allocationSettledByOrder,
+    inputs.refundFractionByOrder ?? new Map(),
+  )
 }
 
 /**
@@ -390,15 +536,9 @@ export async function projectOrderRows(
   supabase: FinancialsSupabase,
   rows: readonly FinancialOrderInput[],
 ): Promise<Map<string, OrderFinancials>> {
-  const ids = rows.map((r) => String(r.id))
-  const [lines, settled] = await Promise.all([
-    readFinancialLines(supabase, ids),
-    readAllocationSettled(supabase, ids),
-  ])
+  const inputs = await readProjectionInputs(supabase, rows)
   const out = new Map<string, OrderFinancials>()
-  for (const row of rows) {
-    out.set(String(row.id), computeOrderFinancials(row, lines, settled.get(String(row.id)) ?? 0))
-  }
+  for (const row of rows) out.set(String(row.id), projectOrderWithInputs(row, inputs))
   return out
 }
 
@@ -445,12 +585,7 @@ export async function loadTabFinancials(
     if (restaurantId) query = query.eq('restaurant_id', restaurantId)
     return query.eq('tab_id', tabId).order('id', { ascending: true })
   }, 'orders')
-  const ids = rows.map((r) => String(r.id))
-  const [lines, settled] = await Promise.all([
-    readFinancialLines(supabase, ids),
-    readAllocationSettled(supabase, ids),
-  ])
-  return computeTabFinancials(rows, lines, settled)
+  return projectTabWithInputs(rows, await readProjectionInputs(supabase, rows))
 }
 
 /**

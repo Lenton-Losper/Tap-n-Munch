@@ -14,6 +14,7 @@ import {
   VERIFICATION_UNAVAILABLE_HOLD_PAYMENT_STATUS,
 } from '@/lib/payments/payment-integrity'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+import { findOrdersWithMoney, recordAutoCancelRefusals } from '@/lib/orders/paid-order-cancellation'
 import {
   CANCEL_BASIS_NOTE,
   ORDER_CANCELLED_ACTION,
@@ -495,6 +496,26 @@ async function cancelByIds(
   basis: CancelBasis = 'no_gateway_reference',
 ): Promise<string[]> {
   if (!ids.length) return []
+  /**
+   * NEVER OVER MONEY (Sprint 2026-09-29, team-lead follow-up). A pending order can still carry a
+   * settled item allocation, a non-gateway ledger row or a gateway sale; cancelling it would write
+   * that money away. Those orders are left exactly as they are. An unreadable payment state cancels
+   * NOTHING this run -- the sweep retries next tick, which is recoverable; a cancelled payment is not.
+   */
+  const moneyHeld = await findOrdersWithMoney(supabase as never, ids)
+  if (moneyHeld === null) return []
+  if (moneyHeld.size > 0) {
+    console.error('[autoCancelStalePosOrders] NOT cancelled: money is recorded against these orders', {
+      order_ids: [...moneyHeld],
+    })
+    const { data: refusedRows } = await supabase
+      .from('orders')
+      .select('id, restaurant_id')
+      .in('id', [...moneyHeld])
+    await recordAutoCancelRefusals(supabase as never, (refusedRows ?? []) as never, 'auto_cancel_stale_pos_orders')
+  }
+  const cancellableIds = ids.filter((id) => !moneyHeld.has(String(id)))
+  if (!cancellableIds.length) return []
   const cancelledAt = new Date().toISOString()
   const { data, error } = await supabase
     .from('orders')
@@ -504,7 +525,7 @@ async function cancelByIds(
       cancelled_at: cancelledAt,
       cancellation_reason: cancellationReason,
     })
-    .in('id', ids)
+    .in('id', cancellableIds)
     .eq('payment_status', 'pending') // re-assert: a concurrent terminal callback wins the race
     // restaurant_id is required for the audit row; total and the reference make the row readable
     // without joining back to orders.

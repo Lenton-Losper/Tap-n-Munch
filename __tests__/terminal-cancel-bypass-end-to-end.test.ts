@@ -21,6 +21,15 @@
  */
 import { NextRequest } from 'next/server'
 
+// The money guard on automatic cancels (Sprint 2026-09-29) reads the payment ledgers; this suite is
+// about something else, so every order is stated to carry no money. The guard has its own suite
+// (auto-cancel-never-over-money.test.ts).
+jest.mock('@/lib/orders/paid-order-cancellation', () => ({
+  ...jest.requireActual('@/lib/orders/paid-order-cancellation'),
+  findOrdersWithMoney: async () => new Set<string>(),
+}))
+
+
 const RESTAURANT_UUID = 'a1999166-ddfa-40d1-ad1f-2f01282a1652'
 const ORDER_ID = '133ffc3a-106b-4076-bf23-2dd55cba8d9c'
 const MERCHANT_ORDER_NO = 'FT17863184148250674'

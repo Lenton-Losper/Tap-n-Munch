@@ -113,7 +113,9 @@ describe('THE ROUTE ACTUALLY USES IT, AND LOADS WHAT IT NEEDS', () => {
    * route-level behaviour is pinned in __tests__/terminal-tables-live-outstanding.test.ts.
    */
   it('unpaid_total is derived from the financial projection', () => {
-    expect(statements).toMatch(/computeTabFinancials\(/)
+    // Sprint 2026-09-29: through the one shared path (readProjectionInputs -> projectTabWithInputs),
+    // which also applies refunds; computeTabFinancials is what it calls.
+    expect(statements).toMatch(/projectTabWithInputs\(/)
     expect(statements).toMatch(/unpaidTotal = centsToMajor\(tabFinancials\.outstandingCents\)/)
   })
 
@@ -125,7 +127,8 @@ describe('THE ROUTE ACTUALLY USES IT, AND LOADS WHAT IT NEEDS', () => {
   it('it loads settled allocations to subtract', () => {
     // Through readProjectionInputs, which reads the item ledger via settledCentsByOrder.
     expect(statements).toMatch(/readProjectionInputs\(/)
-    expect(statements).toMatch(/settledByOrder/)
+    // Sprint 2026-09-29: the inputs travel as one object (lines, item ledger, refunds).
+    expect(statements).toMatch(/projectOrderWithInputs\(order as FinancialOrderInput, projectionInputs\)/)
   })
 })
 

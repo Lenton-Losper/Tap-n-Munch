@@ -46,6 +46,15 @@ import {
 } from '@/lib/payments/handle-terminal-payment-failed'
 import { VERIFICATION_SKIPPED_ACTION } from '@/lib/orders/auto-cancel-stale-pos-orders'
 
+// The money guard on automatic cancels (Sprint 2026-09-29) reads the payment ledgers; this suite is
+// about something else, so every order is stated to carry no money. The guard has its own suite
+// (auto-cancel-never-over-money.test.ts).
+jest.mock('@/lib/orders/paid-order-cancellation', () => ({
+  ...jest.requireActual('@/lib/orders/paid-order-cancellation'),
+  findOrdersWithMoney: async () => new Set<string>(),
+}))
+
+
 const MERCHANT_ORDER_NO = 'FT17860156979870443'
 const ORDER_TOTAL = 40
 

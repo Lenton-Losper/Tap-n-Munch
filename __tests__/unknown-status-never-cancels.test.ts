@@ -7,6 +7,15 @@ import {
   NON_RECOVERABLE_CANCELLATION_REASON_PREFIXES,
 } from '@/lib/payments/e04111-recovery'
 
+// The money guard on automatic cancels (Sprint 2026-09-29) reads the payment ledgers; this suite is
+// about something else, so every order is stated to carry no money. The guard has its own suite
+// (auto-cancel-never-over-money.test.ts).
+jest.mock('@/lib/orders/paid-order-cancellation', () => ({
+  ...jest.requireActual('@/lib/orders/paid-order-cancellation'),
+  findOrdersWithMoney: async () => new Set<string>(),
+}))
+
+
 /**
  * UNKNOWN NEVER AUTHORISES A CANCEL — and a genuine not-paid must still behave exactly as before.
  *

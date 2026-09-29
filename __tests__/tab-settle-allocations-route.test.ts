@@ -73,6 +73,9 @@ let inFlightOrdersError: { message: string } | null
 let heldIntentRows: Row[]
 let intentByIdRow: Row | null
 let intentsReadError: { message: string } | null
+/** Rows the route wrote to non_gateway_payment_events (Sprint 2026-09-29). */
+let ledgerInserts: Row[]
+let ledgerInsertFails: boolean
 
 function makeSupabase() {
   return {
@@ -167,6 +170,19 @@ function makeSupabase() {
       if (table === 'audit_logs') {
         return { insert: async () => ({ data: null, error: null }) }
       }
+      if (table === 'non_gateway_payment_events') {
+        return {
+          insert: (row: Row) => ({
+            select: () => ({
+              maybeSingle: async () => {
+                if (ledgerInsertFails) return { data: null, error: { message: 'refused (test)' } }
+                ledgerInserts.push(row)
+                return { data: { id: `ledger-${ledgerInserts.length}` }, error: null }
+              },
+            }),
+          }),
+        }
+      }
       /**
        * LOUD, DELIBERATELY. A fake that quietly returned an empty result for a table it does not
        * model would let a hold read as "nobody holds these" -- the exact fail-open this route was
@@ -221,6 +237,8 @@ beforeEach(() => {
   heldIntentRows = []
   intentByIdRow = null
   intentsReadError = null
+  ledgerInserts = []
+  ledgerInsertFails = false
   consumeResult = { ok: true }
   consumeShouldThrow = false
   consumeCalls.length = 0
@@ -600,5 +618,60 @@ describe('the allocation-scoped card hold', () => {
     })
     expect(res.status).toBe(200)
     expect(rpcCalls.filter((c) => c.name === 'settle_order_line_allocations')).toHaveLength(1)
+  })
+})
+
+/**
+ * THE EVENT-LEVEL LEDGER ROW FOR A CASH SPLIT (Sprint 2026-09-29 brief). The per-allocation rows
+ * are the RPC's; this is the one row per collection a card split has in payment_events.
+ */
+describe('non-gateway ledger row (Sprint 2026-09-29)', () => {
+  it('cash: one row, the RPC-claimed amount, the allocations and their orders', async () => {
+    rpcSettleResponse = {
+      data: {
+        applied: [
+          { allocation_id: 'alloc-1', amount_cents: 3334 },
+          { allocation_id: 'alloc-2', amount_cents: 1666 },
+        ],
+        refused: [],
+      },
+      error: null,
+    }
+    appliedAllocationRows = [
+      { id: 'alloc-1', order_id: 'order-1' },
+      { id: 'alloc-2', order_id: 'order-2' },
+    ]
+    const res = await call({ allocation_ids: ['alloc-1', 'alloc-2'], method: 'cash' })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(ledgerInserts).toHaveLength(1)
+    expect(ledgerInserts[0]).toMatchObject({
+      restaurant_id: RESTAURANT,
+      origin: 'terminal_allocation_settle',
+      method: 'cash',
+      amount_cents: 5000,
+      tip_cents: 0,
+      order_ids: ['order-1', 'order-2'],
+      allocation_ids: ['alloc-1', 'alloc-2'],
+      tab_id: TAB_ID,
+      payment_reference: body.payment_reference,
+      actor_attribution: 'terminal_only',
+    })
+    expect(body.ledger_event).toBe('recorded')
+  })
+
+  it('card: no row here -- a card split is a gateway charge', async () => {
+    const res = await call({ allocation_ids: ['alloc-1'], method: 'card' })
+    expect(res.status).toBe(200)
+    expect(ledgerInserts).toHaveLength(0)
+    expect((await res.json()).ledger_event).toBeUndefined()
+  })
+
+  it('a failed row is REPORTED, not hidden (the allocations are already settled)', async () => {
+    ledgerInsertFails = true
+    jest.spyOn(console, 'error').mockImplementation(() => {})
+    const res = await call({ allocation_ids: ['alloc-1'], method: 'cash' })
+    expect(res.status).toBe(200)
+    expect((await res.json()).ledger_event).toBe('failed')
   })
 })

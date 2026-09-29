@@ -94,6 +94,39 @@ export type EditLockRow = {
   edit_lock_token?: unknown
   edit_lock_session_id?: unknown
   edit_lock_expires_at?: unknown
+  /** What prepare-payment asked the card reader for; non-null while a charge is prepared. */
+  pending_charge_cents?: unknown
+  /** When that figure was written (stamped by the database, 20260929120000). */
+  pending_charge_at?: unknown
+}
+
+/**
+ * How long a prepared card charge counts as IN FLIGHT. The database states the same window in
+ * `orders_refuse_edit_during_charge` and amend_order_lines (20260929120000 / 20260929120200); change
+ * one, change all three.
+ *
+ * Long enough for a customer to tap, retry a declined card, and for the device to report back;
+ * short enough that a charge the device abandoned without saying so does not lock the order for
+ * the rest of the meal. A confirmation that lands after it expired is still safe: the settlement
+ * checks the order against the basis the charge was prepared on and holds it for review.
+ */
+export const PAYMENT_IN_FLIGHT_WINDOW_MS = 5 * 60 * 1000
+
+/**
+ * Is a card charge being taken for this order right now? (Sprint 2026-09-29 brief, task 5)
+ *
+ * prepare-payment leaves payment_status 'pending' -- the value the editor allows -- and stamps
+ * pending_charge_cents for the reader. Editing then changed what the order was worth while the
+ * card was charged the old figure, and the settlement marked the added items paid at it.
+ *
+ * FAILS CLOSED on a prepared charge whose timestamp is missing or unreadable: the migration stamps
+ * every prepared row, so an absent one means this is not the row we think it is.
+ */
+export function isChargeInFlight(row: EditLockRow, nowMs: number): boolean {
+  if (row.pending_charge_cents === null || row.pending_charge_cents === undefined) return false
+  const at = Date.parse(String(row.pending_charge_at ?? ''))
+  if (!Number.isFinite(at)) return true
+  return nowMs - at < PAYMENT_IN_FLIGHT_WINDOW_MS
 }
 
 export function isEditLockActive(row: EditLockRow, nowMs: number): boolean {
@@ -199,6 +232,10 @@ export function normalizeSessionIds(ids: Array<string | null | undefined>): stri
  * session still quotes the old one, and the webhook is the only confirmation QR payments
  * have. So a live checkout session closes editing even though payment_status is still
  * 'pending'.
+ *
+ * The terminal's card charge is the same case by another route: prepare-payment stamps
+ * pending_charge_cents / pending_charge_at and the reader is launched for that figure, with
+ * payment_status still 'pending'. See isChargeInFlight.
  */
 export function editRefusalReason(
   row: EditLockRow,
@@ -213,6 +250,11 @@ export function editRefusalReason(
     return 'payment_settled'
   }
   if (String(row.payment_checkout_url ?? '').trim()) {
+    return 'payment_in_flight'
+  }
+  // The terminal's card charge, which the check above never saw: prepare-payment writes no
+  // checkout URL. The database refuses the commit too (FTINF); this is the readable answer.
+  if (isChargeInFlight(row, params.nowMs)) {
     return 'payment_in_flight'
   }
   if (isEditLockHeldByOther(row, params)) {

@@ -33,6 +33,13 @@ jest.mock('@/lib/payments/handle-terminal-payment-failed', () => ({
   TERMINAL_USER_CANCELLED_REASON: 'terminal_cancelled_by_user_pre_gateway',
 }))
 
+// The paid-order cancel guard (Sprint 2026-09-29) reads the payment ledgers; this suite is about
+// something else, so the order is stated to carry no money. The guard has its own suites
+// (paid-order-cancellation.test.ts, orders-status-paid-cancel.test.ts).
+jest.mock('@/lib/orders/paid-order-cancellation', () => ({
+  checkPaidOrderCancellation: async () => ({ allowed: true, fullyRefunded: false }),
+}))
+
 jest.mock('@/lib/terminal-auth', () => ({
   requireTerminalAuth: async () => ({
     restaurantId: RESTAURANT_UUID,
@@ -62,6 +69,8 @@ jest.mock('@/lib/supabase/server', () => ({
       b.neq = () => self()
       b.in = () => self()
       b.is = () => self()
+      // cancelOrderWithTrail's guard 'none' excludes a paid order with .or() (Sprint 2026-09-29).
+      b.or = () => self()
       b.order = () => self()
       b.limit = () => self()
       b.update = (patch: Row) => {

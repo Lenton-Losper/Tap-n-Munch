@@ -49,6 +49,20 @@ const MIGRATIONS = [
   'supabase/migrations/20260829150000_amend_order_lines_function.sql',
   'supabase/migrations/20260906120100_order_line_events_void_reason.sql',
   'supabase/migrations/20260928150000_amend_order_lines_refuse_paid.sql',
+  // Sprint 2026-09-29 (F-MANUAL): the immutable non-gateway payment ledger and the atomic
+  // Mark-as-Paid RPC. Additive; exercised by manual-ledger.test.sql.
+  'supabase/migrations/20260929100000_non_gateway_payment_events.sql',
+  // Sprint 2026-09-29 task 5: a card charge settles against the order version it was prepared on.
+  // The basis + in-flight guards first; the two redefinitions copy 20260928160000 / 20260928150000
+  // and must apply after them.
+  'supabase/migrations/20260929120000_order_charge_basis.sql',
+  'supabase/migrations/20260929120100_settle_holds_order_changed_since_charge.sql',
+  'supabase/migrations/20260929120200_amend_refuses_payment_in_flight.sql',
+  // Copies 20260829170000's settle_order_line_allocations (the first entry above) plus the locks.
+  'supabase/migrations/20260929120300_allocation_settle_locks_orders.sql',
+  // F-MANUAL follow-up: a manual payment refuses a card attempt in flight and releases a stale one.
+  // Reads 20260929120000's columns and sets its non-gateway marker, so it sorts after that series.
+  'supabase/migrations/20260929140000_manual_payment_releases_stale_card_attempt.sql',
 ]
 
 /**
@@ -455,6 +469,281 @@ const MUTATIONS = {
     expect: ['tip720/orders_record_food_only', 'tip720/ledger_minus_tip_is_settled_food'],
     apply: (sql) => MUTATIONS.M14.apply(sql),
   },
+  /**
+   * THE NON-GATEWAY LEDGER (20260929100000, Sprint 2026-09-29 brief). Every anchor is text only
+   * that migration contains.
+   */
+  ML1: {
+    what: 'Mark-as-Paid writes no ledger row (the ledger insert removed from the RPC)',
+    expect: ['ml_pay/one_ledger_row', 'ml_pay/amount_is_server_figure', 'ml_immutable/row_intact'],
+    apply: (sql) => {
+      const from = '  INSERT INTO public.non_gateway_payment_events\n    (restaurant_id, origin, method, amount_cents, tip_cents,'
+      const to = '  RETURNING id INTO v_ledger_id;\n'
+      if (!sql.includes(from) || !sql.includes(to)) return sql
+      return sql
+        .replace(from, `  IF false THEN\n${from}`)
+        .replace(to, `${to}  END IF;\n`)
+    },
+  },
+  ML2: {
+    what: 'record_manual_order_payment no longer scoped to the restaurant',
+    expect: ['ml_cross/refused', 'ml_cross/no_ledger_row', 'ml_cross/order_untouched'],
+    apply: (sql) =>
+      replaceEvery(
+        sql,
+        '   WHERE id = p_order_id\n     AND restaurant_id = p_restaurant_id',
+        '   WHERE id = p_order_id',
+      ),
+  },
+  ML3: {
+    what: 'the ledger idempotency key (uniqueness) is dropped',
+    expect: ['ml_unique/duplicate_refused', 'ml_replay/unique_key_refuses_second_row', 'ml_replay/still_one_row'],
+    sqlAfterMigrations: `
+      ALTER TABLE public.non_gateway_payment_events
+        DROP CONSTRAINT non_gateway_payment_events_idempotency_key;
+    `,
+  },
+  ML4: {
+    what: 'the ledger immutability triggers are dropped',
+    expect: ['ml_immutable/update_refused', 'ml_immutable/delete_refused', 'ml_immutable/truncate_refused'],
+    sqlAfterMigrations: `
+      DROP TRIGGER non_gateway_payment_events_immutable ON public.non_gateway_payment_events;
+      DROP TRIGGER non_gateway_payment_events_no_truncate ON public.non_gateway_payment_events;
+    `,
+  },
+  ML5: {
+    what: 'record_manual_order_payment granted to anon/authenticated (security POSITIVE CONTROL)',
+    expect: ['ml_security/anon_cannot_execute', 'ml_security/authenticated_cannot_execute'],
+    sqlAfterMigrations: `
+      GRANT EXECUTE ON FUNCTION public.record_manual_order_payment(
+        uuid, uuid, text, text, integer, text, uuid, text) TO anon, authenticated;
+    `,
+  },
+  ML7: {
+    what: 'a manual payment no longer refuses a card attempt inside the in-flight window',
+    expect: ['ml_inflight/refused', 'ml_inflight/attempt_untouched'],
+    apply: (sql) =>
+      sql.replace(
+        '    IF v_row.pending_charge_at IS NULL OR v_row.pending_charge_at > now() - v_window THEN',
+        '    IF false THEN',
+      ),
+  },
+  ML8: {
+    what: 'a stale card attempt is not released (the manual payment settles over it)',
+    expect: ['ml_stale/attempt_released'],
+    apply: (sql) =>
+      sql.replace(
+        '       SET pending_charge_cents      = NULL,\n           pending_tip_cents         = 0,',
+        '       SET pending_charge_cents      = pending_charge_cents,\n           pending_tip_cents         = pending_tip_cents,',
+      ),
+  },
+  ML9: {
+    what: 'an UNCERTAIN card intent no longer stops a manual payment',
+    expect: ['ml_uncertain/refused'],
+    apply: (sql) => sql.replace("     AND status = 'uncertain'\n", "     AND status = 'uncertain' AND false\n"),
+  },
+  ML10: {
+    what: 'the stale launched intent is not expired with the attempt',
+    expect: ['ml_stale/intent_expired'],
+    apply: (sql) =>
+      sql.replace("       SET status = 'failed', resolved_at = now()", '       SET status = status'),
+  },
+  ML11: {
+    what: 'a freshly launched intent (no prepared figure) no longer counts as in flight',
+    expect: ['ml_live_intent/refused'],
+    apply: (sql) =>
+      sql.replace('     AND created_at > now() - v_window;', '     AND false;'),
+  },
+  ML12: {
+    what: 'record_manual_order_payment no longer declares itself a non-gateway payment (the FTCHG marker)',
+    expect: ['ml_stale/non_gateway_marker_set'],
+    apply: (sql) =>
+      sql.replace("  PERFORM set_config('flashtap.non_gateway_payment', 'on', true);\n", ''),
+  },
+  ML7r: {
+    what: 'as ML7, in two sessions: Mark-as-Paid lands on a card charge being prepared',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/manual-ledger-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.ML7.apply(sql),
+  },
+  ML6: {
+    what: 'the RPC claim ignores the status that was read (a double click writes twice)',
+    expect: ['ml_replay/second_refused'],
+    apply: (sql) =>
+      sql.replace(
+        '  IF v_order.payment_status IS DISTINCT FROM p_expected_payment_status THEN',
+        '  IF false THEN',
+      ),
+  },
+  /**
+   * Sprint 2026-09-29 task 5: A PAYMENT CHARGES AND SETTLES AGAINST THE SAME VERSION OF THE ORDER
+   * (20260929120000 / 120100 / 120200). Each guard is removed alone, and each is also proven in two
+   * real sessions by charge-edit-race.test.sh (the `r` variants).
+   */
+  MR1: {
+    what: 'a guest edit is allowed while a card charge is in flight (the FTINF edit lock removed)',
+    expect: ['inflight_edit/refused_ftinf', 'inflight_edit/total_unchanged'],
+    apply: (sql) =>
+      sql.replace(
+        '  IF (NEW.total IS DISTINCT FROM OLD.total OR NEW.items IS DISTINCT FROM OLD.items)\n     AND OLD.pending_charge_cents IS NOT NULL',
+        '  IF false AND (NEW.total IS DISTINCT FROM OLD.total OR NEW.items IS DISTINCT FROM OLD.items)\n     AND OLD.pending_charge_cents IS NOT NULL',
+      ),
+  },
+  MR1r: {
+    what: 'as MR1, in two sessions: the edit lands while the charge is being prepared',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.MR1.apply(sql),
+  },
+  MR2: {
+    what: 'settle_order_payment no longer checks the order against the basis its charge was prepared on (6d removed)',
+    /**
+     * With 6d gone the paid-guard trigger (C) still refuses the claim -- so the order is NOT paid,
+     * but the RPC raises instead of holding: no hold, no evidence, a charged card with nothing
+     * recorded. These are the assertions that see that. MR2b removes both layers.
+     */
+    expect: ['changed_held/reason', 'changed_held/order_held', 'changed_held/evidence_recorded', 'void_held/reason'],
+    apply: (sql) => sql.replace('  IF jsonb_array_length(v_changed) > 0 THEN', '  IF false THEN'),
+  },
+  MR2b: {
+    what: 'both settle-time checks removed (6d and the paid guard): the order is paid at the stale figure',
+    expect: ['changed_held/refused', 'changed_held/nothing_paid', 'void_held/nothing_paid'],
+    apply: (sql) => MUTATIONS.MR2.apply(sql),
+    sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_charge_basis_paid_guard ON public.orders;',
+  },
+  MR2r: {
+    what: 'as MR2b, in two sessions: a late confirmation racing a guest edit is applied',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.MR2.apply(sql),
+    sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_charge_basis_paid_guard ON public.orders;',
+  },
+  MR3: {
+    what: 'a direct paid-writer (markOrderPaidConfirmed) may mark a changed order paid by card (paid guard dropped)',
+    expect: ['paid_guard/card_refused'],
+    sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_charge_basis_paid_guard ON public.orders;',
+  },
+  MR3b: {
+    what: 'the paid guard exempts only cash again (a PayToday tab settle refused on a dead card attempt)',
+    expect: ['paid_guard/paytoday_allowed'],
+    apply: (sql) =>
+      sql.replace(
+        "  IF lower(btrim(COALESCE(NEW.payment_method, ''))) IN ('cash', 'paytoday') THEN",
+        "  IF lower(btrim(COALESCE(NEW.payment_method, ''))) IN ('cash') THEN",
+      ),
+  },
+  MR9: {
+    what: "the non-gateway marker is ignored (Mark-as-Paid on a standalone card machine refused)",
+    expect: ['paid_guard/non_gateway_marker_allowed'],
+    apply: (sql) =>
+      sql.replace(
+        "  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on' THEN",
+        '  IF false THEN',
+      ),
+  },
+  MR9b: {
+    what: 'the row-value exemption is back (any writer stating settled_charge_cents skips the guard)',
+    expect: ['paid_guard/explicit_figure_is_not_an_exemption'],
+    apply: (sql) =>
+      sql.replace(
+        "  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on' THEN",
+        "  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on'\n     OR NEW.settled_charge_cents IS DISTINCT FROM OLD.settled_charge_cents THEN",
+      ),
+  },
+  MR8: {
+    what: 'an item-ledger completion ignores CONTENT changes (split card pays a guest-edited order)',
+    expect: ['split_flip/changed_order_refused'],
+    apply: (sql) =>
+      sql.replace(
+        "     AND split_part(v_now, '/', 1) = split_part(OLD.pending_charge_basis, '/', 1)\n",
+        '',
+      ),
+  },
+  MR8b: {
+    what: 'settled_charge_cents = 0 is exempt without the allocations covering the order',
+    expect: ['split_flip/zero_is_not_a_bypass'],
+    apply: (sql) =>
+      sql.replace('     AND public.order_is_fully_paid_by_allocations(OLD.id)\n', ''),
+  },
+  MR4: {
+    what: "prepare-payment's stale read is accepted (the read-basis check removed)",
+    expect: ['prepare_read/stale_read_refused'],
+    apply: (sql) =>
+      sql.replace(
+        '  IF NEW.pending_charge_read_basis IS NOT NULL AND NEW.pending_charge_read_basis <> v_current THEN',
+        '  IF false THEN',
+      ),
+  },
+  MR4r: {
+    what: 'as MR4, in two sessions: a prepare computed before a committing edit/void is recorded',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.MR4.apply(sql),
+  },
+  MR5: {
+    what: 'amend_order_lines voids a line while its order is being charged (payment_in_flight removed)',
+    expect: ['amend_inflight/refused', 'amend_inflight/line_untouched'],
+    apply: (sql) =>
+      sql.replace(
+        '        IF FOUND AND v_pending_charge IS NOT NULL\n',
+        '        IF false AND v_pending_charge IS NOT NULL\n',
+      ),
+  },
+  MR5r: {
+    what: 'as MR5, in two sessions: the void lands while the charge is being prepared',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) => MUTATIONS.MR5.apply(sql),
+  },
+  /**
+   * 20260929120300 -- WHAT THE MEASUREMENT FOUND. Removing both new locks left round 6 GREEN: the
+   * item settlement's INSERT into order_line_allocation_settlements takes FOR KEY SHARE on its tab
+   * through the `tab_id` foreign key, and settle_order_payment's tab FOR UPDATE conflicts with that,
+   * so the two were ALREADY serialised -- by a side effect of a foreign key nobody wrote for this.
+   * The explicit locks make it a stated guarantee instead of an accident (the FK is nullable,
+   * ON DELETE SET NULL). So the mutation removes the accident too, and must go RED; MR7b is the
+   * control that the order lock alone holds once the accident is gone (must stay GREEN).
+   */
+  MR7: {
+    what: 'an item settlement takes no locks (and the FK side effect is gone): it lands inside a card settlement',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql
+        .replace('  PERFORM 1 FROM public.tabs WHERE id = p_tab_id FOR UPDATE;\n', '')
+        .replace(
+          '      AND ola.tab_id = p_tab_id\n  )\n  ORDER BY o.id\n  FOR UPDATE;',
+          '      AND ola.tab_id = p_tab_id\n  )\n  ORDER BY o.id;',
+        ),
+    sqlAfterMigrations:
+      'ALTER TABLE public.order_line_allocation_settlements DROP CONSTRAINT order_line_allocation_settlements_tab_id_fkey;',
+  },
+  MR7b: {
+    what: 'CONTROL: FK side effect gone and the tab lock removed -- the order lock alone must still serialise',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    // INVERTED: must stay GREEN. Run by hand (`--mutate=MR7b`), skipped by --mutate=all.
+    manualOnly: true,
+    expect: [],
+    apply: (sql) => sql.replace('  PERFORM 1 FROM public.tabs WHERE id = p_tab_id FOR UPDATE;\n', ''),
+    sqlAfterMigrations:
+      'ALTER TABLE public.order_line_allocation_settlements DROP CONSTRAINT order_line_allocation_settlements_tab_id_fkey;',
+  },
+  MR6: {
+    what: 'the charge basis ignores voided lines (a staff void mid-charge is invisible to settlement)',
+    expect: ['void_held/reason', 'void_held/nothing_paid'],
+    apply: (sql) =>
+      sql.replace(
+        "            AND COALESCE(ol.bar_state, 'voided') = 'voided'), '')",
+        "            AND COALESCE(ol.bar_state, 'voided') = 'voided' AND false), '')",
+      ),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -562,6 +851,10 @@ function runSuite() {
   psql(readRepo('supabase/tests/amend-rpc.test.sql'))
   // Riviera #160 end to end through the real amend and settlement functions. Reuses _seed().
   psql(readRepo('supabase/tests/riviera-modena-chain.test.sql'))
+  // Third: reuses amend-rpc's _seed_amend() / _amend() as its fixture (Sprint 2026-09-29 task 5).
+  psql(readRepo('supabase/tests/charge-edit-race.test.sql'))
+  // Fourth: the non-gateway ledger (20260929100000). Reuses the same helpers, cleans up after itself.
+  psql(readRepo('supabase/tests/manual-ledger.test.sql'))
   const total = Number(psqlValue('SELECT count(*) FROM public._test_results;'))
   const failed = psqlValue(
     "SELECT string_agg(name || '  ::  ' || COALESCE(detail,''), E'\\n') " +
@@ -582,7 +875,12 @@ function runSuite() {
 function runConcurrencyProbe(script = 'supabase/tests/concurrency.test.sh') {
   // The amend probe seeds through amend-rpc.test.sql's _seed_amend(), which a concurrency-only
   // mutation run (no runSuite) would not have defined yet.
-  if (script.includes('amend-race')) runSuite()
+  if (
+    script.includes('amend-race') ||
+    script.includes('charge-edit-race') ||
+    script.includes('manual-ledger-race')
+  )
+    runSuite()
   try {
     const out = execFileSync('bash', [join(REPO, script)], {
       encoding: 'utf8',
@@ -725,11 +1023,29 @@ function normaliseModenaSnapshot(raw) {
     console.log('  modena snapshot: the rows the jest chain replays are what the RPCs write today')
   }
 }
+// A card charge and an order edit/void in two sessions (Sprint 2026-09-29 task 5).
+const baseCharge = runConcurrencyProbe('supabase/tests/charge-edit-race.test.sh')
+if (!baseCharge.passed) {
+  console.error('FAIL: the charge/edit race probe did not pass on unmutated code.')
+  console.error(baseCharge.out.split('\n').slice(-30).join('\n'))
+  process.exit(1)
+}
+console.log('  charge-edit-race probe: edits and voids refused mid-charge, stale prepares refused, late settlement held')
+
+const baseManual = runConcurrencyProbe('supabase/tests/manual-ledger-race.test.sh')
+if (!baseManual.passed) {
+  console.error('FAIL: the manual-payment race probe did not pass on unmutated code.')
+  console.error(baseManual.out.split('\n').slice(-30).join('\n'))
+  process.exit(1)
+}
+console.log('  manual-ledger-race probe: Mark-as-Paid refused mid-prepare, a late claim on a released attempt matches nothing')
 
 if (!which) process.exit(0)
 
 // ---- mutations -----------------------------------------------------------------------------
-const names = which === 'all' ? Object.keys(MUTATIONS) : [which]
+// `manualOnly` entries are measurements that must stay GREEN (defence in depth), not kills.
+const names =
+  which === 'all' ? Object.keys(MUTATIONS).filter((n) => !MUTATIONS[n].manualOnly) : [which]
 let bad = 0
 
 for (const name of names) {

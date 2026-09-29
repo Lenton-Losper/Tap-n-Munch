@@ -21,8 +21,8 @@
  */
 import {
   centsToMajor,
-  computeOrderFinancials,
   financialsWire,
+  projectOrderWithInputs,
   readProjectionInputs,
   type FinancialOrderInput,
   type FinancialsWire,
@@ -46,10 +46,7 @@ export async function attachGuestFinancials<T extends Record<string, unknown>>(
 
   let inputs: Awaited<ReturnType<typeof readProjectionInputs>>
   try {
-    inputs = await readProjectionInputs(
-      supabase,
-      orderRows.map((r) => String(r.id)),
-    )
+    inputs = await readProjectionInputs(supabase, orderRows as unknown as FinancialOrderInput[])
   } catch (e) {
     console.error('[guest-financials] projection inputs unreadable; showing stored totals', {
       error: e instanceof Error ? e.message : String(e),
@@ -59,11 +56,7 @@ export async function attachGuestFinancials<T extends Record<string, unknown>>(
 
   return rows.map((row) => {
     if (!isOrderRow(row)) return row
-    const fin = computeOrderFinancials(
-      row as unknown as FinancialOrderInput,
-      inputs.lines,
-      inputs.allocationSettledByOrder.get(String(row.id)) ?? 0,
-    )
+    const fin = projectOrderWithInputs(row as unknown as FinancialOrderInput, inputs)
     const voidedIndexes = new Set(fin.lines.filter((l) => l.voided).map((l) => l.sourceItemIndex))
     const items = Array.isArray(row.items)
       ? (row.items as unknown[]).map((item, index) =>

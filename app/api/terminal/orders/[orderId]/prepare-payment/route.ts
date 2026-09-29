@@ -273,8 +273,13 @@ export async function POST(
         // tab_id is selected so the payment intent can name the tab it belongs to. A tab-less
         // order (a POS walk-up) yields null, which the column permits. The financial columns are
         // what the projection below needs to know what is still owed.
+        //
+        // `charge_basis` is a computed field (20260929120000): the fingerprint of everything the
+        // figure below is derived from, read BEFORE the lines and settlements the projection reads.
+        // It is handed back with the expectation so the database can refuse to record a figure
+        // computed from an order that has since moved. See the expectation write.
         // order_number names a refused order to the waiter (not_claimable below).
-        .select(`${FINANCIAL_ORDER_COLUMNS}, pending_settlement_id, order_number`)
+        .select(`${FINANCIAL_ORDER_COLUMNS}, pending_settlement_id, charge_basis, order_number`)
         .in('id', settlementOrderIds)
         .eq('restaurant_id', terminal.restaurantId)
 
@@ -516,9 +521,21 @@ export async function POST(
        * So each order carries its OWN total, and the gratuity rides on the one this request names.
        * The sum is then exactly what the reader was asked for.
        */
-      let expectationError: { message: string } | null = null
+      /**
+       * THE FIGURE MUST STILL DESCRIBE THE ORDER WHEN IT IS RECORDED (Sprint 2026-09-29 brief,
+       * task 5). The read above and this write are separate round trips: a guest edit or a staff
+       * void landing between them left the reader asking for a figure computed from an order that
+       * no longer existed. `pending_charge_read_basis` hands the database the basis this figure was
+       * computed from; its stamp trigger compares it with the row as it stands under the write's
+       * row lock and raises FTCHG if they differ. Absent (an older fixture, a mock) means no check,
+       * which is exactly the behaviour before this change -- the settlement-time basis check and
+       * the in-flight edit lock still apply.
+       */
+      let expectationError: { message: string; code?: string } | null = null
+      const written: string[] = []
       for (const row of chargedRows) {
         const isTipCarrier = String(row.id) === orderId
+        const readBasis = (row as { charge_basis?: unknown }).charge_basis
         const { error } = await supabase
           .from('orders')
           .update({
@@ -527,6 +544,7 @@ export async function POST(
             pending_tip_staff_user_id: isTipCarrier && tipCents > 0 ? tipStaffUserId : null,
             // Every participating order, including the lead. The expansion keys off this.
             pending_settlement_id: settlementId,
+            ...(typeof readBasis === 'string' && readBasis ? { pending_charge_read_basis: readBasis } : {}),
           })
           .eq('id', String(row.id))
           .eq('restaurant_id', terminal.restaurantId)
@@ -534,6 +552,44 @@ export async function POST(
           expectationError = error
           break
         }
+        written.push(String(row.id))
+      }
+
+      if (expectationError && String(expectationError.code ?? '') === 'FTCHG') {
+        /**
+         * THE BILL MOVED WHILE THIS WAS BEING SET UP. Nothing has been charged: the reader is only
+         * launched from this route's 200. The expectations already written for this attempt are
+         * released so no order is left carrying half a settlement, and the waiter refreshes and
+         * charges what the table now owes.
+         */
+        if (written.length > 0) {
+          const { error: releaseError } = await supabase
+            .from('orders')
+            .update({
+              pending_charge_cents: null,
+              pending_tip_cents: 0,
+              pending_tip_staff_user_id: null,
+              pending_settlement_id: null,
+            })
+            .in('id', written)
+            .eq('restaurant_id', terminal.restaurantId)
+            .eq('pending_settlement_id', settlementId)
+          if (releaseError) {
+            console.error('[terminal/prepare-payment] could not release a refused preparation', {
+              settlementId,
+              error: releaseError.message,
+            })
+          }
+        }
+        return NextResponse.json(
+          {
+            error:
+              'This bill changed while the payment was being set up (items were added, changed or ' +
+              'cancelled). Nothing was charged. Refresh the table and take payment again.',
+            code: 'ORDER_CHANGED_DURING_PREPARE',
+          },
+          { status: 409 },
+        )
       }
 
       if (expectationError) {

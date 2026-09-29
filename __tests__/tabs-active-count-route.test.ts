@@ -79,6 +79,8 @@ function makeClient() {
              * exist here, so every order owes its stored total.
              */
             is: () => builder,
+            // Sprint 2026-09-29: paid orders' refunds are read with .overlaps() on payment_events.
+            overlaps: () => builder,
             order: () => builder,
             range: () => builder,
             then: (resolve: (v: unknown) => unknown) =>

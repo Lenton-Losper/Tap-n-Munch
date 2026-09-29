@@ -24,12 +24,12 @@ import {
 import { loadTableOwners } from '@/lib/tables/table-owners'
 import {
   centsToMajor,
-  computeOrderFinancials,
-  computeTabFinancials,
   financialsWire,
+  projectOrderWithInputs,
+  projectTabWithInputs,
   readProjectionInputs,
-  type FinancialLineInput,
   type FinancialOrderInput,
+  type ProjectionInputs,
   type OrderFinancials,
 } from '@/lib/orders/order-financials'
 
@@ -158,13 +158,17 @@ export async function GET(req: Request) {
      * coverage and no settlements, so every unpaid order owes its stored total: stale, never
      * UNDERSTATED, and it can only keep a table open, never close one over unpaid food.
      */
-    let projectionLines: FinancialLineInput[] = []
-    let settledByOrder = new Map<string, number>()
+    let projectionInputs: ProjectionInputs = {
+      lines: [],
+      allocationSettledByOrder: new Map(),
+      refundFractionByOrder: new Map(),
+    }
     if (allOrderIds.length > 0) {
       try {
-        const inputs = await readProjectionInputs(supabase, allOrderIds)
-        projectionLines = inputs.lines
-        settledByOrder = inputs.allocationSettledByOrder
+        projectionInputs = await readProjectionInputs(
+          supabase,
+          (tables ?? []).flatMap((t: any) => (t.tabs ?? []).flatMap((tab: any) => tab.orders ?? [])),
+        )
       } catch (e) {
         console.error('[terminal/tables] financial projection inputs unreadable; owing totals', {
           error: e instanceof Error ? e.message : String(e),
@@ -217,17 +221,12 @@ export async function GET(req: Request) {
       const financialsByOrder = new Map<string, OrderFinancials>(
         (tab.orders ?? []).map((order: any): [string, OrderFinancials] => [
           String(order.id),
-          computeOrderFinancials(
-            order as FinancialOrderInput,
-            projectionLines,
-            settledByOrder.get(String(order.id)) ?? 0,
-          ),
+          projectOrderWithInputs(order as FinancialOrderInput, projectionInputs),
         ]),
       )
-      const tabFinancials = computeTabFinancials(
+      const tabFinancials = projectTabWithInputs(
         (tab.orders ?? []) as FinancialOrderInput[],
-        projectionLines,
-        settledByOrder,
+        projectionInputs,
       )
 
       const orders = (tab.orders ?? []).map((order: any) => {

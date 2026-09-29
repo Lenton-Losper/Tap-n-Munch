@@ -12,7 +12,7 @@ import {
 } from '@/lib/tabs/tab-outstanding'
 import { buildTabOrderGroups } from '@/lib/tabs/tab-order-groups'
 import {
-  computeOrderFinancials,
+  projectOrderWithInputs,
   readProjectionInputs,
   type FinancialOrderInput,
   type OrderFinancials,
@@ -197,7 +197,7 @@ export async function GET(
     try {
       projection = await readProjectionInputs(
         supabase,
-        (orders as Array<{ id?: unknown }>).map((o) => String(o.id ?? '')).filter(Boolean),
+        (orders as unknown as FinancialOrderInput[]).filter((o) => String(o.id ?? '')),
       )
     } catch (e) {
       console.error('[TABS] shared tab projection read failed', e)
@@ -213,11 +213,7 @@ export async function GET(
     for (const row of orders as unknown as FinancialOrderInput[]) {
       financials.set(
         String(row.id),
-        computeOrderFinancials(
-          row,
-          projection.lines,
-          projection.allocationSettledByOrder.get(String(row.id)) ?? 0,
-        ),
+        projectOrderWithInputs(row, projection),
       )
     }
 
