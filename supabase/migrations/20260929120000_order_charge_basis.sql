@@ -63,10 +63,12 @@
 --     markOrderPaidConfirmed (device callback, verify-before-cancel, auto-cancel cron, reconcile)
 --     catches FTCHG and holds + records. Exempt, because none of them consumes the prepared card
 --     charge: cash and PayToday (counted against the live figure the waiter is shown -- an abandoned
---     card attempt must never make a table impossible to settle another way); a writer that states
---     settled_charge_cents in the same statement (the dashboard's Mark-as-Paid, which computes it
---     from the live figure); and held -> paid (a human resolving a hold, which this trigger must not
---     make unresolvable).
+--     card attempt must never make a table impossible to settle another way); a writer that sets
+--     the transaction-local marker `flashtap.non_gateway_payment` (the dashboard's Mark-as-Paid RPC,
+--     which computes its figure from the live order -- no row value can satisfy this); an item-ledger
+--     completion whose only change since the stamp is its own item settlements (settled_charge_cents
+--     = 0, every line paid by allocation, CONTENT half of the basis unchanged); and held -> paid (a
+--     human resolving a hold, which this trigger must not make unresolvable).
 --
 -- SAFE TO APPLY: additive. Three nullable columns, two functions, three triggers, and a backfill
 -- that stamps the basis on orders already carrying a prepared charge (so a charge in flight at
@@ -90,6 +92,11 @@ COMMENT ON COLUMN public.orders.pending_charge_read_basis IS
  * STABLE function would read order_lines through the statement's ORIGINAL snapshot and miss a void
  * committed while it waited -- the exact change it exists to see. VOLATILE takes a fresh snapshot
  * per query under READ COMMITTED.
+ *
+ * TWO HALVES, `<content>/<item settlements>`, each an md5. They answer different questions and the
+ * paid guard below needs them apart: an item-ledger completion (every line paid by allocation)
+ * legitimately changes the SETTLEMENT half and nothing else, while any change to the CONTENT half
+ * means the order is not the one anybody charged for.
  */
 CREATE OR REPLACE FUNCTION public.order_charge_basis(p_order_id uuid, p_total numeric, p_items jsonb)
 RETURNS text
@@ -107,8 +114,8 @@ AS $$
           WHERE ol.order_id = p_order_id
             AND (ol.kitchen_state IS NOT NULL OR ol.bar_state IS NOT NULL)
             AND COALESCE(ol.kitchen_state, 'voided') = 'voided'
-            AND COALESCE(ol.bar_state, 'voided') = 'voided'), '')
-    || '|' || COALESCE((
+            AND COALESCE(ol.bar_state, 'voided') = 'voided'), ''))
+  || '/' || md5(COALESCE((
          SELECT string_agg(s.id::text, ',' ORDER BY s.id)
            FROM public.order_line_allocations a
            JOIN public.order_line_allocation_settlements s ON s.order_line_allocation_id = a.id
@@ -226,29 +233,54 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  v_now text;
 BEGIN
-  IF lower(btrim(COALESCE(NEW.payment_status, ''))) = 'paid'
-     AND lower(btrim(COALESCE(OLD.payment_status, ''))) NOT IN
-           ('paid', 'amount_mismatch_hold', 'verification_unavailable_hold')
-     -- NOT A GATEWAY CHARGE, so there is no prepared figure it could be stale against. Cash and
-     -- PayToday are counted by a person against the live figure on screen.
-     AND lower(btrim(COALESCE(NEW.payment_method, ''))) NOT IN ('cash', 'paytoday')
-     -- A writer that states what it collected (settled_charge_cents, in the SAME statement) computed
-     -- it from the order as it stands: the dashboard's Mark-as-Paid (record_manual_order_payment,
-     -- f-manual 20260929100000), including a standalone card machine. It is not consuming the
-     -- prepared charge. Gateway writers never do this: settle_order_payment, markOrderPaidConfirmed
-     -- and the tab-settle card claim leave it to orders_record_settled_charge (which fires AFTER this
-     -- trigger, alphabetically) or write it in a later statement.
-     AND NEW.settled_charge_cents IS NOT DISTINCT FROM OLD.settled_charge_cents
-     AND OLD.pending_charge_basis IS NOT NULL
-     AND OLD.pending_charge_basis <> public.order_charge_basis(OLD.id, OLD.total, OLD.items)
+  IF lower(btrim(COALESCE(NEW.payment_status, ''))) <> 'paid'
+     OR lower(btrim(COALESCE(OLD.payment_status, ''))) IN
+          ('paid', 'amount_mismatch_hold', 'verification_unavailable_hold')
+     OR OLD.pending_charge_basis IS NULL
   THEN
-    RAISE EXCEPTION USING
-      ERRCODE = 'FTCHG',
-      MESSAGE = format('order %s changed after its card charge was prepared; not marking it paid', OLD.id),
-      HINT    = 'order_changed_since_charge_prepared';
+    RETURN NEW;
   END IF;
-  RETURN NEW;
+
+  -- NOT A GATEWAY CHARGE, so there is no prepared figure it could be stale against. Cash and
+  -- PayToday are counted by a person against the live figure on screen.
+  IF lower(btrim(COALESCE(NEW.payment_method, ''))) IN ('cash', 'paytoday') THEN
+    RETURN NEW;
+  END IF;
+
+  -- A NON-GATEWAY WRITER THAT SAYS SO, in its own transaction: the dashboard's Mark-as-Paid
+  -- (record_manual_order_payment) runs `set_config('flashtap.non_gateway_payment', 'on', true)`
+  -- before its UPDATE -- including for a standalone card machine, which is a person asserting a
+  -- figure computed from the live order, not a gateway echo of a prepared one. Transaction-local,
+  -- and not settable through a PostgREST table write, so no row value can satisfy it.
+  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on' THEN
+    RETURN NEW;
+  END IF;
+
+  v_now := public.order_charge_basis(OLD.id, OLD.total, OLD.items);
+  IF v_now = OLD.pending_charge_basis THEN
+    RETURN NEW;
+  END IF;
+
+  -- AN ITEM-LEDGER COMPLETION. The split-card path (settleAllocationsForIntent, settle-allocations)
+  -- flips the order to paid once every line is paid by allocation, stating a whole-order charge of
+  -- zero. Its own settlements are exactly what moved the SETTLEMENT half of the basis, so that half
+  -- is expected to differ -- but only that half, only with nothing charged whole-order, and only
+  -- when the allocations genuinely cover the order. A guest edit or a void since the stamp moves
+  -- the CONTENT half and is refused here like any other writer.
+  IF NEW.settled_charge_cents IS NOT DISTINCT FROM 0
+     AND split_part(v_now, '/', 1) = split_part(OLD.pending_charge_basis, '/', 1)
+     AND public.order_is_fully_paid_by_allocations(OLD.id)
+  THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION USING
+    ERRCODE = 'FTCHG',
+    MESSAGE = format('order %s changed after its card charge was prepared; not marking it paid', OLD.id),
+    HINT    = 'order_changed_since_charge_prepared';
 END;
 $$;
 

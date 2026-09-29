@@ -319,7 +319,7 @@ BEGIN
   END;
   PERFORM public._expect('paid_guard/paytoday_allowed', s = 'ok' AND public._cr_status() = 'paid', s);
 
-  -- Mark-as-Paid on a standalone card machine states what it collected from the live figure.
+  -- Stating a figure in the row is NOT an exemption: any writer, gateway included, could do that.
   PERFORM public._seed_amend();
   PERFORM public._cr_prepare(40000);
   PERFORM public._cr_expire_window();
@@ -331,7 +331,20 @@ BEGIN
     s := 'ok';
   EXCEPTION WHEN OTHERS THEN s := SQLSTATE;
   END;
-  PERFORM public._expect('paid_guard/explicit_live_figure_allowed', s = 'ok' AND public._cr_status() = 'paid', s);
+  PERFORM public._expect('paid_guard/explicit_figure_is_not_an_exemption', s = 'FTCHG', s);
+
+  -- Mark-as-Paid (standalone card machine) marks its transaction non-gateway; that IS exempt.
+  PERFORM set_config('flashtap.non_gateway_payment', 'on', true);
+  BEGIN
+    UPDATE public.orders
+       SET payment_status = 'paid', payment_method = 'card', settled_charge_cents = 45000
+     WHERE id = public._cr_order();
+    s := 'ok';
+  EXCEPTION WHEN OTHERS THEN s := SQLSTATE;
+  END;
+  -- Transaction-local: reset so no later test in this run inherits it.
+  PERFORM set_config('flashtap.non_gateway_payment', '', true);
+  PERFORM public._expect('paid_guard/non_gateway_marker_allowed', s = 'ok' AND public._cr_status() = 'paid', s);
 
   PERFORM public._seed_amend();
   PERFORM public._cr_prepare(40000);
@@ -341,6 +354,73 @@ BEGIN
   EXCEPTION WHEN OTHERS THEN s := SQLSTATE;
   END;
   PERFORM public._expect('paid_guard/unchanged_order_allowed', s = 'ok', s);
+END;
+$$;
+
+-- ==================================================================================================
+-- CR7. The SPLIT-CARD (item-ledger) paid flip -- a gateway path that writes settled_charge_cents = 0
+--      in the same statement. Order #162: Wine (N$80, line ...005) and Soup (N$40, line ...006);
+--      allocation ...005 on the wine is settled, ...006 on the soup is not. A whole-order card
+--      charge was prepared first (the stamp), then the table paid by item instead.
+--      (Mutations MR8 / MR8b must break this.)
+-- ==================================================================================================
+CREATE OR REPLACE FUNCTION public._cr_flip_162()
+RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+  -- What settleAllocationsForIntent / settle-allocations write once the order is covered.
+  UPDATE public.orders
+     SET payment_status = 'paid', payment_method = 'card', status = 'completed',
+         settled_charge_cents = 0
+   WHERE id = 'bbbbbbbb-0000-4000-8000-000000000162';
+  RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+  RETURN SQLSTATE;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public._cr_settle_soup()
+RETURNS void LANGUAGE sql AS $$
+  SELECT public.settle_order_line_allocations(
+    '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
+    ARRAY['dddddddd-0000-4000-8000-000000000006']::uuid[], 'card', 'SPLIT-1', NULL);
+$$;
+
+CREATE OR REPLACE FUNCTION public._t_cr_split_flip()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE s text;
+BEGIN
+  -- Negative control: the wine allocation covers the whole wine line; paying the soup by item
+  -- completes the order. Only the settlement half of the basis moved: allowed.
+  PERFORM public._seed_amend();
+  UPDATE public.order_line_allocations SET amount_cents = 8000
+   WHERE id = 'dddddddd-0000-4000-8000-000000000005';
+  UPDATE public.orders SET pending_charge_cents = 4000 WHERE id = 'bbbbbbbb-0000-4000-8000-000000000162';
+  PERFORM public._cr_settle_soup();
+  s := public._cr_flip_162();
+  PERFORM public._expect('split_flip/allocation_completion_allowed', s = 'ok', s);
+
+  -- The same completion on an order a guest CHANGED after the stamp: refused.
+  PERFORM public._seed_amend();
+  UPDATE public.order_line_allocations SET amount_cents = 8000
+   WHERE id = 'dddddddd-0000-4000-8000-000000000005';
+  UPDATE public.orders SET pending_charge_cents = 4000 WHERE id = 'bbbbbbbb-0000-4000-8000-000000000162';
+  UPDATE public.orders SET pending_charge_at = now() - interval '10 minutes'
+   WHERE id = 'bbbbbbbb-0000-4000-8000-000000000162';
+  UPDATE public.orders
+     SET items = items || '[{"name":"Dessert","quantity":1,"price":50,"total":50}]'::jsonb,
+         total = total + 50
+   WHERE id = 'bbbbbbbb-0000-4000-8000-000000000162';
+  PERFORM public._cr_settle_soup();
+  s := public._cr_flip_162();
+  PERFORM public._expect('split_flip/changed_order_refused', s = 'FTCHG', s);
+
+  -- settled_charge_cents = 0 on an order the allocations do NOT cover (half the wine unpaid): the
+  -- zero is not an exemption on its own.
+  PERFORM public._seed_amend();
+  UPDATE public.orders SET pending_charge_cents = 8000 WHERE id = 'bbbbbbbb-0000-4000-8000-000000000162';
+  PERFORM public._cr_settle_soup();
+  s := public._cr_flip_162();
+  PERFORM public._expect('split_flip/zero_is_not_a_bypass', s = 'FTCHG', s);
 END;
 $$;
 
@@ -356,7 +436,8 @@ DECLARE
     '_t_cr_void_settlement_held',
     '_t_cr_not_a_change',
     '_t_cr_prepare_read_basis',
-    '_t_cr_paid_guard'
+    '_t_cr_paid_guard',
+    '_t_cr_split_flip'
   ];
 BEGIN
   FOREACH t IN ARRAY tests LOOP
