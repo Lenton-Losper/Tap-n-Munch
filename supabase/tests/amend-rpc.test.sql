@@ -299,8 +299,13 @@ BEGIN
     public._line_state('cccccccc-0000-4000-8000-000000000004'));
 
   -- The reduction is the worse half of the defect: it would re-bill the surviving unit.
+  -- FIXTURE REWRITE of a lined order's items, which 20260929120400 refuses (FTLIN) for every
+  -- application writer. Items and line are rewritten together here, index kept, so they still
+  -- agree; the guard is lifted for this one statement only.
+  ALTER TABLE public.orders DISABLE TRIGGER orders_items_immutable_when_lined;
   UPDATE public.orders SET items = '[{"name":"Salad","quantity":2,"price":25,"total":50}]'::jsonb
    WHERE id = 'bbbbbbbb-0000-4000-8000-000000000161';
+  ALTER TABLE public.orders ENABLE TRIGGER orders_items_immutable_when_lined;
   UPDATE public.order_lines SET quantity = 2 WHERE id = 'cccccccc-0000-4000-8000-000000000004';
   r := public._amend('[{"line_id":"cccccccc-0000-4000-8000-000000000004","new_quantity":1}]', 904);
   PERFORM public._expect('amend_paid/reduction_refused_no_rebill',

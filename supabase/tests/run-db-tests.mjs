@@ -57,6 +57,10 @@ const MIGRATIONS = [
   'supabase/migrations/20260929120000_order_charge_basis.sql',
   'supabase/migrations/20260929120100_settle_holds_order_changed_since_charge.sql',
   'supabase/migrations/20260929120200_amend_refuses_payment_in_flight.sql',
+  // Copies 20260829170000's settle_order_line_allocations (the first entry above) plus the locks.
+  'supabase/migrations/20260929120300_allocation_settle_locks_orders.sql',
+  // Copies 20260829170000's order_is_fully_paid_by_allocations plus the every-item-has-a-line guard.
+  'supabase/migrations/20260929120400_order_items_have_lines.sql',
   // Task 7 merge point 2: settle_order_payment PROMOTES a device sale row (redefines 120100).
   'supabase/migrations/20260929130000_settle_promotes_device_sale_row.sql',
   // record_terminal_refund_event caps refunds at a VERIFIED figure (needs 20260929110000).
@@ -546,15 +550,46 @@ const MUTATIONS = {
     sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_charge_basis_paid_guard ON public.orders;',
   },
   MR3b: {
-    what: 'the paid guard exempts only cash again (PayToday / Mark-as-Paid refused on a dead card attempt)',
-    expect: ['paid_guard/paytoday_allowed', 'paid_guard/explicit_live_figure_allowed'],
+    what: 'the paid guard exempts only cash again (a PayToday tab settle refused on a dead card attempt)',
+    expect: ['paid_guard/paytoday_allowed'],
     apply: (sql) =>
-      sql
-        .replace(
-          "     AND lower(btrim(COALESCE(NEW.payment_method, ''))) NOT IN ('cash', 'paytoday')\n",
-          "     AND lower(btrim(COALESCE(NEW.payment_method, ''))) <> 'cash'\n",
-        )
-        .replace('     AND NEW.settled_charge_cents IS NOT DISTINCT FROM OLD.settled_charge_cents\n', ''),
+      sql.replace(
+        "  IF lower(btrim(COALESCE(NEW.payment_method, ''))) IN ('cash', 'paytoday') THEN",
+        "  IF lower(btrim(COALESCE(NEW.payment_method, ''))) IN ('cash') THEN",
+      ),
+  },
+  MR9: {
+    what: "the non-gateway marker is ignored (Mark-as-Paid on a standalone card machine refused)",
+    expect: ['paid_guard/non_gateway_marker_allowed'],
+    apply: (sql) =>
+      sql.replace(
+        "  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on' THEN",
+        '  IF false THEN',
+      ),
+  },
+  MR9b: {
+    what: 'the row-value exemption is back (any writer stating settled_charge_cents skips the guard)',
+    expect: ['paid_guard/explicit_figure_is_not_an_exemption'],
+    apply: (sql) =>
+      sql.replace(
+        "  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on' THEN",
+        "  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on'\n     OR NEW.settled_charge_cents IS DISTINCT FROM OLD.settled_charge_cents THEN",
+      ),
+  },
+  MR8: {
+    what: 'an item-ledger completion ignores CONTENT changes (split card pays a guest-edited order)',
+    expect: ['split_flip/changed_order_refused'],
+    apply: (sql) =>
+      sql.replace(
+        "     AND split_part(v_now, '/', 1) = split_part(OLD.pending_charge_basis, '/', 1)\n",
+        '',
+      ),
+  },
+  MR8b: {
+    what: 'settled_charge_cents = 0 is exempt without the allocations covering the order',
+    expect: ['split_flip/zero_is_not_a_bypass'],
+    apply: (sql) =>
+      sql.replace('     AND public.order_is_fully_paid_by_allocations(OLD.id)\n', ''),
   },
   MR4: {
     what: "prepare-payment's stale read is accepted (the read-basis check removed)",
@@ -587,6 +622,62 @@ const MUTATIONS = {
     concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
     expect: [],
     apply: (sql) => MUTATIONS.MR5.apply(sql),
+  },
+  /**
+   * 20260929120300 -- WHAT THE MEASUREMENT FOUND. Removing both new locks left round 6 GREEN: the
+   * item settlement's INSERT into order_line_allocation_settlements takes FOR KEY SHARE on its tab
+   * through the `tab_id` foreign key, and settle_order_payment's tab FOR UPDATE conflicts with that,
+   * so the two were ALREADY serialised -- by a side effect of a foreign key nobody wrote for this.
+   * The explicit locks make it a stated guarantee instead of an accident (the FK is nullable,
+   * ON DELETE SET NULL). So the mutation removes the accident too, and must go RED; MR7b is the
+   * control that the order lock alone holds once the accident is gone (must stay GREEN).
+   */
+  MR7: {
+    what: 'an item settlement takes no locks (and the FK side effect is gone): it lands inside a card settlement',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql
+        .replace('  PERFORM 1 FROM public.tabs WHERE id = p_tab_id FOR UPDATE;\n', '')
+        .replace(
+          '      AND ola.tab_id = p_tab_id\n  )\n  ORDER BY o.id\n  FOR UPDATE;',
+          '      AND ola.tab_id = p_tab_id\n  )\n  ORDER BY o.id;',
+        ),
+    sqlAfterMigrations:
+      'ALTER TABLE public.order_line_allocation_settlements DROP CONSTRAINT order_line_allocation_settlements_tab_id_fkey;',
+  },
+  MR7b: {
+    what: 'CONTROL: FK side effect gone and the tab lock removed -- the order lock alone must still serialise',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-edit-race.test.sh',
+    // INVERTED: must stay GREEN. Run by hand (`--mutate=MR7b`), skipped by --mutate=all.
+    manualOnly: true,
+    expect: [],
+    apply: (sql) => sql.replace('  PERFORM 1 FROM public.tabs WHERE id = p_tab_id FOR UPDATE;\n', ''),
+    sqlAfterMigrations:
+      'ALTER TABLE public.order_line_allocation_settlements DROP CONSTRAINT order_line_allocation_settlements_tab_id_fkey;',
+  },
+  MR10: {
+    what: 'order_is_fully_paid_by_allocations ignores items with no line again (an unlined item reads as paid)',
+    expect: ['items_need_lines/unlined_item_is_not_paid'],
+    apply: (sql) =>
+      sql.replace(
+        "  IF NOT EXISTS (\n       SELECT 1 FROM public.orders o\n        WHERE o.id = p_order_id AND jsonb_typeof(o.items) = 'array')\n     OR EXISTS (",
+        "  IF false AND (NOT EXISTS (\n       SELECT 1 FROM public.orders o\n        WHERE o.id = p_order_id AND jsonb_typeof(o.items) = 'array')\n     OR EXISTS (",
+      ).replace(
+        "               AND ol.source_item_index = (e.ord - 1)::integer))\n  THEN\n    RETURN false;",
+        "               AND ol.source_item_index = (e.ord - 1)::integer)))\n  THEN\n    RETURN false;",
+      ),
+  },
+  MR11: {
+    what: "a lined order's items can be rewritten again (a guest addition with no line)",
+    expect: ['split_flip/guest_add_to_lined_order_refused'],
+    apply: (sql) =>
+      sql.replace(
+        '  IF (NEW.items IS DISTINCT FROM OLD.items OR NEW.total IS DISTINCT FROM OLD.total)\n     AND EXISTS (SELECT 1 FROM public.order_lines WHERE order_id = OLD.id)',
+        '  IF false AND (NEW.items IS DISTINCT FROM OLD.items OR NEW.total IS DISTINCT FROM OLD.total)\n     AND EXISTS (SELECT 1 FROM public.order_lines WHERE order_id = OLD.id)',
+      ),
   },
   MR6: {
     what: 'the charge basis ignores voided lines (a staff void mid-charge is invisible to settlement)',
@@ -841,7 +932,9 @@ console.log('  charge-edit-race probe: edits and voids refused mid-charge, stale
 if (!which) process.exit(0)
 
 // ---- mutations -----------------------------------------------------------------------------
-const names = which === 'all' ? Object.keys(MUTATIONS) : [which]
+// `manualOnly` entries are measurements that must stay GREEN (defence in depth), not kills.
+const names =
+  which === 'all' ? Object.keys(MUTATIONS).filter((n) => !MUTATIONS[n].manualOnly) : [which]
 let bad = 0
 
 for (const name of names) {

@@ -190,6 +190,16 @@ describe('the route refuses while a card is being charged', () => {
     expect(body.success).toBe(true)
   })
 
+  it('PATCH: an order with fulfilment lines -- the database refuses (FTLIN) and the edit is not_editable_status', async () => {
+    // 20260929120400: a lined order's items are never rewritten, so an addition can never exist
+    // without a line (stations would not see it; the item-ledger paid check could not count it).
+    writeOutcome = { data: null, error: { code: 'FTLIN', message: 'order has fulfilment lines' } }
+    const { status, body } = await call(PATCH, 'PATCH', REDUCE)
+    expect(status).toBe(409)
+    expect(body.reason).toBe('not_editable_status')
+    expect(body.error).toBe(EDIT_COPY.notEditable)
+  })
+
   it('negative control: a different database error is still a 500, not a disguised refusal', async () => {
     writeOutcome = { data: null, error: { code: '23505', message: 'something else' } }
     const { status } = await call(PATCH, 'PATCH', REDUCE)
