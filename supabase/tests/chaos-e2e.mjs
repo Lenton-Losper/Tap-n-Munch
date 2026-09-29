@@ -6,6 +6,12 @@
  *   node supabase/tests/chaos-e2e.mjs --mutate=V1     apply one mutation, expect its checkpoint RED
  *   node supabase/tests/chaos-e2e.mjs --mutate=all    every mutation, one fresh build each
  *   node supabase/tests/chaos-e2e.mjs --keep          leave the database and PostgREST running
+ *   node supabase/tests/chaos-e2e.mjs --scenario=payment-simulation
+ *                                                     run __tests__/chaos/<name>.chaos.ts instead of the
+ *                                                     tab lifecycle (same build, same safety). A
+ *                                                     MUTATION belongs to the scenario it names
+ *                                                     (`scenario:`, default tab-lifecycle); --mutate=all
+ *                                                     runs the chosen scenario's own mutations.
  *
  * WHAT IS REAL. The scenario in __tests__/chaos/tab-lifecycle.chaos.ts imports the Next route
  * modules themselves (rounds, amend, lines, allocate, settle-allocations, settle, prepare-payment,
@@ -62,7 +68,10 @@ const PGRST_CONTAINER = `ft-chaos-pgrst-${DB}`.replace(/_/g, '-')
 const PGRST_LOGIN = 'ft_chaos_authenticator'
 const PGRST_PASSWORD = 'chaos-local-only'
 const REPO = new URL('../..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
-const CHAOS_TEST = '__tests__/chaos/tab-lifecycle.chaos.ts'
+const SCENARIO = process.argv.find((a) => a.startsWith('--scenario='))?.slice('--scenario='.length) || 'tab-lifecycle'
+if (!/^[a-z][a-z0-9-]{0,60}$/.test(SCENARIO)) throw new Error(`--scenario must be a plain file stem, got ${SCENARIO}`)
+const CHAOS_TEST = `__tests__/chaos/${SCENARIO}.chaos.ts`
+if (!existsSync(join(REPO, CHAOS_TEST))) throw new Error(`no scenario file ${CHAOS_TEST}`)
 
 // ------------------------------------------------------------------------------------------------
 // MIGRATION SELECTION: model PRODUCTION.
@@ -186,6 +195,37 @@ const MUTATIONS = {
       file: 'app/api/orders/history/route.ts',
       from: '      grossPaidCents += computeOrderFinancials(',
       to: '      grossPaidCents += Math.round(Number(order.total) * 100) + 0 * computeOrderFinancials(',
+    },
+  },
+  // --- payment-simulation (node supabase/tests/chaos-e2e.mjs --scenario=payment-simulation --mutate=all)
+  PS1: {
+    scenario: 'payment-simulation',
+    what: 'prepare-payment asks the reader for orders.total instead of what is still owed',
+    expect: 'S6 partial',
+    ts: {
+      file: 'app/api/terminal/orders/[orderId]/prepare-payment/route.ts',
+      from: '        financials.get(String(row.id))?.outstandingCents ?? 0\n',
+      to: '        Math.round(Number((row as { total?: unknown }).total) * 100) + 0 * (financials.get(String(row.id))?.outstandingCents ?? 0)\n',
+    },
+  },
+  PS2: {
+    scenario: 'payment-simulation',
+    what: 'an order.query status nobody recognises is read as "not paid" and the order is cancelled',
+    expect: 'S3 ambiguous',
+    ts: {
+      file: 'lib/payments/handle-terminal-payment-failed.ts',
+      from: '      if (!finatic.statusRecognised) {\n',
+      to: '      if (false && !finatic.statusRecognised) {\n',
+    },
+  },
+  PS3: {
+    scenario: 'payment-simulation',
+    what: 'the device-callback claim no longer requires a claimable status (a replayed success re-claims)',
+    expect: 'S5 replay',
+    ts: {
+      file: 'lib/payments/mark-order-paid-confirmed.ts',
+      from: "    .in('payment_status', [...fromPaymentStatuses])\n",
+      to: "    .not('payment_status', 'is', null)\n",
     },
   },
   B1: {
@@ -397,6 +437,7 @@ async function runOnce(mutation, { keep }) {
     const serviceKey = signJwt({ role: 'service_role', iss: 'chaos-e2e', iat: Math.floor(Date.now() / 1000) }, secret)
     const outDir = mkdtempSync(join(tmpdir(), 'chaos-'))
     const outFile = join(outDir, 'result.json')
+    const reportFile = join(outDir, 'report.json')
     // ASYNC spawn: the /rest/v1 proxy lives in THIS process, and spawnSync would block the event
     // loop that serves it -- every route call would hang until jest's timeout.
     const child = await runChild(
@@ -416,6 +457,7 @@ async function runOnce(mutation, { keep }) {
           FT_CHAOS_SERVICE_KEY: serviceKey,
           FT_CHAOS_DB: DB,
           FT_CHAOS_CONTAINER: CONTAINER,
+          FT_CHAOS_REPORT: reportFile,
         },
       },
     )
@@ -427,6 +469,14 @@ async function runOnce(mutation, { keep }) {
       throw new Error('jest produced no result file')
     }
     const result = JSON.parse(readFileSync(outFile, 'utf8'))
+    // A scenario may write a summary table of its own (payment-simulation does).
+    if (existsSync(reportFile)) {
+      const report = JSON.parse(readFileSync(reportFile, 'utf8'))
+      console.log('\n  REPORT: scenario | layer | expected cents | gateway asked | ledger | allocated/settled | final state | result')
+      for (const r of report.rows ?? []) {
+        console.log(`    ${[r.scenario, r.layer, r.expected, r.asked, r.ledger, r.allocated, r.final, r.result].join(' | ')}`)
+      }
+    }
     const tests = (result.testResults[0]?.assertionResults ?? [])
     return { tests, out, keepInfo: { proxyPort, pgrstPort } }
   } finally {
@@ -457,13 +507,23 @@ async function main() {
   const args = process.argv.slice(2)
   const keep = args.includes('--keep')
   const mutateArg = args.find((a) => a.startsWith('--mutate='))?.slice('--mutate='.length)
-  const ids = !mutateArg ? [null] : mutateArg === 'all' ? Object.keys(MUTATIONS) : mutateArg.split(',')
+  const scenarioOf = (id) => MUTATIONS[id]?.scenario ?? 'tab-lifecycle'
+  const ids = !mutateArg
+    ? [null]
+    : mutateArg === 'all'
+      ? Object.keys(MUTATIONS).filter((id) => scenarioOf(id) === SCENARIO)
+      : mutateArg.split(',')
+  for (const id of ids) {
+    if (id && MUTATIONS[id] && scenarioOf(id) !== SCENARIO) {
+      throw new Error(`mutation ${id} belongs to --scenario=${scenarioOf(id)}, not ${SCENARIO}`)
+    }
+  }
 
   let failed = 0
   for (const id of ids) {
     if (id && !MUTATIONS[id]) throw new Error(`unknown mutation ${id}; known: ${Object.keys(MUTATIONS).join(', ')}`)
     const mutation = id ? { id, ...MUTATIONS[id] } : null
-    console.log(id ? `\n=== MUTATION ${id}: ${mutation.what}` : '\n=== CHAOS SCENARIO (unmutated)')
+    console.log(id ? `\n=== MUTATION ${id}: ${mutation.what}` : `\n=== CHAOS SCENARIO ${SCENARIO} (unmutated)`)
     const { tests, out } = await runOnce(mutation, { keep })
     if (tests.length === 0) {
       console.log(out.slice(-6000))
