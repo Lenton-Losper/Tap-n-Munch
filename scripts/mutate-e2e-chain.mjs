@@ -130,6 +130,18 @@ const MUTATIONS = [
     expectRed: ['EDITED re-send (Modena removed, same key)'],
     edits: [['app/api/terminal/rounds/route.ts', '!isSameRound(', 'false && !isSameRound(', 2]],
   },
+  {
+    id: 'MM9',
+    what: 'order-history revenue uses the refund-aware projection, subtracting refunds twice',
+    suite: MODENA,
+    expectRed: ['the refund is subtracted ONCE'],
+    // Single-line anchor: the refund-aware figure is added and the gross one multiplied away.
+    edits: [[
+      'app/api/orders/history/route.ts',
+      'grossPaidCents += computeOrderFinancials(',
+      'grossPaidCents += projectOrderWithInputs(order as FinancialOrderInput, inputs).paidCents + 0 * computeOrderFinancials(',
+    ]],
+  },
   // ---- Phase 5: the emailed invoice ---------------------------------------------------------
   {
     id: 'MI1',

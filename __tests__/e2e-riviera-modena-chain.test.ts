@@ -429,6 +429,31 @@ describe('A. Modena cancelled -- the void APPLIES', () => {
     expect(after.body.financials.tab).toMatchObject({ live_cents: 96500, paid_cents: 96500, outstanding_cents: 0, overpaid_cents: 0 })
   })
 
+  it('order-history revenue after a refund: N$965 taken, N$100 refunded, revenue N$865 -- the refund is subtracted ONCE', async () => {
+    // Integration seam (f-chaos x f-manual): the history summary sums GROSS paid per order and then
+    // subtracts refunds once. Using the refund-aware projection there would subtract them twice.
+    await walk()
+    await prepare(tabOrderIds())
+    const settled = SNAP.branch_a.find((s) => s.kind === 'settle_order_payment')!
+    mockReplay!.advanceTo(settled)
+    applyState(mockDb, settled.post)
+    const sale = mockDb.rows('payment_events').find((e) => e.event_type === 'sale')!
+    const before = await history()
+    expect(before.body.totalRevenue).toBe(965)
+    mockDb.rows('payment_events').push({
+      id: 'refund-e2e-1',
+      restaurant_id: R,
+      event_type: 'refund_succeeded',
+      amount: 100,
+      order_ids: sale.order_ids,
+      origin_business_order_no: sale.business_order_no,
+      created_at: '2026-09-24T21:00:00.000Z',
+    })
+    const after = await history()
+    expect(after.status).toBe(200)
+    expect(after.body.totalRevenue).toBe(865)
+  })
+
   it('the cash settlement: N$1,205 is refused as AMOUNT_MISMATCH (expected 965); N$965 is taken and recorded', async () => {
     await walk()
     const ids = tabOrderIds()
