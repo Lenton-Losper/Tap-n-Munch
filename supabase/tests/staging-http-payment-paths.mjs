@@ -152,11 +152,24 @@ try {
   // ---- F: card failure --------------------------------------------------------------------------
   const prep = await http('POST', `/api/terminal/orders/${A.body?.order_id}/prepare-payment`, { order_ids: [A.body?.order_id] })
   ok('F1 card prepare for A charges the live 75.00', prep.status === 200 && Number(prep.body?.chargeCents) === 7500, `status=${prep.status} ${JSON.stringify(prep.body).slice(0, 160)}`)
-  const failed = await http('POST', `/api/terminal/orders/${A.body?.order_id}/payment`, { status: 'failed', amount: 75, reference: MARKER + '-fail', cancellationReason: 'declined' })
+  // D1 (owner ruling 2026-09-29): a gateway-VERIFIED decline on a TAB order. The staging-only stub
+  // makes Finatic answer "recognisably not paid" (the real sandbox has no record of an uncharged
+  // reference and would answer E04111, which never reaches the decline branch). Honoured only when
+  // the worker's ENVIRONMENT is staging (lib/payments/staging-finatic-stub.ts).
+  const failed = await http('POST', `/api/terminal/orders/${A.body?.order_id}/payment`, { status: 'failed', amount: 75, reference: MARKER + '-fail', cancellationReason: 'declined', __stagingFinaticStub: 'not_paid' })
   const aAfter = await orderRow(A.body?.order_id)
   const saleRows = (await q('select count(*)::int n from public.payment_events where order_ids && $1::uuid[]', [[A.body?.order_id]]))[0].n
   const ngRows = (await q('select count(*)::int n from public.non_gateway_payment_events where $1 = any(order_ids)', [A.body?.order_id]))[0].n
-  ok('F2 device reports FAILED: order still owes, no gateway or non-gateway ledger row', failed.status < 500 && aAfter?.payment_status !== 'paid' && saleRows === 0 && ngRows === 0, `status=${failed.status} ps=${aAfter?.payment_status} sale=${saleRows} ng=${ngRows}`)
+  ok('F2 device reports FAILED: no gateway or non-gateway ledger row', failed.status < 500 && aAfter?.payment_status !== 'paid' && saleRows === 0 && ngRows === 0, `status=${failed.status} ps=${aAfter?.payment_status} sale=${saleRows} ng=${ngRows}`)
+  const [aPend] = await q('select status, payment_status, pending_charge_cents, cancellation_reason from public.orders where id = $1', [A.body?.order_id])
+  const intentsA = await q('select status from public.terminal_payment_intents where $1 = any(order_ids)', [A.body?.order_id])
+  const kept = (await q("select count(*)::int n from public.audit_logs where entity_id = $1 and action = 'payment.attempt_failed_order_kept'", [A.body?.order_id]))[0].n
+  ok('F3 D1: a verified decline on a TAB keeps the order owed (attempt_released_order_kept), attempt released, intent failed, audited',
+    failed.body?.outcome === 'attempt_released_order_kept' && aPend?.payment_status !== 'cancelled' && aPend?.status !== 'cancelled' && aPend?.pending_charge_cents == null && intentsA.every((i) => i.status === 'failed') && kept === 1,
+    `outcome=${failed.body?.outcome} order=${aPend?.status}/${aPend?.payment_status} reason=${aPend?.cancellation_reason} pending=${aPend?.pending_charge_cents} intents=${intentsA.map((i) => i.status)} kept=${kept}`)
+  const linesF = await http('GET', `/api/terminal/tabs/${made.tab}/lines`)
+  const owedA = linesF.body?.financials?.orders?.[A.body?.order_id]?.outstanding_cents
+  ok('F4 D1: the tab still owes the full 75.00 for order A', owedA === 7500, `outstanding=${owedA}`)
 
   // ---- N: SETTLEMENT_SET_NOT_CLAIMABLE ----------------------------------------------------------
   const B = await round('B', [{ menuItemId: made.items.water, name: 'Water', quantity: 1 }])
