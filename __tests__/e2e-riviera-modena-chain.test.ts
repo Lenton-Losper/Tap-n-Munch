@@ -39,7 +39,7 @@ import {
   seedModenaDb,
   type ModenaStep,
 } from './helpers/modena-rpc-replay'
-import { computeOrderFinancials, readProjectionInputs, type FinancialOrderInput } from '@/lib/orders/order-financials'
+import { projectOrderWithInputs, readProjectionInputs, type FinancialOrderInput } from '@/lib/orders/order-financials'
 
 let mockDb: InMemoryDb
 let mockReplay: ReturnType<typeof replayingRpc> | null = null
@@ -390,12 +390,11 @@ describe('A. Modena cancelled -- the void APPLIES', () => {
     const liveSum = (h.body.orders as Json[]).reduce((s, o) => s + Math.round(Number(o.live_amount) * 100), 0)
     expect(liveSum).toBe(96500)
 
-    // components/orders-dashboard.tsx: readProjectionInputs + computeOrderFinancials over its rows.
-    const inputs = await readProjectionInputs(mockDb.client(), tabOrderIds())
-    const dash = mockDb
-      .rows('orders')
-      .filter((o) => o.tab_id === TAB)
-      .map((o) => computeOrderFinancials(o as unknown as FinancialOrderInput, inputs.lines, 0))
+    // components/orders-dashboard.tsx: readProjectionInputs + projectOrderWithInputs over its rows
+    // (the one shared path since f-manual made every projection refund-aware).
+    const tabRows = mockDb.rows('orders').filter((o) => o.tab_id === TAB) as unknown as FinancialOrderInput[]
+    const inputs = await readProjectionInputs(mockDb.client(), tabRows)
+    const dash = tabRows.map((o) => projectOrderWithInputs(o, inputs))
     expect(dash.find((f) => f.orderId === O160)).toMatchObject({ liveCents: 22500, voidedCents: 172000 })
     expect(dash.reduce((s, f) => s + f.liveCents, 0)).toBe(96500)
   })
