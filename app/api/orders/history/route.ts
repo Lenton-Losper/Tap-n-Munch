@@ -18,6 +18,7 @@ import { preLaunchRestaurant } from '@/lib/reporting/pre-launch-restaurants'
 import { readOrderPaymentProgress } from '@/lib/payments/read-order-payment-progress'
 import {
   computeOrderFinancials,
+  FINANCIAL_ORDER_COLUMNS,
   readProjectionInputs,
   type FinancialOrderInput,
 } from '@/lib/orders/order-financials'
@@ -239,7 +240,7 @@ async function loadOrderHistory(req: Request): Promise<Response> {
 
   let summaryQuery = supabase
     .from('orders')
-    .select('id, total')
+    .select(FINANCIAL_ORDER_COLUMNS)
     .eq('restaurant_id', restaurantUuid)
     .eq('payment_status', 'paid')
     .gte('placed_at', startIso)
@@ -260,7 +261,7 @@ async function loadOrderHistory(req: Request): Promise<Response> {
   // Fixing only the URI ceiling would have turned a blank 500 into a WRONG REVENUE FIGURE that
   // looks right, which is worse for a trading restaurant than an obvious failure.
   const SUMMARY_PAGE = 1000
-  const summary: { id: string; total: number }[] = []
+  const summary: FinancialOrderInput[] = []
   for (let offset = 0; ; offset += SUMMARY_PAGE) {
     const { data: page, error: summaryError } = await summaryQuery.range(
       offset,
@@ -279,7 +280,33 @@ async function loadOrderHistory(req: Request): Promise<Response> {
     summaryOrderIds,
   )
 
-  const grossPaid = summary.reduce((sum, o) => sum + (Number(o.total) || 0), 0)
+  /**
+   * REVENUE IS WHAT WAS TAKEN, NOT WHAT WAS ONCE ORDERED (chaos E2E, sprint 2026-09-29).
+   *
+   * This summed `orders.total`, which is the ORIGINAL order value and never changes when a line is
+   * voided or a quantity is reduced (amend_order_lines voids the line and leaves the total alone).
+   * Measured through the real routes on the chaos tab: N$969.50 of cancelled and reduced items were
+   * reported as revenue -- N$3,069.00 against N$2,099.50 actually taken. Each order's paid figure
+   * now comes from the shared projection (C1), which reads the recorded charge; a legacy order
+   * with no recorded charge still counts its total, exactly as before.
+   *
+   * CHUNKED: the projection reads lines with `.in('order_id', ids)`, and #322 above is why a
+   * 1000-id filter is not an option.
+   */
+  const SUMMARY_PROJECTION_CHUNK = 200
+  let grossPaidCents = 0
+  for (let i = 0; i < summary.length; i += SUMMARY_PROJECTION_CHUNK) {
+    const chunk = summary.slice(i, i + SUMMARY_PROJECTION_CHUNK)
+    const inputs = await readProjectionInputs(supabase, chunk.map((o) => String(o.id)))
+    for (const order of chunk) {
+      grossPaidCents += computeOrderFinancials(
+        order,
+        inputs.lines,
+        inputs.allocationSettledByOrder.get(String(order.id)) ?? 0,
+      ).paidCents
+    }
+  }
+  const grossPaid = grossPaidCents / 100
   const refundedDistinct = sumDistinctRefundedAmounts(
     summary.map((o) => String(o.id)),
     summaryProjections,
