@@ -42,6 +42,10 @@ const MUTATIONS = {
     what: "the database's FTINF refusal becomes a 500 instead of payment_in_flight",
     edits: [[EDIT_ROUTE, "    if (writeError && String((writeError as { code?: unknown }).code ?? '') === 'FTINF') {", '    if (false /* E3 */) {']],
   },
+  E4: {
+    what: "the database's FTLIN refusal (lined order) becomes a 500 instead of not_editable_status",
+    edits: [[EDIT_ROUTE, "    if (writeError && String((writeError as { code?: unknown }).code ?? '') === 'FTLIN') {", '    if (false /* E4 */) {']],
+  },
   P1: {
     what: 'prepare-payment stops handing the database the basis it read',
     edits: [[PREPARE, "            ...(typeof readBasis === 'string' && readBasis ? { pending_charge_read_basis: readBasis } : {}),", '            /* P1 */']],
