@@ -494,15 +494,46 @@ const MUTATIONS = {
     sqlAfterMigrations: 'DROP TRIGGER IF EXISTS orders_charge_basis_paid_guard ON public.orders;',
   },
   MR3b: {
-    what: 'the paid guard exempts only cash again (PayToday / Mark-as-Paid refused on a dead card attempt)',
-    expect: ['paid_guard/paytoday_allowed', 'paid_guard/explicit_live_figure_allowed'],
+    what: 'the paid guard exempts only cash again (a PayToday tab settle refused on a dead card attempt)',
+    expect: ['paid_guard/paytoday_allowed'],
     apply: (sql) =>
-      sql
-        .replace(
-          "     AND lower(btrim(COALESCE(NEW.payment_method, ''))) NOT IN ('cash', 'paytoday')\n",
-          "     AND lower(btrim(COALESCE(NEW.payment_method, ''))) <> 'cash'\n",
-        )
-        .replace('     AND NEW.settled_charge_cents IS NOT DISTINCT FROM OLD.settled_charge_cents\n', ''),
+      sql.replace(
+        "  IF lower(btrim(COALESCE(NEW.payment_method, ''))) IN ('cash', 'paytoday') THEN",
+        "  IF lower(btrim(COALESCE(NEW.payment_method, ''))) IN ('cash') THEN",
+      ),
+  },
+  MR9: {
+    what: "the non-gateway marker is ignored (Mark-as-Paid on a standalone card machine refused)",
+    expect: ['paid_guard/non_gateway_marker_allowed'],
+    apply: (sql) =>
+      sql.replace(
+        "  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on' THEN",
+        '  IF false THEN',
+      ),
+  },
+  MR9b: {
+    what: 'the row-value exemption is back (any writer stating settled_charge_cents skips the guard)',
+    expect: ['paid_guard/explicit_figure_is_not_an_exemption'],
+    apply: (sql) =>
+      sql.replace(
+        "  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on' THEN",
+        "  IF COALESCE(current_setting('flashtap.non_gateway_payment', true), '') = 'on'\n     OR NEW.settled_charge_cents IS DISTINCT FROM OLD.settled_charge_cents THEN",
+      ),
+  },
+  MR8: {
+    what: 'an item-ledger completion ignores CONTENT changes (split card pays a guest-edited order)',
+    expect: ['split_flip/changed_order_refused'],
+    apply: (sql) =>
+      sql.replace(
+        "     AND split_part(v_now, '/', 1) = split_part(OLD.pending_charge_basis, '/', 1)\n",
+        '',
+      ),
+  },
+  MR8b: {
+    what: 'settled_charge_cents = 0 is exempt without the allocations covering the order',
+    expect: ['split_flip/zero_is_not_a_bypass'],
+    apply: (sql) =>
+      sql.replace('     AND public.order_is_fully_paid_by_allocations(OLD.id)\n', ''),
   },
   MR4: {
     what: "prepare-payment's stale read is accepted (the read-basis check removed)",
