@@ -229,8 +229,8 @@ describe("D2 — 'never started' requires the attempt's own operator cancel", ()
   });
 });
 
-describe('D2 — the drafted "no confirmation yet" copy', () => {
-  it('is the drafted text, verbatim (owner ruling 2026-09-29 (D2); text DRAFTED, awaiting sign-off)', () => {
+describe('D2 — the signed "no confirmation yet" copy', () => {
+  it('is the SIGNED text, verbatim (owner sign-off 2026-09-30; shipped in APK 2.41 / 571404a8)', () => {
     expect(UNCONFIRMED_NO_CONFIRMATION_YET).toBe(
       'This payment is still being verified. No confirmation yet, and this can still change, so check again shortly. Do not take a second payment.',
     );

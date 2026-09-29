@@ -129,7 +129,8 @@ export const UNCONFIRMED_NEVER_STARTED =
   "This payment was never started. The card machine was stopped before it reached the payment provider, so nothing was charged and there is nothing to check. Take payment again when you're ready.";
 
 /**
- * DRAFTED — owner-approved RULE, text drafted (owner ruling 2026-09-29, D2). NOT YET SIGNED.
+ * SIGNED COPY, owner-approved 2026-09-30 (D2). Verbatim; do not reword. Shipped in APK 2.41
+ * (571404a8) with exactly this text. Rule: owner ruling 2026-09-29.
  *
  * The provider answered E04111 ("no such order") but this attempt's reader result was NOT a
  * confirmed operator cancel (K026) -- a 9027, some other unknown code, an orphaned result, or an
