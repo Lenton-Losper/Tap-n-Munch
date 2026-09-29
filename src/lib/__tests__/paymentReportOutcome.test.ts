@@ -33,6 +33,22 @@ import {
 } from '../../constants/paymentCopy';
 
 describe('classifyFailureReport — the three outcomes are three different answers', () => {
+  it('attempt_released_order_kept is NOT_PAID — a declined card on a tab; the order is still owed (D1, 2026-09-29)', () => {
+    // Web sprint/paysim 66ef56dc. Definitively not taken, so "Try again" is right; never settled.
+    expect(
+      classifyFailureReport({
+        outcome: 'attempt_released_order_kept',
+        success: true,
+      }),
+    ).toBe('not_paid');
+    expect(
+      classifyFailureReport({
+        outcome: 'attempt_released_order_kept',
+        success: false,
+      }),
+    ).toBe('not_paid');
+  });
+
   it('left_pending_finatic_uncertain is UNKNOWN, so the food is not released', () => {
     expect(
       classifyFailureReport({

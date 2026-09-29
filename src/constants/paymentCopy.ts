@@ -129,6 +129,19 @@ export const UNCONFIRMED_NEVER_STARTED =
   "This payment was never started. The card machine was stopped before it reached the payment provider, so nothing was charged and there is nothing to check. Take payment again when you're ready.";
 
 /**
+ * DRAFTED — owner-approved RULE, text drafted (owner ruling 2026-09-29, D2). NOT YET SIGNED.
+ *
+ * The provider answered E04111 ("no such order") but this attempt's reader result was NOT a
+ * confirmed operator cancel (K026) -- a 9027, some other unknown code, an orphaned result, or an
+ * attempt this device never saw finish. E04111 then means "not registered at the gateway YET"
+ * (order #149 flipped to paid 22 seconds after one), so nothing here may say nothing was charged,
+ * and the Check button stays. Carries the sense of the server's own staffMessage for this state:
+ * "no confirmation yet. this can still change - check again shortly. do not take a second payment".
+ */
+export const UNCONFIRMED_NO_CONFIRMATION_YET =
+  'This payment is still being verified. No confirmation yet, and this can still change, so check again shortly. Do not take a second payment.';
+
+/**
  * REQUIREMENT — the SECONDARY action's label. #327: retry is secondary, and it re-presents the card
  * for the SAME order — it never creates a new sale. The label must not invite a casual second tap.
  */

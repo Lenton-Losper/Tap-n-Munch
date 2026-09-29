@@ -39,8 +39,27 @@
  */
 import {
   UNCONFIRMED_NEVER_STARTED,
+  UNCONFIRMED_NO_CONFIRMATION_YET,
   UNCONFIRMED_STILL_UNRESOLVED,
 } from '../constants/paymentCopy';
+
+/**
+ * OWNER RULING 2026-09-29 (D2). "Nothing was charged" is ONLY allowed after a CONFIRMED operator
+ * cancellation (K026). E04111 on its own proves nothing: the server's ruling is that a single
+ * E04111 means "not registered at the gateway YET" -- order #149 flipped to paid 22 seconds later.
+ *
+ * So the verdict alone can no longer decide "never started". It needs the attempt's OWN reader
+ * result, and the only one that qualifies is outcomeKind 'user_cancelled', which native raises
+ * ONLY on Activity.RESULT_CANCELED or a USER_CANCEL_RESULT_CODES (K026) match against WiseCashier's
+ * result code (see lib/payment.ts). After 9027, any other ambiguous code, an orphaned result, a
+ * throw, or no attempt this device saw at all, an E04111 keeps the unresolved card and its Check.
+ *
+ * A string rather than PaymentOutcomeKind so this module stays free of payment.ts's native imports.
+ */
+export const OPERATOR_CANCEL_OUTCOME_KIND = 'user_cancelled';
+
+/** The attempt's own reader result: the outcomeKind processPaymentIntent returned, or null. */
+export type AttemptReaderOutcome = string | null | undefined;
 
 /** Only the fields the classification depends on. Structural, so it accepts the api result type. */
 export interface NotPaidVerdictLike {
@@ -53,17 +72,24 @@ export interface NotPaidVerdictLike {
 }
 
 /**
- * Did the provider answer that this payment was NEVER CREATED?
+ * Was this payment NEVER CREATED -- and do we know it, not merely hear it?
  *
- * True only for an explicit `isE04111: true` on an unpaid verdict. A paid verdict can never be
- * "never started", and is rejected first so a server bug that set both could not produce the
- * reassuring copy for a payment that actually took money.
+ * True only for an explicit `isE04111: true` on an unpaid verdict AND an attempt whose own reader
+ * result was the operator cancel (owner ruling 2026-09-29, D2 -- see OPERATOR_CANCEL_OUTCOME_KIND).
+ * A paid verdict can never be "never started", and is rejected first so a server bug that set both
+ * could not produce the reassuring copy for a payment that actually took money.
  */
-export function isNeverStartedVerdict(verdict: NotPaidVerdictLike): boolean {
+export function isNeverStartedVerdict(
+  verdict: NotPaidVerdictLike,
+  attemptReaderOutcome: AttemptReaderOutcome,
+): boolean {
   if (verdict.paid) {
     return false;
   }
-  return verdict.isE04111 === true;
+  return (
+    verdict.isE04111 === true &&
+    attemptReaderOutcome === OPERATOR_CANCEL_OUTCOME_KIND
+  );
 }
 
 /**
@@ -92,8 +118,15 @@ export function isUnclassifiedNotPaid(verdict: NotPaidVerdictLike): boolean {
  */
 export function unconfirmedMessageForVerdict(
   verdict: NotPaidVerdictLike,
+  attemptReaderOutcome: AttemptReaderOutcome,
 ): string {
-  return isNeverStartedVerdict(verdict)
-    ? UNCONFIRMED_NEVER_STARTED
-    : UNCONFIRMED_STILL_UNRESOLVED;
+  if (isNeverStartedVerdict(verdict, attemptReaderOutcome)) {
+    return UNCONFIRMED_NEVER_STARTED;
+  }
+  // D2: an E04111 after anything but a confirmed operator cancel is "no confirmation yet", in the
+  // server's own words -- it can still change, so check again and do not take a second payment.
+  if (!verdict.paid && verdict.isE04111 === true) {
+    return UNCONFIRMED_NO_CONFIRMATION_YET;
+  }
+  return UNCONFIRMED_STILL_UNRESOLVED;
 }

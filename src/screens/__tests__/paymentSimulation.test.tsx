@@ -49,6 +49,8 @@ import PaymentScreen from '../PaymentScreen';
 import {
   UNCONFIRMED_CHECK_ACTION,
   UNCONFIRMED_NEVER_STARTED,
+  UNCONFIRMED_NO_CONFIRMATION_YET,
+  UNCONFIRMED_RETRY_ACTION,
   UNCONFIRMED_TITLE,
 } from '../../constants/paymentCopy';
 
@@ -120,11 +122,16 @@ function readerApproves(voucherNo = 'PAYSIM-TXN-1') {
     businessOrderNo: mo,
   }));
 }
-function readerRejects(code: 'PAYMENT_DECLINED' | 'PAYMENT_AMBIGUOUS', gatewayResult: string) {
+function readerRejects(
+  code: 'PAYMENT_DECLINED' | 'PAYMENT_AMBIGUOUS' | 'PAYMENT_CANCELLED_BY_USER',
+  gatewayResult: string,
+) {
   const message =
     code === 'PAYMENT_DECLINED'
       ? `Card declined by gateway (gateway result=${gatewayResult})`
-      : `Payment result was not a confirmed success (gateway result=${gatewayResult})`;
+      : code === 'PAYMENT_CANCELLED_BY_USER'
+        ? `Payment cancelled on the reader (gateway result=${gatewayResult})`
+        : `Payment result was not a confirmed success (gateway result=${gatewayResult})`;
   launchPayment.mockImplementation(async () => {
     throw Object.assign(new Error(message), {code, userInfo: {gatewayResult}});
   });
@@ -151,11 +158,11 @@ async function settle() {
   }
 }
 
+let mountedElement: React.ReactElement | null = null;
 async function mount() {
   let tree!: renderer.ReactTestRenderer;
   await act(async () => {
-    tree = renderer.create(
-      React.createElement(PaymentScreen, {
+    mountedElement = React.createElement(PaymentScreen, {
         route: {
           params: {
             orderId: ORDER_ID,
@@ -167,12 +174,27 @@ async function mount() {
           },
         },
         navigation: {navigate: jest.fn(), goBack: jest.fn(), setOptions: jest.fn(), addListener: jest.fn(() => jest.fn())},
-      } as never),
-    );
+      } as never);
+    tree = renderer.create(mountedElement);
   });
   await settle();
   return tree;
 }
+/** Re-render the same screen with the same props (a parent re-render). */
+async function rerender(tree: renderer.ReactTestRenderer) {
+  await act(async () => {
+    tree.update(mountedElement as React.ReactElement);
+  });
+  await settle();
+}
+/** Every call that could take or record money, for "nothing duplicated" assertions. */
+const moneyCalls = () => ({
+  launch: launchPayment.mock.calls.length,
+  prepare: callsTo('prepare').length,
+  attemptStarted: callsTo('attemptStarted').length,
+  callback: callsTo('callback').length,
+  sale: callsTo('sale').length,
+});
 
 function pressable(tree: renderer.ReactTestRenderer, label: string) {
   const hits = tree.root.findAll(
@@ -337,6 +359,22 @@ describe('payment simulation on the Charge screen (reader and wire faked, everyt
     expect(screenText(tree)).toContain('Payment successful');
   });
 
+  it('D2 Check -> confirmed paid: success state AND the order is re-read from the server; nothing launched, prepared or reported', async () => {
+    readerRejects('PAYMENT_AMBIGUOUS', '9027');
+    replies.verify = [CONTRACT.verifyNoRecord, CONTRACT.verifyPaid];
+    replies.callback = [CONTRACT.callbackUncertain];
+    const tree = await mount();
+    await press(tree, 'Process Payment');
+    const before = moneyCalls();
+    const ordersBefore = callsTo('orders').length;
+
+    await press(tree, UNCONFIRMED_CHECK_ACTION);
+
+    expect(screenText(tree)).toContain('Payment successful');
+    expect(callsTo('orders').length).toBeGreaterThan(ordersBefore);
+    expect(moneyCalls()).toEqual(before);
+  });
+
   it('S5 duplicate success: the server already settled it (webhook first, 409 ALREADY_PAID) -> success once, no failure report, no second launch', async () => {
     readerApproves();
     replies.callback = [CONTRACT.callbackAlreadyPaid];
@@ -353,16 +391,19 @@ describe('payment simulation on the Charge screen (reader and wire faked, everyt
   });
 
   /**
-   * DEFECT, REPORTED NOT FIXED (paysim, 2026-09-29). Two presses dispatched in the same batch both
+   * D3, FIXED 2026-09-29 (PaymentScreen `cardPaymentInFlight`). Was `it.failing`; RED on the unfixed
+   * code with "Expected number of calls: 1 / Received number of calls: 2".
+   *
+   * DEFECT AS REPORTED (paysim, 2026-09-29). Two presses dispatched in the same batch both
    * reach PaymentModule.launchPayment. handleProcessPayment has no synchronous re-entrancy guard --
    * the button's `disabled` comes from React state, which has not re-rendered between the two
    * presses. TableDetailScreen.runSettle closed exactly this hole with a ref (`settleInFlight`);
    * PaymentScreen did not. Native does not refuse either: PaymentModule.launchPayment overwrites
    * `pendingPromise` and starts a second WiseCashier SALE for the same merchant order number, and
    * the first promise is never settled (it ends in the #346 timeout -> 'ambiguous' path).
-   * Asserts the correct behaviour; `it.failing` until the guard exists.
+   * Asserts the correct behaviour.
    */
-  it.failing('S5-D3 DEFECT: a same-batch double tap on Process Payment reaches the reader once', async () => {
+  it('S5-D3: a same-batch double tap on Process Payment reaches the reader once', async () => {
     const finishers: Array<() => void> = [];
     launchPayment.mockImplementation(
       (_a: string, _o: string, mo: string) =>
@@ -394,7 +435,11 @@ describe('payment simulation on the Charge screen (reader and wire faked, everyt
   });
 
   /**
-   * RULING CONFLICT, ESCALATED -- NOT FIXED HERE (paysim, 2026-09-29).
+   * D2, RESOLVED BY OWNER RULING 2026-09-29: "nothing was charged" only after a CONFIRMED operator
+   * cancel (K026). Was `it.failing`; RED on the unfixed code (the screen showed
+   * UNCONFIRMED_NEVER_STARTED after a 9027 + one E04111). The history below is kept as found.
+   *
+   * RULING CONFLICT, ESCALATED (paysim, 2026-09-29).
    *
    * #354's signed copy says E04111 means "the card machine was stopped before it reached the payment
    * provider, so nothing was charged", and removes the Check button. That premise holds for K026 (an
@@ -404,10 +449,9 @@ describe('payment simulation on the Charge screen (reader and wire faked, everyt
    *
    * After a 9027 the P5 never said the reader stopped. One E04111 on Check then tells the waiter
    * "nothing was charged ... Take payment again" and takes the Check button away -- the exact move
-   * that produces a second charge if the first one lands. This test asserts the SAFE behaviour and is
-   * `it.failing` while the screen does otherwise; it turns red when the conflict is resolved.
+   * that produces a second charge if the first one lands. This test asserts the SAFE behaviour.
    */
-  it.failing('S3-D2 RULING CONFLICT: after a 9027, one E04111 on Check must not say "nothing was charged" or remove Check', async () => {
+  it('S3-D2: after a 9027, one E04111 on Check must not say "nothing was charged" or remove Check', async () => {
     readerRejects('PAYMENT_AMBIGUOUS', '9027');
     replies.verify = [CONTRACT.verifyNoRecord];
     replies.callback = [CONTRACT.callbackUncertain];
@@ -418,6 +462,218 @@ describe('payment simulation on the Charge screen (reader and wire faked, everyt
     // Evidence, printed whichever way it goes.
     console.log(`[paysim] S3-D2 screen after Check: ${text.slice(0, 400)}`);
     expect(text).not.toContain(UNCONFIRMED_NEVER_STARTED);
+    expect(text).toContain(UNCONFIRMED_NO_CONFIRMATION_YET);
     expect(hasPressable(tree, UNCONFIRMED_CHECK_ACTION)).toBe(true);
+  });
+
+  it('S3-D2b: after a 9027, E04111 TWICE still keeps Check and never says "nothing was charged"', async () => {
+    readerRejects('PAYMENT_AMBIGUOUS', '9027');
+    replies.verify = [CONTRACT.verifyNoRecord];
+    replies.callback = [CONTRACT.callbackUncertain];
+    const tree = await mount();
+    await press(tree, 'Process Payment');
+    const before = moneyCalls();
+    for (const round of [1, 2]) {
+      const verifyBefore = callsTo('verify').length;
+      await press(tree, UNCONFIRMED_CHECK_ACTION);
+      const text = screenText(tree);
+      expect({round, neverStarted: text.includes(UNCONFIRMED_NEVER_STARTED)}).toEqual({round, neverStarted: false});
+      expect(text).toContain(UNCONFIRMED_NO_CONFIRMATION_YET);
+      expect(hasPressable(tree, UNCONFIRMED_CHECK_ACTION)).toBe(true);
+      expect(hasPressable(tree, UNCONFIRMED_RETRY_ACTION)).toBe(false);
+      // Check calls verify-payment and nothing else.
+      expect(callsTo('verify')).toHaveLength(verifyBefore + 1);
+      expect(callsTo('verify')[verifyBefore].path).toBe(`/api/terminal/orders/${ORDER_ID}/verify-payment`);
+      expect(callsTo('verify')[verifyBefore].method).toBe('POST');
+    }
+    // Never launched the reader, never prepared, never reported or recorded a sale again.
+    expect(moneyCalls()).toEqual(before);
+    expect(before.launch).toBe(1);
+  });
+
+  it('D2 9027: "Not confirmed", Check offered, NO "take payment again", no automatic relaunch', async () => {
+    readerRejects('PAYMENT_AMBIGUOUS', '9027');
+    replies.verify = [CONTRACT.verifyNoRecord];
+    replies.callback = [CONTRACT.callbackUncertain];
+    const tree = await mount();
+    await press(tree, 'Process Payment');
+    for (let i = 0; i < 5; i += 1) {
+      await settle();
+    }
+    expect(screenText(tree)).toContain(UNCONFIRMED_TITLE);
+    expect(hasPressable(tree, UNCONFIRMED_CHECK_ACTION)).toBe(true);
+    expect(hasPressable(tree, UNCONFIRMED_RETRY_ACTION)).toBe(false);
+    expect(moneyCalls()).toMatchObject({launch: 1, prepare: 1, callback: 1, sale: 0});
+  });
+
+  it('D2 Check -> still uncertain: says the payment is still being verified and keeps Check', async () => {
+    readerRejects('PAYMENT_AMBIGUOUS', '9027');
+    replies.verify = [CONTRACT.verifyNoRecord];
+    replies.callback = [CONTRACT.callbackUncertain];
+    const tree = await mount();
+    await press(tree, 'Process Payment');
+    await press(tree, UNCONFIRMED_CHECK_ACTION);
+    const text = screenText(tree);
+    expect(text).toContain(UNCONFIRMED_TITLE);
+    expect(text).toContain('still being verified');
+    expect(text.toLowerCase()).not.toContain('nothing was charged');
+    expect(hasPressable(tree, UNCONFIRMED_CHECK_ACTION)).toBe(true);
+    expect(hasPressable(tree, UNCONFIRMED_RETRY_ACTION)).toBe(false);
+  });
+
+  it('D2 re-rendering the unconfirmed screen duplicates nothing', async () => {
+    readerRejects('PAYMENT_AMBIGUOUS', '9027');
+    replies.verify = [CONTRACT.verifyNoRecord];
+    replies.callback = [CONTRACT.callbackUncertain];
+    const tree = await mount();
+    await press(tree, 'Process Payment');
+    const before = moneyCalls();
+    const verifyBefore = callsTo('verify').length;
+    await rerender(tree);
+    await rerender(tree);
+    expect(moneyCalls()).toEqual(before);
+    expect(callsTo('verify')).toHaveLength(verifyBefore);
+    expect(screenText(tree)).toContain(UNCONFIRMED_TITLE);
+    expect(hasPressable(tree, UNCONFIRMED_CHECK_ACTION)).toBe(true);
+  });
+
+  /**
+   * D2 POSITIVE CONTROL. The signed #354 copy is still reachable where the ruling allows it: the
+   * reader's own result was the operator cancel (K026 -> PAYMENT_CANCELLED_BY_USER -> user_cancelled)
+   * and the provider then answered E04111. The cancel report is lost in transit (503 twice) so the
+   * screen lands on "Not confirmed" and offers Check -- the Mingle #698 sequence.
+   */
+  it('S3-D2c positive control: K026 operator cancel + E04111 shows the signed "nothing was charged" copy and drops Check', async () => {
+    readerRejects('PAYMENT_CANCELLED_BY_USER', 'K026');
+    replies.verify = [CONTRACT.verifyNoRecord];
+    replies.callback = [{status: 503, body: {error: 'paysim: report lost in transit'}}];
+    const tree = await mount();
+    await press(tree, 'Process Payment');
+    expect(screenText(tree)).toContain(UNCONFIRMED_TITLE);
+    const cb = callsTo('callback');
+    expect(cb.length).toBeGreaterThanOrEqual(1);
+    expect(cb[0].body).toMatchObject({status: 'failed', noGatewayAttempt: true});
+
+    await press(tree, UNCONFIRMED_CHECK_ACTION);
+    const text = screenText(tree);
+    expect(text).toContain(UNCONFIRMED_NEVER_STARTED);
+    expect(text).not.toContain(UNCONFIRMED_NO_CONFIRMATION_YET);
+    expect(hasPressable(tree, UNCONFIRMED_CHECK_ACTION)).toBe(false);
+    expect(launchPayment).toHaveBeenCalledTimes(1);
+
+    // The authoritative final state is the ONE unconfirmed state that opens "take payment again".
+    expect(hasPressable(tree, UNCONFIRMED_RETRY_ACTION)).toBe(true);
+    readerApproves('PAYSIM-TXN-2');
+    replies.callback = [CONTRACT.callbackSuccess];
+    await press(tree, UNCONFIRMED_RETRY_ACTION);
+    await press(tree, 'Process Payment');
+    expect(launchPayment).toHaveBeenCalledTimes(2);
+    expect(callsTo('prepare')).toHaveLength(2);
+    expect(screenText(tree)).toContain('Payment successful');
+  });
+
+  /**
+   * D3's other half: the guard is RELEASED on a terminal outcome. A guard that is never released
+   * passes the double-tap test above and then silently refuses every legitimate retry.
+   */
+  it('S5-D3b: after a decline, "Try again" then Process Payment reaches the reader a second time', async () => {
+    readerRejects('PAYMENT_DECLINED', 'N003');
+    replies.callback = [CONTRACT.callbackDeclined];
+    const tree = await mount();
+    await press(tree, 'Process Payment');
+    expect(screenText(tree)).toContain('FAILED');
+    expect(launchPayment).toHaveBeenCalledTimes(1);
+
+    await press(tree, 'Try again');
+    await press(tree, 'Process Payment');
+    expect(launchPayment).toHaveBeenCalledTimes(2);
+    expect(callsTo('prepare')).toHaveLength(2);
+  });
+
+  it('D3 five rapid taps in one batch reach the reader once (one prepare, one report)', async () => {
+    const finishers: Array<() => void> = [];
+    launchPayment.mockImplementation(
+      (_a: string, _o: string, mo: string) =>
+        new Promise(resolve => {
+          finishers.push(() => resolve({voucherNo: 'PAYSIM-TXN-1', businessOrderNo: mo}));
+        }),
+    );
+    replies.callback = [CONTRACT.callbackSuccess];
+    const tree = await mount();
+    const button = pressable(tree, 'Process Payment');
+    let presses!: Promise<unknown>;
+    await act(async () => {
+      presses = Promise.all([1, 2, 3, 4, 5].map(() => button.props.onPress()));
+      await Promise.resolve();
+    });
+    for (let i = 0; i < 50 && finishers.length === 0; i += 1) {
+      await settle();
+    }
+    await settle();
+    await act(async () => {
+      finishers.forEach(f => f());
+      await presses;
+    });
+    await settle();
+    expect(moneyCalls()).toMatchObject({launch: 1, prepare: 1, callback: 1, sale: 1});
+  });
+
+  it('D3 a re-render while the reader is open, then another tap, still launches once', async () => {
+    const finishers: Array<() => void> = [];
+    launchPayment.mockImplementation(
+      (_a: string, _o: string, mo: string) =>
+        new Promise(resolve => {
+          finishers.push(() => resolve({voucherNo: 'PAYSIM-TXN-1', businessOrderNo: mo}));
+        }),
+    );
+    replies.callback = [CONTRACT.callbackSuccess];
+    const tree = await mount();
+    const button = pressable(tree, 'Process Payment');
+    let first!: Promise<unknown>;
+    await act(async () => {
+      first = button.props.onPress();
+      await Promise.resolve();
+    });
+    for (let i = 0; i < 50 && finishers.length === 0; i += 1) {
+      await settle();
+    }
+    await rerender(tree);
+    // The stale handler captured before the re-render, pressed again while the reader is open.
+    let second!: Promise<unknown>;
+    await act(async () => {
+      second = button.props.onPress();
+      await Promise.resolve();
+    });
+    await settle();
+    await act(async () => {
+      finishers.forEach(f => f());
+      await Promise.all([first, second]);
+    });
+    await settle();
+    expect(moneyCalls()).toMatchObject({launch: 1, prepare: 1, callback: 1});
+    expect(screenText(tree)).toContain('Payment successful');
+  });
+
+  it('D3 after a 9027 the guard is released: Check still works and calls verify only', async () => {
+    readerRejects('PAYMENT_AMBIGUOUS', '9027');
+    replies.verify = [CONTRACT.verifyNoRecord, CONTRACT.verifyPaid];
+    replies.callback = [CONTRACT.callbackUncertain];
+    const tree = await mount();
+    await press(tree, 'Process Payment');
+    const verifyBefore = callsTo('verify').length;
+    await press(tree, UNCONFIRMED_CHECK_ACTION);
+    expect(callsTo('verify')).toHaveLength(verifyBefore + 1);
+    expect(screenText(tree)).toContain('Payment successful');
+    expect(moneyCalls()).toMatchObject({launch: 1, prepare: 1});
+  });
+
+  it('D3 after success there is no second launch, even across a re-render', async () => {
+    readerApproves();
+    replies.callback = [CONTRACT.callbackSuccess];
+    const tree = await mount();
+    await press(tree, 'Process Payment');
+    await rerender(tree);
+    expect(hasPressable(tree, 'Process Payment')).toBe(false);
+    expect(moneyCalls()).toMatchObject({launch: 1, prepare: 1, callback: 1, sale: 1});
   });
 });

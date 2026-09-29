@@ -70,6 +70,11 @@ export function classifyFailureReport(
     case 'cancelled':
       // Definitively not taken, and now resolved. Nothing is owed and nothing is pending.
       return 'not_paid';
+    case 'attempt_released_order_kept':
+      // Sprint 2026-09-29 (D1, web sprint/paysim 66ef56dc). A declined card on a TAB: the attempt is
+      // definitively not paid and has been released, but the order stays open and still owed.
+      // Not paid -- "Try again" is right -- and never `settled`: nothing was taken.
+      return 'not_paid';
     case 'left_pending_finatic_uncertain':
       return 'unknown';
     default:

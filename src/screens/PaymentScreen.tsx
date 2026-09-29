@@ -208,6 +208,22 @@ export default function PaymentScreen({route, navigation}: Props) {
    * any disagreement -- refusing to report a charge that happened would be worse.
    */
   const reportAmountRef = useRef<number | null>(null);
+  /**
+   * D3 (Sprint 2026-09-29). THE SYNCHRONOUS RE-ENTRANCY GUARD ON THE CARD READER. The button's
+   * `disabled` comes from React state, which has not re-rendered between two presses dispatched in
+   * the same batch, so both reached PaymentModule.launchPayment -- and native does not refuse: it
+   * overwrites `pendingPromise` and starts a second WiseCashier SALE for the same merchant order
+   * number. Same fix as TableDetailScreen's `settleInFlight`. Claimed before the first await and
+   * released in a `finally` on EVERY exit, so a legitimate later retry can launch again.
+   */
+  const cardPaymentInFlight = useRef(false);
+  /**
+   * D2 (owner ruling 2026-09-29). The reader's OWN result for the most recent card attempt on this
+   * screen -- the outcomeKind processPaymentIntent returned, before any Finatic verification. The
+   * only thing that lets an E04111 on Check say "nothing was charged" is this being the operator
+   * cancel; see lib/paymentVerdict. Null (no attempt seen) is the safe default.
+   */
+  const attemptReaderOutcome = useRef<string | null>(null);
   if (amountDue != null) {
     reportAmountRef.current = amountDue;
   }
@@ -660,12 +676,30 @@ export default function PaymentScreen({route, navigation}: Props) {
   );
 
   const handleProcessPayment = async () => {
+    if (cardPaymentInFlight.current) {
+      recordWiretapEvent('payment.exit', {
+        exit: 'card_payment_already_in_flight',
+        reportsToServer: false,
+        note: 'D3: a second press while a card attempt runs; the reader is not launched again',
+      });
+      return;
+    }
+    cardPaymentInFlight.current = true;
+    try {
+      await runCardPayment();
+    } finally {
+      cardPaymentInFlight.current = false;
+    }
+  };
+
+  const runCardPayment = async () => {
     if (amountDue == null || amountDue <= 0) {
       // The button is disabled too; this is the guard where the money is counted.
       return;
     }
     const total = amountDue;
     startPayment(orderId, total);
+    attemptReaderOutcome.current = null;
     let token: string | null = null;
     /**
      * Hoisted so the outer catch can see what the device actually decided. Without this the
@@ -686,6 +720,8 @@ export default function PaymentScreen({route, navigation}: Props) {
 
       let result = await processPaymentIntent(total, orderId);
       lastResult = result;
+      // The reader's own word, captured before verification can replace `result`. D2.
+      attemptReaderOutcome.current = result.outcomeKind ?? null;
 
       /**
        * THE SERVER REFUSED BEFORE THE READER OPENED, BECAUSE THIS SCREEN IS STALE (Sprint 2026-09-29,
@@ -997,6 +1033,9 @@ export default function PaymentScreen({route, navigation}: Props) {
         paymentSuccess(
           verdict.transactionId ?? verdict.merchantOrderNo ?? orderId,
         );
+        // Owner D2 spec: confirmed paid refreshes the order from the server, so what the screen
+        // shows as owed is the server's figure, not the one from before the charge.
+        loadOrder();
         return;
       }
 
@@ -1007,6 +1046,10 @@ export default function PaymentScreen({route, navigation}: Props) {
        * the reader was stopped before it ever contacted the gateway. Nothing was charged and there
        * is nothing to check, so this branch carries its own signed copy and the card below drops
        * the Check button rather than offering the retry that returns E04111 forever.
+       *
+       * OWNER RULING 2026-09-29 (D2) NARROWS THAT: only when THIS attempt's reader result was the
+       * operator cancel (K026 / user_cancelled). After a 9027 or any other unknown result, E04111
+       * means "not registered YET", so the card keeps Check and says so -- see lib/paymentVerdict.
        *
        * Anything else coming back not-paid keeps the existing wording: `paid: false` also covers an
        * order with no merchant order number, which is NOT "never started". See lib/paymentVerdict —
@@ -1029,7 +1072,9 @@ export default function PaymentScreen({route, navigation}: Props) {
 
       // Stay unconfirmed either way — the food still must not be released. Which of the two
       // messages is shown is decided by lib/paymentVerdict, where it can be tested.
-      paymentUnconfirmed(unconfirmedMessageForVerdict(verdict));
+      paymentUnconfirmed(
+        unconfirmedMessageForVerdict(verdict, attemptReaderOutcome.current),
+      );
     } catch (err) {
       console.warn('[PaymentScreen] verify-payment failed:', err);
       recordWiretapEvent('payment.status.checked', {
@@ -1190,6 +1235,14 @@ export default function PaymentScreen({route, navigation}: Props) {
    */
   const neverStarted = error === UNCONFIRMED_NEVER_STARTED;
   /**
+   * Owner D2 spec, 2026-09-30: ONLY an explicit, authoritative final state enables "take payment
+   * again". On the UNCONFIRMED card that is the never-started branch alone -- the attempt's own
+   * reader result was the operator cancel AND the provider has no record. An unknown result (9027),
+   * a lost report, or E04111 after anything but K026 may still turn into a charge, so a second
+   * payment is not offered there; Check is.
+   */
+  const retryAllowed = neverStarted;
+  /**
    * #327. The bottom bar's big "Process Payment" / "Confirm cash" button is disabled while a
    * payment is UNCONFIRMED, not only while one is in progress.
    *
@@ -1198,6 +1251,12 @@ export default function PaymentScreen({route, navigation}: Props) {
    * charge a card for an order that may already be paid. Taking payment again stays reachable — it
    * costs one deliberate tap on the card's secondary action, which resets to IDLE and re-enables
    * this button.
+   *
+   * SUPERSEDED IN PART by the owner's D2 spec (2026-09-30): the secondary "Take payment again" is now
+   * offered on the UNCONFIRMED card ONLY on the never-started branch (a confirmed K026 operator
+   * cancel + E04111). Every other unconfirmed state keeps Check and no retry; the server's own
+   * definitive not-paid outcomes (cancelled / attempt_released_order_kept) arrive as FAILED, whose
+   * "Try again" is the retry path. See `retryAllowed` below.
    */
   const paymentActionsBlocked =
     state === 'PAYMENT_IN_PROGRESS' ||
@@ -1859,27 +1918,29 @@ export default function PaymentScreen({route, navigation}: Props) {
                   </LoadingButton>
                 )}
 
-                <Pressable
-                  style={styles.unconfirmedSecondaryButton}
-                  disabled={checkingStatus}
-                  onPress={() => {
-                    reset();
-                    setTenderedText('');
-                    applyPaymentMethodAvailability(
-                      cardPaymentEnabled,
-                      cashPaymentEnabled,
-                      // Without this a retry re-applies availability WITHOUT PayToday and quietly
-                      // removes it from the picker mid-service.
-                      paytodayPaymentEnabled,
-                    );
-                    if (enabledMethods.length > 1) {
-                      setPaymentMethod(null);
-                    }
-                  }}>
-                  <Text style={styles.unconfirmedSecondaryText}>
-                    {UNCONFIRMED_RETRY_ACTION}
-                  </Text>
-                </Pressable>
+                {retryAllowed ? (
+                  <Pressable
+                    style={styles.unconfirmedSecondaryButton}
+                    disabled={checkingStatus}
+                    onPress={() => {
+                      reset();
+                      setTenderedText('');
+                      applyPaymentMethodAvailability(
+                        cardPaymentEnabled,
+                        cashPaymentEnabled,
+                        // Without this a retry re-applies availability WITHOUT PayToday and quietly
+                        // removes it from the picker mid-service.
+                        paytodayPaymentEnabled,
+                      );
+                      if (enabledMethods.length > 1) {
+                        setPaymentMethod(null);
+                      }
+                    }}>
+                    <Text style={styles.unconfirmedSecondaryText}>
+                      {UNCONFIRMED_RETRY_ACTION}
+                    </Text>
+                  </Pressable>
+                ) : null}
               </View>
             )}
 
