@@ -121,7 +121,9 @@ const MUTATIONS = {
     what: 'a void that is not persisted but is reported as success (amend_order_lines leaves the state)',
     expect: 'C06 cancel three items: server voided them',
     sql: {
-      file: '20260928150000_amend_order_lines_refuse_paid.sql',
+      // Retargeted 2026-09-29: the LIVE definition. Mutating a superseded migration is overwritten
+      // by the later redefinition before the scenario runs -- the mutation silently never lands.
+      file: '20260929120200_amend_refuses_payment_in_flight.sql',
       from: "        SET kitchen_state = CASE WHEN kitchen_state = 'outstanding' THEN 'voided' ELSE kitchen_state END,\n            bar_state = CASE WHEN bar_state = 'outstanding' THEN 'voided' ELSE bar_state END",
       to: '        SET kitchen_state = kitchen_state,\n            bar_state = bar_state',
     },
@@ -148,7 +150,9 @@ const MUTATIONS = {
     what: 'a line on a PAID order can be voided (order_paid guard off)',
     expect: 'C14 void an item on a paid order: refused order_paid',
     sql: {
-      file: '20260928150000_amend_order_lines_refuse_paid.sql',
+      // Retargeted 2026-09-29: the LIVE definition. Mutating a superseded migration is overwritten
+      // by the later redefinition before the scenario runs -- the mutation silently never lands.
+      file: '20260929120200_amend_refuses_payment_in_flight.sql',
       from: "        IF FOUND AND lower(btrim(COALESCE(v_payment_status, ''))) = 'paid' THEN",
       to: '        IF false THEN',
     },
@@ -166,7 +170,9 @@ const MUTATIONS = {
     what: 'an allocation can be settled twice (claim no longer requires settled_at IS NULL)',
     expect: 'C04 replay item payment: nothing charged twice',
     sql: {
-      file: '20260829170000_order_line_allocations.sql',
+      // Retargeted 2026-09-29: the LIVE definition. Mutating a superseded migration is overwritten
+      // by the later redefinition before the scenario runs -- the mutation silently never lands.
+      file: '20260929120300_allocation_settle_locks_orders.sql',
       from: '      AND voided_at IS NULL\n      AND settled_at IS NULL\n    RETURNING id, amount_cents INTO v_claimed;',
       to: '      AND voided_at IS NULL\n    RETURNING id, amount_cents INTO v_claimed;',
       // The unique index is the second line of defence; drop it so the RPC guard is what is tested.
