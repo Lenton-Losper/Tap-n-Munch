@@ -95,8 +95,9 @@ it('correct amount: the gateway confirms, the order is settled through the RPC o
   const args = settleCalls(h.db)[0].args as Row
   expect(args.p_gateway_amount_cents).toBe(10000)
   expect(args.p_source).toBe('cron_reconcile_orphan_payments')
-  // The device's row stays the only row for the reference and is not rewritten.
+  // One sale row: the device's report, promoted to the verified figure (20260929130000).
   expect(h.db.rows('payment_events')).toHaveLength(1)
+  expect(h.db.rows('payment_events')[0]).toMatchObject({ origin: 'gateway', amount: 100 })
   expect(audits(h.db, 'payment.settlement_applied')).toHaveLength(1)
 })
 

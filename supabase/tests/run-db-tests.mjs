@@ -57,6 +57,8 @@ const MIGRATIONS = [
   'supabase/migrations/20260929120000_order_charge_basis.sql',
   'supabase/migrations/20260929120100_settle_holds_order_changed_since_charge.sql',
   'supabase/migrations/20260929120200_amend_refuses_payment_in_flight.sql',
+  // Task 7 merge point 2: settle_order_payment PROMOTES a device sale row (redefines 120100).
+  'supabase/migrations/20260929130000_settle_promotes_device_sale_row.sql',
   // record_terminal_refund_event caps refunds at a VERIFIED figure (needs 20260929110000).
   'supabase/migrations/20260929130100_refund_cap_is_verified_amount.sql',
 ]
@@ -100,10 +102,16 @@ const MUTATIONS = {
     what: 'server-side ledger creation removed (payment_events written only by the device)',
     expect: ['riviera/ledger_row_written', 'riviera/ledger_amount_is_gateway_amount'],
     apply: (sql) =>
-      sql.replace(
-        'IF array_length(v_claimed, 1) IS NOT NULL THEN\n    INSERT INTO public.payment_events',
-        'IF false THEN\n    INSERT INTO public.payment_events',
-      ),
+      sql
+        .replace(
+          'IF array_length(v_claimed, 1) IS NOT NULL THEN\n    INSERT INTO public.payment_events',
+          'IF false THEN\n    INSERT INTO public.payment_events',
+        )
+        // 20260929130000 wraps the same ledger write in the promotion loop.
+        .replace(
+          'IF array_length(v_claimed, 1) IS NOT NULL THEN\n   FOR v_attempt IN 1..2 LOOP',
+          'IF false THEN\n   FOR v_attempt IN 1..2 LOOP',
+        ),
   },
   M3: {
     what: "payment method falls back to the row's own value -- (row.payment_method) || 'card'",
@@ -462,10 +470,15 @@ const MUTATIONS = {
     what: 'device_amount_check is accepted on a non-device row',
     expect: ['origin/check_on_non_device_refused'],
     apply: (sql) =>
-      sql.replace(
-        "          origin = 'terminal_device'\n          AND device_amount_check IN (",
-        '          true\n          AND device_amount_check IN (',
-      ),
+      sql
+        .replace(
+          "          origin = 'terminal_device'\n          AND device_amount_check IN (",
+          '          true\n          AND device_amount_check IN (',
+        )
+        .replace(
+          "      origin IS NOT NULL\n      AND origin IN ('terminal_device', 'gateway')\n      AND device_amount_check IN (",
+          '      true\n      AND device_amount_check IN (',
+        ),
   },
   MF1: {
     what: "a device row's refund cap is its own reported amount, not the intent's",
@@ -583,6 +596,32 @@ const MUTATIONS = {
         "            AND COALESCE(ol.bar_state, 'voided') = 'voided'), '')",
         "            AND COALESCE(ol.bar_state, 'voided') = 'voided' AND false), '')",
       ),
+  },
+  /**
+   * Task 7 merge point 2 (20260929130000): a verified settlement promotes the device's sale row.
+   */
+  MPR1: {
+    what: 'the device row is not promoted (the only sale row stays the unverified report)',
+    expect: ['origin/device_first_promoted', 'origin/device_first_verified_amount'],
+    apply: (sql) => sql.replace('    IF FOUND THEN\n      UPDATE public.payment_events\n', '    IF false THEN\n      UPDATE public.payment_events\n'),
+  },
+  MPR2: {
+    what: "the promoted row keeps the DEVICE's amount",
+    expect: ['origin/device_first_verified_amount', 'origin/promoted_refund_capped_at_verified'],
+    apply: (sql) =>
+      sql.replace('             amount = p_gateway_amount_cents::numeric / 100,\n', '             amount = amount,\n'),
+  },
+  MPR3: {
+    what: 'the promotion is not audited',
+    expect: ['origin/device_first_promotion_audited'],
+    apply: (sql) => sql.replace("        'payment.device_row_promoted',", "        'payment.mpr3_mutated',"),
+  },
+  MPR4: {
+    what: 'no second look after the INSERT (a device row committed mid-settlement stays unpromoted)',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/promotion-race.test.sh',
+    expect: [],
+    apply: (sql) => sql.replace('   FOR v_attempt IN 1..2 LOOP\n', '   FOR v_attempt IN 1..1 LOOP\n'),
   },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
@@ -780,6 +819,15 @@ if (!baseAmend.passed) {
   process.exit(1)
 }
 console.log('  amend-race probe: one winner per line, paid-in-flight refused, no deadlock with a settlement')
+
+// Device insert still uncommitted while the settlement runs: exactly one sale row, promoted.
+const basePromotion = runConcurrencyProbe('supabase/tests/promotion-race.test.sh')
+if (!basePromotion.passed) {
+  console.error('FAIL: the promotion race probe did not pass on unmutated code.')
+  console.error(basePromotion.out.split('\n').slice(-24).join('\n'))
+  process.exit(1)
+}
+console.log('  promotion-race probe: device row committed mid-settlement is promoted, one sale row')
 
 // A card charge and an order edit/void in two sessions (Sprint 2026-09-29 task 5).
 const baseCharge = runConcurrencyProbe('supabase/tests/charge-edit-race.test.sh')

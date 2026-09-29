@@ -300,9 +300,9 @@ describe('already consumed', () => {
     const r = await call({ orderIds: [A, B], merchantOrderNo: REF })
     expect({ status: r.status, applied: r.body.applied }).toEqual({ status: 200, applied: true })
     expect(paidIds(db)).toEqual([A, B].sort())
-    // The device's row is not rewritten; no second row is added (one idempotency key).
+    // One sale row: the device's report, PROMOTED by the settlement (20260929130000).
     expect(db.rows('payment_events')).toHaveLength(1)
-    expect(db.rows('payment_events')[0].origin).toBe('terminal_device')
+    expect(db.rows('payment_events')[0].origin).toBe('gateway')
   })
 })
 

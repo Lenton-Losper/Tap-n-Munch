@@ -167,7 +167,32 @@ function simulateSettle(db: InMemoryDb, a: Row): Row {
   let ledger = false
   if (claimed.length) {
     const events = db.rows('payment_events')
-    if (!events.some((e) => e.restaurant_id === restaurant && e.idempotency_key === ref)) {
+    // 20260929130000: a device report for this charge is PROMOTED in place, never joined.
+    const device = events.find(
+      (e) =>
+        e.restaurant_id === restaurant &&
+        e.event_type === 'sale' &&
+        e.origin === 'terminal_device' &&
+        (e.idempotency_key === ref ||
+          (a.p_gateway_transaction_id != null && e.transaction_id === a.p_gateway_transaction_id)),
+    )
+    if (device) {
+      const raw = (device.raw_gateway_response as Row | null) ?? {}
+      Object.assign(device, {
+        origin: 'gateway',
+        amount: gateway / 100,
+        order_ids: ids,
+        raw_gateway_response: { ...raw, promoted: { recorded_by: 'server', device_reported_amount: device.amount } },
+      })
+      db.rows('audit_logs').push({
+        id: `audit-promote-${db.rows('audit_logs').length}`,
+        restaurant_id: restaurant,
+        action: 'payment.device_row_promoted',
+        entity_type: 'payment_event',
+        entity_id: String(device.id),
+        metadata: { device_reported_amount: device.amount, gateway_amount_cents: gateway },
+      })
+    } else if (!events.some((e) => e.restaurant_id === restaurant && e.idempotency_key === ref)) {
       events.push({
         id: `ledger-${events.length + 1}`,
         restaurant_id: restaurant,
