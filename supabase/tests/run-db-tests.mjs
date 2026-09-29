@@ -60,6 +60,8 @@ const MIGRATIONS = [
   'supabase/migrations/20260929120200_amend_refuses_payment_in_flight.sql',
   // Copies 20260829170000's settle_order_line_allocations (the first entry above) plus the locks.
   'supabase/migrations/20260929120300_allocation_settle_locks_orders.sql',
+  // Copies 20260829170000's order_is_fully_paid_by_allocations plus the every-item-has-a-line guard.
+  'supabase/migrations/20260929120400_order_items_have_lines.sql',
   // F-MANUAL follow-up: a manual payment refuses a card attempt in flight and releases a stale one.
   // Reads 20260929120000's columns and sets its non-gateway marker, so it sorts after that series.
   'supabase/migrations/20260929140000_manual_payment_releases_stale_card_attempt.sql',
@@ -734,6 +736,27 @@ const MUTATIONS = {
     apply: (sql) => sql.replace('  PERFORM 1 FROM public.tabs WHERE id = p_tab_id FOR UPDATE;\n', ''),
     sqlAfterMigrations:
       'ALTER TABLE public.order_line_allocation_settlements DROP CONSTRAINT order_line_allocation_settlements_tab_id_fkey;',
+  },
+  MR10: {
+    what: 'order_is_fully_paid_by_allocations ignores items with no line again (an unlined item reads as paid)',
+    expect: ['items_need_lines/unlined_item_is_not_paid'],
+    apply: (sql) =>
+      sql.replace(
+        "  IF NOT EXISTS (\n       SELECT 1 FROM public.orders o\n        WHERE o.id = p_order_id AND jsonb_typeof(o.items) = 'array')\n     OR EXISTS (",
+        "  IF false AND (NOT EXISTS (\n       SELECT 1 FROM public.orders o\n        WHERE o.id = p_order_id AND jsonb_typeof(o.items) = 'array')\n     OR EXISTS (",
+      ).replace(
+        "               AND ol.source_item_index = (e.ord - 1)::integer))\n  THEN\n    RETURN false;",
+        "               AND ol.source_item_index = (e.ord - 1)::integer)))\n  THEN\n    RETURN false;",
+      ),
+  },
+  MR11: {
+    what: "a lined order's items can be rewritten again (a guest addition with no line)",
+    expect: ['split_flip/guest_add_to_lined_order_refused'],
+    apply: (sql) =>
+      sql.replace(
+        '  IF (NEW.items IS DISTINCT FROM OLD.items OR NEW.total IS DISTINCT FROM OLD.total)\n     AND EXISTS (SELECT 1 FROM public.order_lines WHERE order_id = OLD.id)',
+        '  IF false AND (NEW.items IS DISTINCT FROM OLD.items OR NEW.total IS DISTINCT FROM OLD.total)\n     AND EXISTS (SELECT 1 FROM public.order_lines WHERE order_id = OLD.id)',
+      ),
   },
   MR6: {
     what: 'the charge basis ignores voided lines (a staff void mid-charge is invisible to settlement)',

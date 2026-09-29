@@ -759,6 +759,16 @@ export async function PATCH(req: Request, { params }: RouteParams) {
     if (writeError && String((writeError as { code?: unknown }).code ?? '') === 'FTINF') {
       return refuse('payment_in_flight')
     }
+    /**
+     * A STAFF ROUND, NOT A CUSTOMER ORDER (FTLIN, 20260929120400). An order with fulfilment lines
+     * never has its items rewritten: the lines index into them, and an added item would have no
+     * line -- never reaching the stations and invisible to the item-ledger "fully paid" check. No
+     * order a customer session owns has lines today; this is the answer if one ever does. Staff
+     * change such an order through amend.
+     */
+    if (writeError && String((writeError as { code?: unknown }).code ?? '') === 'FTLIN') {
+      return refuse('not_editable_status')
+    }
     if (writeError) {
       console.error('[guest/orders/:id/edit] commit failed:', writeError)
       return NextResponse.json({ error: writeError.message }, { status: 500 })
