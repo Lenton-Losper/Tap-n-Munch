@@ -291,7 +291,24 @@ export async function PATCH(
         return NextResponse.json({ error: 'Failed to update order — no rows returned' }, { status: 500 })
       }
 
-      return NextResponse.json({ success: true, outcome: 'cancelled', order: cancelResult.order })
+      return NextResponse.json({
+        success: true,
+        outcome: 'cancelled',
+        order: cancelResult.order,
+        // The same fields the dashboard cancel returns (Sprint 2026-09-30, RC-ORDERS G): food a
+        // station already finished is still coming, and the terminal is told which.
+        lines_voided: cancelResult.lineVoid ? cancelResult.lineVoid.voidedLineCount : null,
+        lines_not_voided: cancelResult.lineVoid
+          ? cancelResult.lineVoid.notVoided.map((l) => ({
+              line_id: l.id,
+              name: l.name,
+              quantity: l.quantity,
+              kitchen_state: l.kitchen_state,
+              bar_state: l.bar_state,
+            }))
+          : null,
+        lines_void_failed: !cancelResult.lineVoid,
+      })
     }
 
     const updates: Record<string, unknown> = { status: newStatus }

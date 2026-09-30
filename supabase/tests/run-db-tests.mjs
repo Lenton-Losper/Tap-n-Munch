@@ -73,6 +73,10 @@ const MIGRATIONS = [
   'supabase/migrations/20260929140000_manual_payment_releases_stale_card_attempt.sql',
   // Closes anon/authenticated EXECUTE on the three line/allocation RPCs (Supabase default grants).
   'supabase/migrations/20260929150000_revoke_anon_authenticated_line_rpcs.sql',
+  // Sprint 2026-09-30 RC-ORDERS: one line per ordered item (a double-tapped Send wrote the round twice),
+  // and an item share on a paid or cancelled order is refused (copies 20260929120300's body).
+  'supabase/migrations/20260930100000_order_lines_one_line_per_item.sql',
+  'supabase/migrations/20260930100100_allocation_settle_refuses_paid_or_cancelled_order.sql',
 ]
 
 /**
@@ -93,6 +97,31 @@ function replaceEvery(sql, from, to) {
 }
 
 const MUTATIONS = {
+  // Sprint 2026-09-30 RC-ORDERS (supabase/tests/orders-rc.test.sql).
+  MRC1: {
+    what: 'order_lines accepts a second line for one ordered item (no unique index)',
+    expect: ['rc_orders/second_line_for_one_item_refused'],
+    apply: (sql) =>
+      sql.replace(
+        'CREATE UNIQUE INDEX IF NOT EXISTS order_lines_one_line_per_item',
+        'CREATE INDEX IF NOT EXISTS order_lines_one_line_per_item',
+      ),
+  },
+  MRC2: {
+    what: 'settle_order_line_allocations settles a share on a PAID order',
+    expect: ['rc_orders/share_on_paid_order_refused', 'rc_orders/share_on_paid_order_no_ledger_row'],
+    apply: (sql) =>
+      sql.replace("    IF lower(btrim(COALESCE(v_order.payment_status, ''))) = 'paid' THEN", '    IF false THEN'),
+  },
+  MRC3: {
+    what: 'settle_order_line_allocations settles a share on a CANCELLED order',
+    expect: ['rc_orders/share_on_cancelled_order_refused', 'rc_orders/share_on_cancelled_order_unclaimed'],
+    apply: (sql) =>
+      sql.replace(
+        "    IF lower(btrim(COALESCE(v_order.status, ''))) = 'cancelled'\n       OR lower(btrim(COALESCE(v_order.payment_status, ''))) = 'cancelled' THEN",
+        '    IF false THEN',
+      ),
+  },
   M1: {
     what: 'multi-order settlement reverted to lead-order-only (the Riviera defect)',
     expect: ['riviera/both_orders_paid', 'riviera/order_154_paid'],
@@ -982,6 +1011,8 @@ function runSuite() {
   psql(readRepo('supabase/tests/manual-ledger.test.sql'))
   // 20260929150000: the three line/allocation RPCs are service_role only (real default grants).
   psql(readRepo('supabase/tests/line-rpc-grants.test.sql'))
+  // Sprint 2026-09-30 RC-ORDERS: one line per item; shares on paid/cancelled orders refused.
+  psql(readRepo('supabase/tests/orders-rc.test.sql'))
   const total = Number(psqlValue('SELECT count(*) FROM public._test_results;'))
   const failed = psqlValue(
     "SELECT string_agg(name || '  ::  ' || COALESCE(detail,''), E'\\n') " +

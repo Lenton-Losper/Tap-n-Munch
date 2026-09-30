@@ -76,6 +76,7 @@ const REFUSAL_STATUS: Record<InvoiceFromOrderRefusalCode, number> = {
   // configured. 409 so the UI can route it to "finish setting up Settings -> Billing".
   BILLING_PROFILE_INCOMPLETE: 409,
   INVOICE_ALREADY_EXISTS: 409,
+  INVOICE_CREATE_CONFLICT: 409,
   DOCUMENT_TOTAL_DISAGREES_WITH_ORDER: 409,
 }
 

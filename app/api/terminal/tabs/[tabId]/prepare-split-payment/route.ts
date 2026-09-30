@@ -35,6 +35,7 @@
  */
 import { NextResponse } from 'next/server'
 import { parseTipCents } from '@/lib/payments/tips'
+import { unpayableAllocationIds } from '@/lib/orders/order-line-allocations'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { requireFeature } from '@/lib/features/get-restaurant-features'
@@ -178,6 +179,33 @@ export async function POST(req: Request, { params }: { params: Promise<{ tabId: 
           error: 'Some of those items have already been paid for or removed.',
           code: 'ALLOCATION_NOT_PAYABLE',
           allocation_ids: unavailable.map((r) => String(r.id)),
+        },
+        { status: 409 },
+      )
+    }
+
+    /**
+     * THE FOOD MUST STILL BE OWED (Sprint 2026-09-30, RC-ORDERS B8). A live share on a voided line,
+     * or on an order paid whole or cancelled since it was made, would be charged here and refused at
+     * settlement -- the card taken and nothing recorded. Fails closed.
+     */
+    let notOwed: Awaited<ReturnType<typeof unpayableAllocationIds>> = []
+    try {
+      notOwed = await unpayableAllocationIds(supabase, { restaurantId: terminal.restaurantId, allocationIds })
+    } catch (owedError) {
+      console.error('[prepare-split-payment] owed check failed', owedError)
+      return NextResponse.json(
+        { error: 'Could not confirm these items are still owed', code: 'ITEMS_READ_FAILED' },
+        { status: 500 },
+      )
+    }
+    if (notOwed.length > 0) {
+      return NextResponse.json(
+        {
+          error: 'Some of those items have already been paid for or removed.',
+          code: 'ALLOCATION_NOT_PAYABLE',
+          allocation_ids: notOwed.map((r) => r.allocation_id),
+          reasons: notOwed,
         },
         { status: 409 },
       )

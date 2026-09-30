@@ -144,6 +144,8 @@ export type InvoiceRefusalCode =
   | 'ORDER_TOTAL_UNUSABLE'
   | 'BILLING_PROFILE_INCOMPLETE'
   | 'INVOICE_ALREADY_EXISTS'
+  /** Two creates for one bill withdrew each other; a retry issues exactly one (RC-ORDERS M). */
+  | 'INVOICE_CREATE_CONFLICT'
   | 'DOCUMENT_TOTAL_DISAGREES_WITH_ORDER'
   | 'DOCUMENT_BALANCE_DISAGREES'
   | 'PAYMENT_LEDGER_DISAGREES'
