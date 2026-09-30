@@ -13,6 +13,8 @@ type Row = Record<string, unknown>
 function makeSupabase(lines: Row[]) {
   const updates: Row[] = []
   const inserted: Row[] = []
+  // Sprint 2026-09-30: the order's unsettled shares are voided with it -- the filters it used.
+  const allocationVoids: Array<{ patch: Row; filters: Array<[string, string, unknown]> }> = []
 
   const client = {
     from(table: string) {
@@ -20,9 +22,15 @@ function makeSupabase(lines: Row[]) {
       let patch: Row | null = null
       let updateTargetId: string | null = null
 
+      const filters: Array<[string, string, unknown]> = []
       chain.select = () => chain
       chain.eq = (col: string, val: unknown) => {
         if (table === 'order_lines' && patch && col === 'id') updateTargetId = String(val)
+        filters.push(['eq', col, val])
+        return chain
+      }
+      chain.is = (col: string, val: unknown) => {
+        filters.push(['is', col, val])
         return chain
       }
       chain.insert = (rows: Row | Row[]) => {
@@ -37,6 +45,7 @@ function makeSupabase(lines: Row[]) {
         if (table === 'order_lines' && !patch) {
           return Promise.resolve({ data: lines, error: null }).then(resolve)
         }
+        if (table === 'order_line_allocations' && patch) allocationVoids.push({ patch, filters })
         if (table === 'order_lines' && patch && updateTargetId) {
           const line = lines.find((l) => l.id === updateTargetId)
           if (line) Object.assign(line, patch)
@@ -47,10 +56,35 @@ function makeSupabase(lines: Row[]) {
       return chain
     },
   }
-  return { client: client as never, updates, inserted }
+  return { client: client as never, updates, inserted, allocationVoids }
 }
 
 describe('voidOutstandingOrderLines', () => {
+  it("voids the cancelled order's UNSETTLED shares, and only those (Sprint 2026-09-30)", async () => {
+    const { client, allocationVoids } = makeSupabase([
+      { id: 'l1', kitchen_state: 'ready', bar_state: null },
+    ])
+
+    await voidOutstandingOrderLines(client, {
+      orderId: ORDER,
+      restaurantId: RESTAURANT,
+      actorKind: 'terminal',
+      actorUserId: null,
+    })
+
+    // Even with nothing left to void on the board: the order is cancelled, so nothing on it is owed.
+    expect(allocationVoids).toHaveLength(1)
+    expect(allocationVoids[0].patch).toMatchObject({ void_reason: 'order_cancelled' })
+    expect(allocationVoids[0].filters).toEqual(
+      expect.arrayContaining([
+        ['eq', 'order_id', ORDER],
+        ['eq', 'restaurant_id', RESTAURANT],
+        ['is', 'voided_at', null],
+        ['is', 'settled_at', null],
+      ]),
+    )
+  })
+
   it('voids an outstanding kitchen line', async () => {
     const { client, updates, inserted } = makeSupabase([
       { id: 'l1', kitchen_state: 'outstanding', bar_state: null },

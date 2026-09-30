@@ -105,6 +105,34 @@ export async function POST(
       )
     }
 
+    /**
+     * NOTHING TO PAY FOR, SO NOTHING TO SPLIT (Sprint 2026-09-30, RC-ORDERS B8). A share is a claim
+     * on money. On a voided line, or on an order already paid whole or cancelled, it could only be
+     * charged by a card (prepare-split-payment reads the share, not the line) and then refused at
+     * settlement -- money taken and nothing recorded -- or, on a paid order, settled as a second
+     * payment for the same food. settle_order_line_allocations refuses the same three (20260930100100).
+     */
+    const orderPayment = String(lineInfo.orderPaymentStatus ?? '').trim().toLowerCase()
+    const orderStatus = String(lineInfo.orderStatus ?? '').trim().toLowerCase()
+    if (lineInfo.lineVoided) {
+      return NextResponse.json(
+        { error: 'This item was removed from the bill and cannot be split.', code: 'LINE_VOIDED' },
+        { status: 409 },
+      )
+    }
+    if (orderPayment === 'paid') {
+      return NextResponse.json(
+        { error: 'This item is on an order that is already paid.', code: 'ORDER_PAID' },
+        { status: 409 },
+      )
+    }
+    if (orderStatus === 'cancelled' || orderPayment === 'cancelled') {
+      return NextResponse.json(
+        { error: 'This item is on a cancelled order and is not owed.', code: 'ORDER_CANCELLED' },
+        { status: 409 },
+      )
+    }
+
     let builtAllocations
     try {
       builtAllocations = buildAllocationsForLine({

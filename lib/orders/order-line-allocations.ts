@@ -36,7 +36,15 @@ export type BuiltAllocation = {
 export async function readLineTotalCents(
   supabase: SupabaseLike,
   params: { orderLineId: string; restaurantId: string },
-): Promise<{ orderId: string; tabId: string | null; totalCents: number } | null> {
+): Promise<{
+  orderId: string
+  tabId: string | null
+  totalCents: number
+  /** Every owned station half is voided: the line is off the bill. */
+  lineVoided: boolean
+  orderStatus: string | null
+  orderPaymentStatus: string | null
+} | null> {
   const { data: line, error: lineError } = await supabase
     .from('order_lines')
     .select('id, order_id, tab_id, source_item_index, kitchen_state, bar_state')
@@ -48,7 +56,7 @@ export async function readLineTotalCents(
 
   const { data: order, error: orderError } = await supabase
     .from('orders')
-    .select('id, items')
+    .select('id, items, status, payment_status')
     .eq('id', line.order_id)
     .maybeSingle()
 
@@ -61,7 +69,15 @@ export async function readLineTotalCents(
   const totalCents = toCents(Number(item.total))
   if (!Number.isFinite(totalCents) || totalCents < 0) return null
 
-  return { orderId: String(line.order_id), tabId: line.tab_id ? String(line.tab_id) : null, totalCents }
+  const halves = [line.kitchen_state, line.bar_state].filter((v) => v != null)
+  return {
+    orderId: String(line.order_id),
+    tabId: line.tab_id ? String(line.tab_id) : null,
+    totalCents,
+    lineVoided: halves.length > 0 && halves.every((v) => v === 'voided'),
+    orderStatus: order.status == null ? null : String(order.status),
+    orderPaymentStatus: order.payment_status == null ? null : String(order.payment_status),
+  }
 }
 
 /**
@@ -97,4 +113,53 @@ export function buildAllocationsForLine(params: {
     created_by_actor_kind: params.actorKind,
     created_by_actor_user_id: params.actorUserId,
   }))
+}
+
+/**
+ * Shares that name food nobody owes any more (Sprint 2026-09-30, RC-ORDERS B8): the line was voided,
+ * or its order is already paid whole or cancelled. A card charged for one of these is refused at
+ * settlement (settle_order_line_allocations, 20260930100100) AFTER the money is taken, so the
+ * charge path asks first. Throws on a failed read; callers fail closed.
+ */
+export async function unpayableAllocationIds(
+  supabase: { from: (table: string) => any },
+  params: { restaurantId: string; allocationIds: string[] },
+): Promise<Array<{ allocation_id: string; reason: 'line_voided' | 'order_paid' | 'order_cancelled' }>> {
+  if (params.allocationIds.length === 0) return []
+  const { data: allocations, error } = await supabase
+    .from('order_line_allocations')
+    .select('id, order_id, order_line_id')
+    .eq('restaurant_id', params.restaurantId)
+    .in('id', params.allocationIds)
+  if (error) throw error
+  const rows = (allocations ?? []) as Array<{ id: string; order_id: string; order_line_id: string }>
+  if (rows.length === 0) return []
+
+  const [linesRes, ordersRes] = await Promise.all([
+    supabase
+      .from('order_lines')
+      .select('id, kitchen_state, bar_state')
+      .in('id', [...new Set(rows.map((r) => String(r.order_line_id)))]),
+    supabase
+      .from('orders')
+      .select('id, status, payment_status')
+      .in('id', [...new Set(rows.map((r) => String(r.order_id)))]),
+  ])
+  if (linesRes.error) throw linesRes.error
+  if (ordersRes.error) throw ordersRes.error
+  const lines = new Map(((linesRes.data ?? []) as Array<{ id: string; kitchen_state: string | null; bar_state: string | null }>).map((l) => [String(l.id), l]))
+  const orders = new Map(((ordersRes.data ?? []) as Array<{ id: string; status: string | null; payment_status: string | null }>).map((o) => [String(o.id), o]))
+
+  const out: Array<{ allocation_id: string; reason: 'line_voided' | 'order_paid' | 'order_cancelled' }> = []
+  for (const r of rows) {
+    const line = lines.get(String(r.order_line_id))
+    const halves = line ? [line.kitchen_state, line.bar_state].filter((v) => v != null) : []
+    const order = orders.get(String(r.order_id))
+    const payment = String(order?.payment_status ?? '').trim().toLowerCase()
+    const status = String(order?.status ?? '').trim().toLowerCase()
+    if (halves.length > 0 && halves.every((v) => v === 'voided')) out.push({ allocation_id: String(r.id), reason: 'line_voided' })
+    else if (payment === 'paid') out.push({ allocation_id: String(r.id), reason: 'order_paid' })
+    else if (status === 'cancelled' || payment === 'cancelled') out.push({ allocation_id: String(r.id), reason: 'order_cancelled' })
+  }
+  return out
 }

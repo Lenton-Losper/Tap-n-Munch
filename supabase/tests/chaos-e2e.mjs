@@ -248,6 +248,169 @@ const MUTATIONS = {
       to: '  if (false && params.releaseAttemptOnly === true) {\n',
     },
   },
+  // --- orders-cancel-kitchen (node supabase/tests/chaos-e2e.mjs --scenario=orders-cancel-kitchen --mutate=all)
+  OK1: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'A4: order_lines has no one-line-per-item index (a double-tapped Send writes the round twice)',
+    expect: 'O04',
+    sql: {
+      file: '20260930100000_order_lines_one_line_per_item.sql',
+      from: 'CREATE UNIQUE INDEX IF NOT EXISTS order_lines_one_line_per_item',
+      to: 'CREATE INDEX IF NOT EXISTS order_lines_one_line_per_item',
+    },
+  },
+  OK2: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'A4: the rounds route does not answer the losing line insert as a replay',
+    expect: 'O04',
+    ts: {
+      file: 'app/api/terminal/rounds/route.ts',
+      from: "      if ((linesError as { code?: string } | null)?.code === '23505') {\n",
+      to: "      if (false && (linesError as { code?: string } | null)?.code === '23505') {\n",
+    },
+  },
+  OK3: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'A3: a changed basket under the same key is accepted as a replay',
+    expect: 'O06',
+    ts: {
+      file: 'lib/orders/round-idempotency.ts',
+      from: 'export function isSameRound(',
+      to: 'export function isSameRound(..._ignored: unknown[]): boolean { return true }\nexport function isSameRoundOriginal(',
+    },
+  },
+  OK4: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'B2/B5: an all-refused amendment reports changed:true',
+    expect: 'O12',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/amend/route.ts',
+      from: '      changed: result.applied.length > 0,\n',
+      to: '      changed: result.applied.length >= 0,\n',
+    },
+  },
+  OK5: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'B6: a cooked / ready / collected line can be voided (the void window is not the line state)',
+    expect: 'O13',
+    sql: {
+      file: '20260929120200_amend_refuses_payment_in_flight.sql',
+      from: "          AND (kitchen_state IS NULL OR kitchen_state = 'outstanding')\n          AND (bar_state IS NULL OR bar_state = 'outstanding')\n          AND (kitchen_state IS NOT NULL OR bar_state IS NOT NULL)\n        RETURNING",
+      to: "          AND (kitchen_state IS NULL OR kitchen_state <> 'voided')\n          AND (bar_state IS NULL OR bar_state <> 'voided')\n          AND (kitchen_state IS NOT NULL OR bar_state IS NOT NULL)\n        RETURNING",
+    },
+  },
+  OK6: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'B7/B8: a share on a PAID order can be settled (the settlement function no longer checks the order)',
+    expect: 'O16',
+    sql: {
+      file: '20260930100100_allocation_settle_refuses_paid_or_cancelled_order.sql',
+      from: "    IF lower(btrim(COALESCE(v_order.payment_status, ''))) = 'paid' THEN",
+      to: '    IF false THEN',
+    },
+  },
+  OK7: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'B7/B8: a line on a paid order can be split (allocate route guard off)',
+    expect: 'O16',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/lines/[lineId]/allocate/route.ts',
+      from: "    if (orderPayment === 'paid') {\n",
+      to: "    if (false && orderPayment === 'paid') {\n",
+    },
+  },
+  OK8: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'B8: a card is asked for a share whose order is already paid (prepare-split-payment guard off)',
+    expect: 'O16',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/prepare-split-payment/route.ts',
+      from: '    if (notOwed.length > 0) {\n',
+      to: '    if (false && notOwed.length > 0) {\n',
+    },
+  },
+  OK9: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'B8: a voided line can be split (allocate route guard off)',
+    expect: 'O16',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/lines/[lineId]/allocate/route.ts',
+      from: '    if (lineInfo.lineVoided) {\n',
+      to: '    if (false && lineInfo.lineVoided) {\n',
+    },
+  },
+  OK10: {
+    scenario: 'orders-cancel-kitchen',
+    what: "G: a whole-order cancel leaves the order's unpaid shares live",
+    expect: 'O18',
+    ts: {
+      file: 'lib/orders/order-lines.ts',
+      from: "    .update({ voided_at: new Date().toISOString(), void_reason: 'order_cancelled' })\n",
+      to: "    .update({ voided_at: new Date().toISOString(), void_reason: 'order_cancelled' }).eq('id', '00000000-0000-4000-8000-000000000000')\n",
+    },
+  },
+  OK11: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'G6: a cancel that voided lines does not tell the station screens',
+    expect: 'O18',
+    ts: {
+      file: 'lib/orders/order-lines.ts',
+      from: '  if (voidedLineCount > 0) {\n    await broadcastLineChanged(',
+      to: '  if (false && voidedLineCount > 0) {\n    await broadcastLineChanged(',
+    },
+  },
+  OK12: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'G: a share on a CANCELLED order can be settled (the settlement function no longer checks)',
+    expect: 'O18',
+    sql: {
+      file: '20260930100100_allocation_settle_refuses_paid_or_cancelled_order.sql',
+      from: "    IF lower(btrim(COALESCE(v_order.status, ''))) = 'cancelled'\n       OR lower(btrim(COALESCE(v_order.payment_status, ''))) = 'cancelled' THEN",
+      to: '    IF false THEN',
+    },
+  },
+  OK13: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'H1/H3: an unanswered required variant group is priced instead of refused (base-0 item sold at N$0)',
+    expect: 'O09',
+    // The refusal itself, not the whole strict mode: switching strict mode off also drops the
+    // canonical variant names, which O02 catches first -- a wider defect than this one.
+    ts: {
+      file: 'lib/orders/calculate-order-pricing.ts',
+      from: '  if (variantRequired.length > 0) {\n',
+      to: '  if (false && variantRequired.length > 0) {\n',
+    },
+  },
+  OK14: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'M: a POS order replay with an edited body is accepted',
+    expect: 'O21',
+    ts: {
+      file: 'app/api/terminal/orders/route.ts',
+      from: '      if (stored && !isSameRound(stored, { items })) {\n',
+      to: '      if (false && stored && !isSameRound(stored, { items })) {\n',
+    },
+  },
+  OK15: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'M: two concurrent invoice creates both issue (the post-insert rival check off)',
+    expect: 'O23',
+    ts: {
+      file: 'lib/documents/create-invoice-from-order.ts',
+      from: '  if (rival) {\n',
+      to: '  if (false && rival) {\n',
+    },
+  },
+  OK16: {
+    scenario: 'orders-cancel-kitchen',
+    what: 'G: a line on a cancelled order can be split (allocate route guard off)',
+    expect: 'O18',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/lines/[lineId]/allocate/route.ts',
+      from: "    if (orderStatus === 'cancelled' || orderPayment === 'cancelled') {\n",
+      to: "    if (false && (orderStatus === 'cancelled' || orderPayment === 'cancelled')) {\n",
+    },
+  },
   B1: {
     what: 'a partial payment is not deducted from the remaining balance',
     expect: 'C03 pay about half by item: balance reduced by exactly that',
@@ -410,6 +573,15 @@ function startProxy(pgrstPort) {
     upstream.on('error', (e) => { res.writeHead(502); res.end(String(e)) })
     req.pipe(upstream)
   })
+  /**
+   * The CLIENT must always be the side that retires an idle keep-alive socket. Node's default
+   * (5 s, advertised as `Keep-Alive: timeout=5`) leaves undici a 1 s margin, and a jest worker
+   * blocked compiling a module mid-scenario outlives it: the proxy closes the socket, the route
+   * reuses it, and a PostgREST write fails with ECONNRESET (measured 2026-09-30: payment-simulation
+   * S3's two audit inserts, intermittently). Harness plumbing only -- no route sees a difference.
+   */
+  server.keepAliveTimeout = 120_000
+  server.headersTimeout = 125_000
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)))
 }
 

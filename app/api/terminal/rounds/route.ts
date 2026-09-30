@@ -301,14 +301,16 @@ export async function POST(request: Request) {
       }
     }
 
-    const { data: existingLines, error: existingLinesError } = await supabase
-      .from('order_lines')
-      .select('id, route_to, name_snapshot, quantity, kitchen_state, bar_state')
-      .eq('order_id', result.orderId)
+    /** The same round, already persisted: report what is there and write nothing. */
+    const replayAnswer = async () => {
+      const { data: existingLines, error: existingLinesError } = await supabase
+        .from('order_lines')
+        .select('id, route_to, name_snapshot, quantity, kitchen_state, bar_state')
+        .eq('order_id', result.orderId)
 
-    if (existingLinesError) throw existingLinesError
+      if (existingLinesError) throw existingLinesError
+      if ((existingLines ?? []).length === 0) return null
 
-    if ((existingLines ?? []).length > 0) {
       const stationCounts = { kitchen: 0, bar: 0, unrouted: 0 }
       for (const row of existingLines as Array<{ route_to: LineRouteTo }>) {
         const owned = stationsOwnedBy(row.route_to)
@@ -341,6 +343,9 @@ export async function POST(request: Request) {
       })
     }
 
+    const replay = await replayAnswer()
+    if (replay) return replay
+
     // See the header: lines index into the STORED items, so they are read back.
     const { data: storedOrder, error: storedOrderError } = await supabase
       .from('orders')
@@ -366,6 +371,19 @@ export async function POST(request: Request) {
         actorUserId: tab.opened_by_user_id ? String(tab.opened_by_user_id) : null,
       })
     } catch (linesError) {
+      /**
+       * A DOUBLE-TAP THAT BOTH PASSED THE REPLAY CHECK (Sprint 2026-09-30, RC-ORDERS A4).
+       *
+       * Two sends of one key arrive together: one creates the order, the other gets it back from
+       * createOrder's 23505 branch, and both read "no lines yet" above before either has written
+       * any. Both then built the whole round -- the kitchen got every item twice on one order.
+       * order_lines_one_line_per_item (20260930100000) makes the second insert fail as a unit, and
+       * that failure IS the answer: the other request wrote this round, so this one is its replay.
+       */
+      if ((linesError as { code?: string } | null)?.code === '23505') {
+        const replayed = await replayAnswer()
+        if (replayed) return replayed
+      }
       console.error(
         '[TERMINAL ROUNDS] THE ORDER WAS CREATED BUT ITS LINES WERE NOT — no station will see ' +
           'this round, and the food will not be made unless somebody is told',

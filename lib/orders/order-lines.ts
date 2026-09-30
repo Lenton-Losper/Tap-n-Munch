@@ -50,6 +50,7 @@
  * route_to is read once, here, and stored. A menu edit at 8pm must not move food that is already
  * cooking -- the same rule the immutable receipt snapshot follows.
  */
+import { broadcastLineChanged } from '@/lib/stations/realtime-invalidate'
 
 /** What a line routes to, frozen at creation. */
 export type LineRouteTo = 'kitchen' | 'bar' | 'both' | 'unrouted'
@@ -506,6 +507,34 @@ export async function voidOutstandingOrderLines(
     if (eventsError) {
       console.error('[ORDER LINES] void events failed to write', eventsError)
     }
+  }
+
+  /**
+   * THE ORDER'S UNPAID SHARES GO WITH IT (Sprint 2026-09-30, RC-ORDERS B8/G). Every caller of this
+   * function is cancelling the order. amend_order_lines voids a voided line's unsettled shares in its
+   * own transaction for exactly this reason; this path left them live, so a card could be charged
+   * for a cancelled order's items (prepare-split-payment read only the share) and then refused at
+   * settlement. Covers a line left at ready too: the order is cancelled, so nothing on it is owed.
+   * Settled shares are untouched -- the cancel's own money check refuses an order with any. Thrown,
+   * like the line writes above: the caller logs it and the order stays cancelled.
+   */
+  const { error: allocationError } = await supabase
+    .from('order_line_allocations')
+    .update({ voided_at: new Date().toISOString(), void_reason: 'order_cancelled' })
+    .eq('order_id', params.orderId)
+    .eq('restaurant_id', params.restaurantId)
+    .is('voided_at', null)
+    .is('settled_at', null)
+  if (allocationError) throw allocationError
+
+  /**
+   * THE STATION SCREENS ARE TOLD (G6). The web boards follow order_lines over postgres_changes, but
+   * the terminal's station and table views listen only for this broadcast (see
+   * realtime-invalidate.ts), so a cancel that voided lines left them showing the food until their
+   * next poll. Never throws.
+   */
+  if (voidedLineCount > 0) {
+    await broadcastLineChanged(supabase as unknown as Parameters<typeof broadcastLineChanged>[0], params.restaurantId)
   }
 
   return { voidedLineCount, notVoided }

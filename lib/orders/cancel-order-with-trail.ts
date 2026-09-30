@@ -1,4 +1,4 @@
-import { voidOutstandingOrderLines } from './order-lines'
+import { voidOutstandingOrderLines, type VoidOrderLinesResult } from './order-lines'
 
 type Supabase = {
   from: (table: string) => any
@@ -58,6 +58,11 @@ export type CancelWithTrailResult = {
   /** The updated row, or null when the UPDATE matched nothing (lost the race, or wrong scope). */
   order: Record<string, unknown> | null
   cancelled: boolean
+  /**
+   * What the line cascade did, or null when it failed (or nothing was cancelled). Its `notVoided`
+   * is food a station had already finished, which the caller should name to staff.
+   */
+  lineVoid?: VoidOrderLinesResult | null
 }
 
 /**
@@ -173,8 +178,9 @@ export async function cancelOrderWithTrail(
    * un-cancel the order -- the order row is already correct -- so this is best-effort, matching
    * writeOrderLines' own choice for its creation events: logged loudly, never thrown.
    */
+  let lineVoid: VoidOrderLinesResult | null = null
   try {
-    await voidOutstandingOrderLines(supabase, {
+    lineVoid = await voidOutstandingOrderLines(supabase, {
       orderId: params.orderId,
       restaurantId: params.restaurantId,
       actorKind: params.actorKind,
@@ -184,5 +190,5 @@ export async function cancelOrderWithTrail(
     console.error('[cancelOrderWithTrail] order cancelled but voiding its lines failed', voidError)
   }
 
-  return { order, cancelled: true }
+  return { order, cancelled: true, lineVoid }
 }

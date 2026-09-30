@@ -298,6 +298,45 @@ async function issue(supabase: Supabase, params: CommonParams, loaded: Loaded): 
   })
   const documentId = String((created.document as { id: unknown }).id)
 
+  /**
+   * ── 7b. TWO CREATES AT ONCE (Sprint 2026-09-30, RC-ORDERS M) ─────────────────────────────────
+   *
+   * Step 4 is a read, and the insert above is a separate round trip, so two requests for the same
+   * tab (a double-click, a retried request whose first answer was lost) both passed step 4 and BOTH
+   * issued an invoice -- reproduced through the real route (chaos orders-cancel-kitchen, O23: two
+   * 201s, two live invoices for one tab). A unique index cannot express "one live invoice per scope"
+   * here: correct_invoice inserts the replacement while the original is still live, and a tab
+   * invoice's scope is an order-id array.
+   *
+   * So the check is repeated AFTER the insert, and a request that now sees another live invoice for
+   * its scope withdraws its own -- voided, not deleted, exactly like steps 8-10, because the number
+   * is already consumed in a gapless ledger. Of two concurrent creates at least one sees the other
+   * (whichever checks last), so there is never more than one live invoice. In the narrow case that
+   * each sees the other, both withdraw and neither is issued; the caller is told to try again
+   * (INVOICE_CREATE_CONFLICT) and the retry issues exactly one. Never two.
+   */
+  const rival = await findLiveInvoice(supabase, restaurantId, loaded, plan, documentId)
+  if (rival) {
+    await supabase.from('business_documents').update({ status: 'void' }).eq('id', documentId)
+    const stillLive = await findLiveInvoice(supabase, restaurantId, loaded, plan, documentId)
+    if (stillLive) {
+      return {
+        ok: false,
+        code: 'INVOICE_ALREADY_EXISTS',
+        message:
+          loaded.scope === 'tab'
+            ? `Invoice ${stillLive.document_number} already bills for this tab or one of its orders.`
+            : `Invoice ${stillLive.document_number} has already been raised for this order.`,
+        existingDocument: stillLive,
+      }
+    }
+    return {
+      ok: false,
+      code: 'INVOICE_CREATE_CONFLICT',
+      message: 'Another invoice for this bill was being created at the same moment. Try again.',
+    }
+  }
+
   // ── 8. The document must agree with the projection's LIVE total ───────────────────────────
   const documentCents = Math.round(Number((created.document as { total?: unknown }).total) * 100)
   if (documentCents !== plan.liveCents) {
@@ -372,6 +411,7 @@ async function findLiveInvoice(
   restaurantId: string,
   loaded: Loaded,
   plan: InvoicePlan,
+  excludeId: string | null = null,
 ): Promise<{ id: string; document_number: string; status: string } | null> {
   const covered = new Set(plan.coveredOrderIds)
   const tabIds = new Set<string>()
@@ -412,6 +452,7 @@ async function findLiveInvoice(
   }
   for (const d of [...(byOrder ?? []), ...byTab] as DocRow[]) {
     if (String(d.document_type) !== 'invoice' || String(d.status) === 'void') continue
+    if (excludeId !== null && String(d.id) === excludeId) continue
     const docOrderIds = Array.isArray(d.order_ids) ? (d.order_ids as unknown[]).map(String) : []
     const billsThisTab =
       loaded.scope === 'tab' && loaded.tab != null && String(d.tab_id ?? '') === String(loaded.tab.id)
