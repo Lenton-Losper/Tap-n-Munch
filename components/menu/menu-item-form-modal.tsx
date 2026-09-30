@@ -53,7 +53,8 @@ type ItemFormState = {
   imagePosition: 'center' | 'top' | 'bottom'
   has_sizes: boolean
   sizes: Array<{ name: string; price_modifier: number }>
-  variants: Array<{ size: string; label: string; price: number }>
+  /** `null` while the price box is empty: see handleUpdateVariantRow. */
+  variants: Array<{ size: string; label: string; price: number | null }>
   variantGroups: Array<{
     name: string
     required: boolean
@@ -469,6 +470,28 @@ function MenuItemFormContent({
       return
     }
 
+    // A named variant row with an empty or negative price would otherwise be dropped from the
+    // saved item without a word by sanitizedVariants.
+    const variantPriceErrors = itemForm.variants
+      .filter((variant) => String(variant.size || '').trim() || String(variant.label || '').trim())
+      .filter(
+        (variant) =>
+          typeof variant.price !== 'number' || !Number.isFinite(variant.price) || variant.price < 0,
+      )
+      .map(
+        (variant) =>
+          `Enter a valid price for variant "${String(variant.label || variant.size).trim()}".`,
+      )
+    if (variantPriceErrors.length > 0) {
+      toast({
+        title: 'Validation Error',
+        description: variantPriceErrors.join('\n'),
+        variant: 'destructive',
+      })
+      setActiveTab('pricing')
+      return
+    }
+
     if (!itemForm.name || !itemForm.base_price) {
       toast({
         title: 'Validation Error',
@@ -587,7 +610,7 @@ function MenuItemFormContent({
   const handleAddVariantRow = () => {
     setItemForm((prev) => ({
       ...prev,
-      variants: [...prev.variants, { size: '', label: '', price: Number(prev.base_price) || 0 }],
+      variants: [...prev.variants, { size: '', label: '', price: Number(prev.base_price) || null }],
     }))
   }
 
@@ -600,7 +623,12 @@ function MenuItemFormContent({
       const next = [...prev.variants]
       if (!next[index]) return prev
       if (field === 'price') {
-        next[index] = { ...next[index], price: Number(value) || 0 }
+        /*
+         * An empty box stays EMPTY. This read `Number(value) || 0`, so clearing the box wrote 0,
+         * the input re-rendered "0", and the only way to replace it was to type in front of the 0
+         * and delete it afterwards. handleSaveItem validates whatever is left.
+         */
+        next[index] = { ...next[index], price: value.trim() === '' ? null : Number(value) }
       } else {
         next[index] = { ...next[index], [field]: value }
       }
@@ -891,7 +919,13 @@ function MenuItemFormContent({
                         type="number"
                         step="0.01"
                         placeholder="25.00"
-                        value={Number.isFinite(variant.price) ? variant.price : ''}
+                        min="0"
+                        value={
+                          typeof variant.price === 'number' && Number.isFinite(variant.price)
+                            ? variant.price
+                            : ''
+                        }
+                        onFocus={(event) => event.currentTarget.select()}
                         onChange={(event) =>
                           handleUpdateVariantRow(index, 'price', event.target.value)
                         }
