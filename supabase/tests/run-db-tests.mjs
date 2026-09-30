@@ -73,6 +73,11 @@ const MIGRATIONS = [
   'supabase/migrations/20260929140000_manual_payment_releases_stale_card_attempt.sql',
   // Closes anon/authenticated EXECUTE on the three line/allocation RPCs (Supabase default grants).
   'supabase/migrations/20260929150000_revoke_anon_authenticated_line_rpcs.sql',
+  // RC-RACES (2026-09-30): a card attempt in flight is owned by the terminal that prepared it.
+  // Reads 20260929120000's pending_charge_at. Exercised by charge-owner-race.test.sh.
+  'supabase/migrations/20260930110000_charge_attempt_owned_by_one_terminal.sql',
+  // RC-RACES D4: an attempt reported uncertain blocks every new charge until it is resolved.
+  'supabase/migrations/20260930110100_unresolved_card_attempt_blocks_new_charge.sql',
 ]
 
 /**
@@ -866,6 +871,66 @@ const MUTATIONS = {
         sql,
       ),
   },
+  /**
+   * RC-RACES (2026-09-30): two terminals, one order. Only the two-session probe can see these --
+   * the defect is a second WRITER, which one psql pipe cannot be.
+   */
+  MRC1: {
+    what: 'a second terminal may prepare a charge while the first terminal attempt is in flight (FTOWN off)',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-owner-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql.replace('  IF NEW.pending_charge_terminal_id IS NOT NULL', '  IF false AND NEW.pending_charge_terminal_id IS NOT NULL'),
+  },
+  MRC2: {
+    what: 'the ownership never lapses: a dead terminal strands the order (window check removed)',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-owner-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql.replace(
+        "     AND (OLD.pending_charge_at IS NULL OR OLD.pending_charge_at > now() - interval '5 minutes')\n  THEN\n    RAISE EXCEPTION USING\n      ERRCODE = 'FTOWN',",
+        "     AND true\n  THEN\n    RAISE EXCEPTION USING\n      ERRCODE = 'FTOWN',",
+      ),
+  },
+  MRC3: {
+    what: 'releasing a charge leaves its owner behind (the owner is not cleared with the attempt)',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-owner-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql.replace('    NEW.pending_charge_terminal_id := NULL;', '    NULL;'),
+  },
+  MRC4: {
+    what: 'a new charge may be prepared over an attempt whose outcome is unknown (FTUNR off)',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-owner-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql.replace(
+        '  IF OLD.pending_charge_unresolved_at IS NOT NULL AND OLD.pending_charge_cents IS NOT NULL THEN',
+        '  IF false AND OLD.pending_charge_unresolved_at IS NOT NULL THEN',
+      ),
+  },
+  MRC5: {
+    what: 'an uncertain report marks only the lead order, not the rest of the attempt',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-owner-race.test.sh',
+    expect: [],
+    apply: (sql) =>
+      sql.replace(
+        '          OR (v_settlement IS NOT NULL AND o.pending_settlement_id = v_settlement));',
+        '          OR false);',
+      ),
+  },
+  MRC6: {
+    what: 'a released attempt stays marked unresolved: the legitimate retry is refused for ever',
+    concurrencyOnly: true,
+    concurrencyScript: 'supabase/tests/charge-owner-race.test.sh',
+    expect: [],
+    apply: (sql) => sql.replace('    NEW.pending_charge_unresolved_at := NULL;', '    NULL;'),
+  },
   M8: {
     what: 'the settlement RPC is granted to anon (the security POSITIVE CONTROL)',
     expect: ['security/anon_cannot_execute', 'security/public_cannot_execute'],
@@ -1005,7 +1070,8 @@ function runConcurrencyProbe(script = 'supabase/tests/concurrency.test.sh') {
   if (
     script.includes('amend-race') ||
     script.includes('charge-edit-race') ||
-    script.includes('manual-ledger-race')
+    script.includes('manual-ledger-race') ||
+    script.includes('charge-owner-race')
   )
     runSuite()
   try {
@@ -1175,6 +1241,15 @@ if (!baseManual.passed) {
   process.exit(1)
 }
 console.log('  manual-ledger-race probe: Mark-as-Paid refused mid-prepare, a late claim on a released attempt matches nothing')
+
+// RC-RACES: two terminals preparing / confirming one order (20260930110000).
+const baseOwner = runConcurrencyProbe('supabase/tests/charge-owner-race.test.sh')
+if (!baseOwner.passed) {
+  console.error('FAIL: the charge-owner race probe did not pass on unmutated code.')
+  console.error(baseOwner.out.split('\n').slice(-40).join('\n'))
+  process.exit(1)
+}
+console.log('  charge-owner-race probe: a second terminal is refused mid-attempt, takes over after the window, one confirmation pays')
 
 if (!which) process.exit(0)
 

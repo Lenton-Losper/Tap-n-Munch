@@ -57,6 +57,16 @@ jest.mock('@/lib/supabase/server', () => ({
         }
         return chain
       }
+      // RC-RACES 2026-09-30: the close route also projects what the table owes. These tabs hold no
+      // orders, so the real guard runs and finds nothing owed.
+      if (table === 'orders') {
+        const chain: Record<string, unknown> = {
+          select: () => chain,
+          eq: () => chain,
+          in: async () => ({ data: [], error: null }),
+        }
+        return chain
+      }
       if (table === 'order_requests') {
         const applied: Array<[string, unknown]> = []
         let column: 'tab_id' | 'table_id' = 'tab_id'

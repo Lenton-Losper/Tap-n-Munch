@@ -23,6 +23,16 @@ import { getRestaurantFinaticCredentials } from '@/lib/payments/finatic-restaura
 import { isMissingFinaticCredentialsError } from '@/lib/payments/finatic-credentials-error'
 import { isHeldForReviewPaymentStatus } from '@/lib/payments/payment-integrity'
 import {
+  CHARGE_OWNED_ELSEWHERE_SQLSTATE,
+  CHARGE_UNRESOLVED_SQLSTATE,
+  hasUnresolvedAttempt,
+  unresolvedAttemptBody,
+  type UnresolvedRow,
+  chargeOwnedElsewhereBody,
+  secondsUntilAttemptLapses,
+  type ChargeOwnerRow,
+} from '@/lib/payments/charge-attempt-owner'
+import {
   PREPARE_PAYMENT_OUTCOME_CODES,
   PREPARE_PAYMENT_STAFF_MESSAGE,
   PREPARE_REFUSED_NO_CREDENTIALS_ACTION,
@@ -279,7 +289,8 @@ export async function POST(
         // It is handed back with the expectation so the database can refuse to record a figure
         // computed from an order that has since moved. See the expectation write.
         // order_number names a refused order to the waiter (not_claimable below).
-        .select(`${FINANCIAL_ORDER_COLUMNS}, pending_settlement_id, charge_basis, order_number`)
+        // pending_charge_* say whether ANOTHER terminal's card attempt is in flight (RC-RACES, below).
+        .select(`${FINANCIAL_ORDER_COLUMNS}, pending_settlement_id, charge_basis, order_number, pending_charge_cents, pending_charge_at, pending_charge_terminal_id, pending_charge_unresolved_at`)
         .in('id', settlementOrderIds)
         .eq('restaurant_id', terminal.restaurantId)
 
@@ -350,6 +361,33 @@ export async function POST(
               reason: notClaimableReason(r),
             })),
           },
+          { status: 409 },
+        )
+      }
+
+      /**
+       * ANOTHER TERMINAL IS ALREADY CHARGING THIS BILL (RC-RACES, 2026-09-30, C6/D4).
+       *
+       * The order's merchant reference is fixed, so a second terminal preparing it now would be
+       * handed the SAME reference and open a second reader; a second charge on one reference is
+       * recorded nowhere. Refused here, before the stale-settlement release below can clear the
+       * other terminal's live expectation, and again by the FTOWN trigger on the write, which is
+       * what holds when two terminals read "nothing in flight" at the same moment.
+       */
+      const unresolved = (orderRow as unknown as UnresolvedRow[]).filter(hasUnresolvedAttempt)
+      if (unresolved.length > 0) {
+        // Checked first: an unknown outcome blocks EVERY terminal, the one that launched it included.
+        return NextResponse.json(unresolvedAttemptBody(unresolved), { status: 409 })
+      }
+      const ownedElsewhere = (orderRow as unknown as ChargeOwnerRow[])
+        .map((r) => ({ r, left: secondsUntilAttemptLapses(r, terminal.terminalId) }))
+        .filter((x) => x.left !== null)
+      if (ownedElsewhere.length > 0) {
+        return NextResponse.json(
+          chargeOwnedElsewhereBody(
+            ownedElsewhere.map((x) => x.r),
+            Math.max(...ownedElsewhere.map((x) => x.left as number)),
+          ),
           { status: 409 },
         )
       }
@@ -544,6 +582,8 @@ export async function POST(
             pending_tip_staff_user_id: isTipCarrier && tipCents > 0 ? tipStaffUserId : null,
             // Every participating order, including the lead. The expansion keys off this.
             pending_settlement_id: settlementId,
+            // Who owns this attempt. A second terminal's write is refused (FTOWN, 20260930110000).
+            pending_charge_terminal_id: terminal.terminalId,
             ...(typeof readBasis === 'string' && readBasis ? { pending_charge_read_basis: readBasis } : {}),
           })
           .eq('id', String(row.id))
@@ -553,6 +593,49 @@ export async function POST(
           break
         }
         written.push(String(row.id))
+      }
+
+      const expectationCode = String(expectationError?.code ?? '')
+      if (
+        expectationError &&
+        (expectationCode === CHARGE_OWNED_ELSEWHERE_SQLSTATE || expectationCode === CHARGE_UNRESOLVED_SQLSTATE)
+      ) {
+        /**
+         * ANOTHER TERMINAL WON THE RACE (FTOWN, 20260930110000). It prepared an order in this set
+         * between this route's read and its write. Nothing has been charged here; the expectations
+         * THIS terminal already wrote are released -- conditioned on its own settlement id AND its
+         * own terminal id, so the winner's live attempt is never touched. FTUNR (20260930110100) is
+         * the same shape: an earlier attempt on this set was reported uncertain in the meantime.
+         */
+        if (written.length > 0) {
+          const { error: releaseError } = await supabase
+            .from('orders')
+            .update({
+              pending_charge_cents: null,
+              pending_tip_cents: 0,
+              pending_tip_staff_user_id: null,
+              pending_settlement_id: null,
+            })
+            .in('id', written)
+            .eq('restaurant_id', terminal.restaurantId)
+            .eq('pending_settlement_id', settlementId)
+            .eq('pending_charge_terminal_id', terminal.terminalId)
+          if (releaseError) {
+            console.error('[terminal/prepare-payment] could not release a preparation that lost to another terminal', {
+              settlementId,
+              error: releaseError.message,
+            })
+          }
+        }
+        const contested = (orderRow as unknown as ChargeOwnerRow[]).filter(
+          (r) => !written.includes(String(r.id)),
+        )
+        return NextResponse.json(
+          expectationCode === CHARGE_UNRESOLVED_SQLSTATE
+            ? unresolvedAttemptBody(contested)
+            : chargeOwnedElsewhereBody(contested, 300),
+          { status: 409 },
+        )
       }
 
       if (expectationError && String(expectationError.code ?? '') === 'FTCHG') {

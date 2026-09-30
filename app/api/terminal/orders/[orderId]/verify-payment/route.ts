@@ -24,6 +24,10 @@ import { expectedChargeFor } from '@/lib/payments/expected-charge'
 import { resolveSettlementTarget } from '@/lib/payments/settlement-target'
 import { settleWholeOrderPayment } from '@/lib/payments/settle-whole-order-payment'
 
+import {
+  releaseUnresolvedAttemptNotPaid,
+  type AttemptResolution,
+} from '@/lib/payments/release-unresolved-attempt'
 export const dynamic = 'force-dynamic'
 
 function isUuid(value: string): boolean {
@@ -70,7 +74,7 @@ export async function POST(
       // pending_charge_cents / pending_tip_cents are SELECTED, not merely written: without them
       // expectedChargeFor falls back to the order total on every row and the fix ships INERT.
       .select(
-        'id, restaurant_id, payment_status, total, paycloud_merchant_order_no, pending_charge_cents, pending_tip_cents, pending_settlement_id',
+        'id, restaurant_id, payment_status, total, paycloud_merchant_order_no, pending_charge_cents, pending_tip_cents, pending_settlement_id, pending_charge_unresolved_at',
       )
       .eq('id', orderId)
       .eq('restaurant_id', terminal.restaurantId)
@@ -94,6 +98,7 @@ export async function POST(
           : null,
         transactionId: null,
         status: 'paid',
+        attemptResolution: 'paid' satisfies AttemptResolution,
       })
     }
 
@@ -105,6 +110,11 @@ export async function POST(
           paid: false,
           source: 'none',
           status: 'no_merchant_order',
+          // No reference means no attempt a gateway could still confirm (never prepared, or closed
+          // at the gateway by a manager's cancel-terminal). Only definite when nothing is in flight.
+          attemptResolution: (order.pending_charge_cents == null
+            ? 'resolved_not_paid'
+            : 'unresolved') satisfies AttemptResolution,
           merchantOrderNo: null,
           transactionId: null,
           error: 'Order has no paycloud_merchant_order_no — prepare-payment was not completed',
@@ -160,6 +170,7 @@ export async function POST(
           merchantOrderNo,
           transactionId: null,
           status: 'credentials_not_configured',
+          attemptResolution: 'unresolved' satisfies AttemptResolution,
         },
         { status: 400 },
       )
@@ -249,6 +260,8 @@ export async function POST(
         merchantOrderNo,
         transactionId: null,
         status: 'no_gateway_record',
+        // E04111 is NO RECORD, never NOT PAID -- however many times it is answered.
+        attemptResolution: 'unresolved' satisfies AttemptResolution,
       })
     }
 
@@ -377,10 +390,39 @@ export async function POST(
      * `paid`/`applied` behaves exactly as it does today. `outcome` is additive: it names WHY
      * nothing was applied, which is the ambiguity #190 is about.
      */
+    /**
+     * A RECOGNISED "NOT PAID" RESOLVES AN UNRESOLVED ATTEMPT (RC-RACES D4). Evidence, not a timeout:
+     * the gateway answered a status it recognises and it is not paid. The attempt's expectation is
+     * released (the order stays owed), which lifts the FTUNR block for every terminal, and the
+     * answer says so in one typed field. An unrecognised status leaves it unresolved.
+     */
+    let attemptResolution: AttemptResolution = result.paid ? 'paid' : 'unresolved'
+    if (!result.paid && result.statusRecognised) {
+      if ((order as { pending_charge_unresolved_at?: unknown }).pending_charge_unresolved_at != null) {
+        try {
+          await releaseUnresolvedAttemptNotPaid(supabase, {
+            restaurantId: terminal.restaurantId,
+            orderId,
+            pendingSettlementId: order.pending_settlement_id ? String(order.pending_settlement_id) : null,
+            merchantOrderNo,
+            finaticStatus: String(result.status ?? ''),
+            terminalId: terminal.terminalId,
+          })
+          attemptResolution = 'resolved_not_paid'
+        } catch (releaseErr) {
+          console.error('[terminal/verify-payment] could not release the unresolved attempt', releaseErr)
+        }
+      } else if (order.pending_charge_cents == null) {
+        // Nothing in flight on the server and the gateway says not paid.
+        attemptResolution = 'resolved_not_paid'
+      }
+    }
+
     return NextResponse.json({
       ok: true,
       paid: result.paid,
       applied,
+      attemptResolution,
       outcome,
       /**
        * #153. The gateway WAS asked and answered here -- that is what separates this response
@@ -421,6 +463,7 @@ export async function POST(
         staffMessage:
           VERIFY_PAYMENT_STAFF_MESSAGE[VERIFY_PAYMENT_OUTCOME_CODES.PROVIDER_UNREACHABLE],
         error: message,
+        attemptResolution: 'unresolved' satisfies AttemptResolution,
       },
       { status: 502 },
     )

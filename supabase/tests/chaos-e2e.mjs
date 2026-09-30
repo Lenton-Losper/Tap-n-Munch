@@ -248,6 +248,127 @@ const MUTATIONS = {
       to: '  if (false && params.releaseAttemptOnly === true) {\n',
     },
   },
+  // --- concurrency-races (node supabase/tests/chaos-e2e.mjs --scenario=concurrency-races --mutate=all)
+  RC1: {
+    scenario: 'concurrency-races',
+    what: 'prepare-payment no longer records which terminal owns the attempt (two readers on one reference)',
+    expect: 'RC-C6 two terminals prepare payment',
+    ts: {
+      file: 'app/api/terminal/orders/[orderId]/prepare-payment/route.ts',
+      from: '            pending_charge_terminal_id: terminal.terminalId,\n',
+      to: '            pending_charge_terminal_id: undefined,\n',
+    },
+  },
+  RC2: {
+    scenario: 'concurrency-races',
+    what: 'the FTOWN trigger no longer refuses a second terminal (only the racy route pre-check is left)',
+    expect: 'RC-C6 two terminals prepare payment',
+    sql: {
+      file: '20260930110000_charge_attempt_owned_by_one_terminal.sql',
+      from: '  IF NEW.pending_charge_terminal_id IS NOT NULL\n',
+      to: '  IF false AND NEW.pending_charge_terminal_id IS NOT NULL\n',
+    },
+  },
+  RC3: {
+    scenario: 'concurrency-races',
+    what: 'amend_order_lines no longer requires the line to be outstanding (two waiters both apply one line)',
+    expect: 'RC-C2 waiter A reduces',
+    sql: {
+      file: '20260929120200_amend_refuses_payment_in_flight.sql',
+      from: "          AND (kitchen_state IS NULL OR kitchen_state = 'outstanding')\n          AND (bar_state IS NULL OR bar_state = 'outstanding')\n",
+      to: '          AND true\n',
+    },
+  },
+  RC4: {
+    scenario: 'concurrency-races',
+    what: 'the tab settle no longer checks the amount (a card charge silently covers a round added mid-payment)',
+    expect: 'RC-D1 a round added',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/settle/route.ts',
+      from: '    if (!matchesLegacyBasis && !amountsMatch(amount, expectedAmount)) {\n',
+      to: '    if (false && !matchesLegacyBasis && !amountsMatch(amount, expectedAmount)) {\n',
+    },
+  },
+  RC5: {
+    scenario: 'concurrency-races',
+    what: 'amend_order_lines voids a line whose order has a card charge in flight (payment_in_flight off)',
+    expect: 'RC-D2 a line on another order',
+    sql: {
+      file: '20260929120200_amend_refuses_payment_in_flight.sql',
+      from: '        IF FOUND AND v_pending_charge IS NOT NULL\n',
+      to: '        IF false AND FOUND AND v_pending_charge IS NOT NULL\n',
+    },
+  },
+  RC6: {
+    scenario: 'concurrency-races',
+    what: 'two concurrent cash settlements both claim the orders (the settle claim guard off)',
+    expect: 'RC-C6b two terminals take cash',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/settle/route.ts',
+      from: "      claimQuery = claimQuery.or(\n        `payment_status.in.(${cashStatusList}),` +",
+      to: "      claimQuery = claimQuery.or(\n        `payment_status.not.is.null,payment_status.in.(${cashStatusList}),` +",
+    },
+  },
+  RC7: {
+    scenario: 'concurrency-races',
+    what: 'item-ledger payments are not deducted: an allocation-paid order still reads as owed (ledger/allocation consistency)',
+    expect: 'RC-K3 partial card',
+    ts: {
+      file: 'lib/orders/order-financials.ts',
+      from: '  let paidCents = allocSettled\n',
+      to: '  let paidCents = 0 * allocSettled\n',
+    },
+  },
+  RC8: {
+    scenario: 'concurrency-races',
+    what: 'the ordinary close writes off an unpaid tab (outstanding-balance guard off)',
+    expect: 'RC-E7b the ordinary close',
+    ts: {
+      file: 'app/api/terminal/tables/[tableId]/close/route.ts',
+      from: '    if (balance.blocked) {\n',
+      to: '    if (false && balance.blocked) {\n',
+    },
+  },
+  RC9: {
+    scenario: 'concurrency-races',
+    what: 'a second terminal sale on the same reference is absorbed as an idempotent replay (double charge unrecorded)',
+    expect: 'RC-D4 takeover after the window',
+    ts: {
+      file: 'app/api/terminal/payment-events/sale/route.ts',
+      from: '        reportedByDevice &&\n',
+      to: '        false && reportedByDevice &&\n',
+    },
+  },
+  RC10: {
+    scenario: 'concurrency-races',
+    what: 'an uncertain card result is never marked unresolved (a retry re-arms the reader over it)',
+    expect: 'RC-D4u after an unknown card result',
+    sql: {
+      file: '20260930110100_unresolved_card_attempt_blocks_new_charge.sql',
+      from: '     SET pending_charge_unresolved_at = COALESCE(o.pending_charge_unresolved_at, now())\n',
+      to: '     SET pending_charge_unresolved_at = NULL\n',
+    },
+  },
+  RC11: {
+    scenario: 'concurrency-races',
+    what: 'verify-payment answers an E04111 as a definite not-paid (the terminal would lift its block on no evidence)',
+    expect: 'RC-D4u after an unknown card result',
+    ts: {
+      file: 'app/api/terminal/orders/[orderId]/verify-payment/route.ts',
+      from: "however many times it is answered.\n        attemptResolution: 'unresolved' satisfies AttemptResolution,\n",
+      to: "however many times it is answered.\n        attemptResolution: 'resolved_not_paid' satisfies AttemptResolution,\n",
+    },
+  },
+  RC12: {
+    scenario: 'concurrency-races',
+    what: 'a recognised not-paid on Check no longer releases the unresolved attempt (blocked for ever)',
+    expect: 'RC-D4r resolution',
+    ts: {
+      file: 'app/api/terminal/orders/[orderId]/verify-payment/route.ts',
+      from: '      if ((order as { pending_charge_unresolved_at?: unknown }).pending_charge_unresolved_at != null) {\n',
+      to: '      if (false && (order as { pending_charge_unresolved_at?: unknown }).pending_charge_unresolved_at != null) {\n',
+    },
+  },
   B1: {
     what: 'a partial payment is not deducted from the remaining balance',
     expect: 'C03 pay about half by item: balance reduced by exactly that',
