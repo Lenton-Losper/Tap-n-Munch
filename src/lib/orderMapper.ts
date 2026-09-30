@@ -59,6 +59,13 @@ export function mapRowToOrder(row: Record<string, unknown>): Order {
     id: String(row.id ?? row.order_id ?? ''),
     restaurant_id: String(row.restaurant_id),
     table_id: row.table_id ? String(row.table_id) : undefined,
+    /*
+     * The tab this order is on. Never mapped before 2026-09-30, so every Order the terminal read
+     * had no tab and resolveOrderMoney took its no-tab branch: the Payment and Order Detail screens
+     * showed the stored original -- voided lines included -- for a tab order, and cash was gated on
+     * it. null (walk-up/kiosk) and absent stay exactly what the server sent.
+     */
+    tab_id: row.tab_id == null ? (row.tab_id as null | undefined) : String(row.tab_id),
     table_number: Number(row.table_number),
     order_number: Number(row.order_number),
     status: row.status as OrderStatus,

@@ -5,6 +5,8 @@
  *   SO-T2  getOrder calls getOrders() and filters on the device again (the original defect)
  *   SO-T3  getOrder takes the first row instead of matching by id (wrong order from an older worker)
  *   SO-T4  the id is not URL-encoded (a hostile id becomes extra parameters)
+ *   SO-T5  mapRowToOrder drops tab_id again (the Payment screen shows the stored original for a
+ *          tab order, and cash is gated on it) -- the 2.40/2.41 defect
  *
  * Same engine as scripts/mutate-rc-terminal.js: each mutation breaks ONE guard, prints the mutated
  * line back from disk, runs the suites that must catch it and requires them RED with a real test
@@ -23,6 +25,7 @@ const JEST = join(ROOT, 'node_modules', 'jest', 'bin', 'jest.js');
 
 const API_SUITE = 'src/lib/__tests__/getOrderSingleOrder.test.ts';
 const SCREEN_SUITE = 'src/screens/__tests__/paymentScreenSingleOrderFetch.test.tsx';
+const MAPPER_SUITE = 'src/lib/__tests__/orderMapperTabId.test.ts';
 
 const URL_LINE =
   '    `${FLASHTAP_API_URL}/api/terminal/orders?orderId=${encodeURIComponent(orderId)}`,\n';
@@ -63,6 +66,15 @@ const MUTATIONS = [
     from: 'orders?orderId=${encodeURIComponent(orderId)}`',
     to: 'orders?orderId=${orderId}`',
     suites: [API_SUITE],
+  },
+  {
+    id: 'SO-T5',
+    what: 'mapRowToOrder no longer copies tab_id (back to the 2.40/2.41 mapper)',
+    file: 'src/lib/orderMapper.ts',
+    from: '    tab_id: row.tab_id == null ? (row.tab_id as null | undefined) : String(row.tab_id),\n',
+    // A marker, not '': an empty replacement would make the "did it land" check trivially true.
+    to: '    // SO-T5: tab_id not mapped\n',
+    suites: [SCREEN_SUITE, MAPPER_SUITE],
   },
 ];
 

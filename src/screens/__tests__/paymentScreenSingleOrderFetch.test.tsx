@@ -14,17 +14,18 @@ import renderer, {act} from 'react-test-renderer';
 const mockGetTerminalInfo = jest.fn();
 const mockGetTabLines = jest.fn();
 const mockProcessPaymentIntent = jest.fn();
+const mockCompletePayment = jest.fn();
 
 jest.mock('../../lib/api', () => {
   const actual = jest.requireActual('../../lib/api');
   return {
     ...actual,
-    // getOrder and getOrders are the REAL implementations.
+    // getOrder and getOrders are the REAL implementations -- and so is the mapper under them.
     getTerminalInfo: (...a: unknown[]) => mockGetTerminalInfo(...(a as [])),
     getTabLines: (...a: unknown[]) => mockGetTabLines(...(a as [])),
     getHeldOrphanPayments: jest.fn(async () => []),
     getStrandedOrderRequests: jest.fn(async () => []),
-    completePayment: jest.fn(async () => ({success: true, canClose: false})),
+    completePayment: (...a: unknown[]) => mockCompletePayment(...(a as [])),
     completePaymentReliably: jest.fn(async () => true),
     recordSaleEvent: jest.fn(async () => ({ok: true})),
     closeTable: jest.fn(async () => ({})),
@@ -57,7 +58,7 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 
 import PaymentScreen from '../PaymentScreen';
-import {line, payloadWith} from '../../lib/__tests__/helpers/linesPayload';
+import {line, money, payloadWith} from '../../lib/__tests__/helpers/linesPayload';
 import {LIVE_TOTAL_UNAVAILABLE} from '../../constants/liveTotalCopy';
 
 const ORDER_ID = '11111111-1111-4111-8111-111111111111';
@@ -166,18 +167,18 @@ describe('opening the Payment screen reads ONE order', () => {
   });
 
   /**
-   * KNOWN PRE-EXISTING DEFECT, NOT INTRODUCED OR FIXED HERE (found 2026-09-30, present in 2.40 and
-   * 2.41): lib/orderMapper.ts mapRowToOrder never copies `tab_id`, so the order the REAL getOrder
-   * returns has none, and resolveOrderMoney takes its no-tab branch -- the Payment screen DISPLAYS
-   * the stored original, voided lines included, instead of the tab's live figure. The card charge
-   * is unaffected (the reader is sent prepare-payment's server-computed chargeCents). The other
-   * PaymentScreen suites cannot see this because they mock getOrder with a tab_id already set.
+   * REGRESSION -- tab_id (fixed 2026-09-30; the defect shipped in 2.40 and 2.41).
    *
-   * `it.failing` passes while the defect exists. Fixing the mapper turns this RED, which is the
-   * prompt to make it a plain `it` -- that fix changes the payment screen's amount and belongs in
-   * its own reviewed change.
+   * lib/orderMapper.ts mapRowToOrder never copied `tab_id`, so the order the REAL getOrder returned
+   * had none and resolveOrderMoney took its no-tab branch: the Payment screen showed the stored
+   * original -- voided lines included -- and gated cash on it. The card charge was never affected
+   * (the reader is sent prepare-payment's server-computed chargeCents).
+   *
+   * No getOrder mock here: the tab id reaches the screen only through the real mapper, which is the
+   * thing this pins. Every other PaymentScreen suite mocks getOrder WITH tab_id set, which is why
+   * none of them could see it.
    */
-  it.failing("KNOWN DEFECT: a tab order's live amount comes from its lines (mapper drops tab_id)", async () => {
+  it("REGRESSION: tab-9, stored NAD30, NAD10 voided -> the screen reads tab-9's lines and shows NAD20.00", async () => {
     ordersAnswer = {status: 200, body: {orders: [orderRow({tab_id: 'tab-9', total: 30})]}};
     mockGetTabLines.mockResolvedValue(
       payloadWith([
@@ -185,8 +186,11 @@ describe('opening the Payment screen reads ONE order', () => {
       ]),
     );
     const tree = await mount();
+    expect(mockGetTabLines).toHaveBeenCalledTimes(1);
     expect(mockGetTabLines).toHaveBeenCalledWith('tab-9', 'terminal-token');
-    expect(renderedText(tree.toJSON())).toContain('NAD20.00');
+    const text = renderedText(tree.toJSON());
+    expect(text).toContain('NAD20.00');
+    expect(text).toContain('NAD30.00 original · NAD20.00 after voids');
   });
 
   it('an order the server does not return shows the amount as unavailable, never a guess', async () => {
@@ -196,5 +200,120 @@ describe('opening the Payment screen reads ONE order', () => {
     const text = renderedText(tree.toJSON());
     expect(text).toContain(LIVE_TOTAL_UNAVAILABLE);
     expect(text).not.toContain('NAD5.00');
+  });
+});
+
+/**
+ * WHAT THE SCREEN CHARGES, THROUGH THE REAL MAPPER (A-G).
+ *
+ * The existing live-amount suite covers these figures with a mocked getOrder that already carries
+ * tab_id; these repeat the money cases with nothing between the server row and the screen but the
+ * real api.ts and orderMapper.ts. The payment calculation itself is untouched by the fix.
+ */
+async function pressButton(tree: renderer.ReactTestRenderer, label: string) {
+  const buttons = tree.root.findAll(
+    n => typeof n.props?.onPress === 'function' && renderedText(n.props.children).includes(label),
+  );
+  const button = buttons[buttons.length - 1];
+  await act(async () => {
+    if (!button.props.disabled) {
+      await button.props.onPress();
+    }
+  });
+  return button;
+}
+
+function tabOrder(total: number, lines: ReturnType<typeof line>[], financials?: Parameters<typeof payloadWith>[1]) {
+  ordersAnswer = {status: 200, body: {orders: [orderRow({tab_id: 'tab-9', total})]}};
+  mockGetTabLines.mockResolvedValue(payloadWith([{id: ORDER_ID, total, lines}], financials));
+}
+
+describe('A-G: the amount shown and charged', () => {
+  beforeEach(() => {
+    mockCompletePayment.mockResolvedValue({success: true, canClose: false});
+  });
+
+  it('A. a non-tab order: its stored amount, shown and charged', async () => {
+    ordersAnswer = {status: 200, body: {orders: [orderRow({total: 5})]}};
+    const tree = await mount();
+    expect(renderedText(tree.toJSON())).toContain('NAD5.00');
+    await pressButton(tree, 'Process Payment');
+    expect(mockProcessPaymentIntent).toHaveBeenCalledTimes(1);
+    expect(mockProcessPaymentIntent.mock.calls[0][0]).toBe(5);
+    expect(mockGetTabLines).not.toHaveBeenCalled();
+  });
+
+  it('B. a plain tab order (nothing voided): the tab figure, which equals the total', async () => {
+    tabOrder(30, [line({cents: 3000})]);
+    const tree = await mount();
+    const text = renderedText(tree.toJSON());
+    expect(mockGetTabLines).toHaveBeenCalledWith('tab-9', 'terminal-token');
+    expect(text).toContain('NAD30.00');
+    expect(text).not.toContain('after voids');
+    await pressButton(tree, 'Process Payment');
+    expect(mockProcessPaymentIntent.mock.calls[0][0]).toBe(30);
+  });
+
+  it('C. a tab order with a voided line: the void is excluded from what is charged', async () => {
+    tabOrder(30, [line({cents: 2000}), line({cents: 1000, voided: true})]);
+    const tree = await mount();
+    await pressButton(tree, 'Process Payment');
+    expect(mockProcessPaymentIntent.mock.calls[0][0]).toBe(20);
+  });
+
+  it("D. an amended tab order: the server's CURRENT figure wins over the stale stored total", async () => {
+    // Stored total NAD30; since then lines were added and one voided -- the server says NAD40 live.
+    tabOrder(30, [line({cents: 2000})], {
+      tab: money({original_cents: 4500, voided_cents: 500}),
+      orders: {[ORDER_ID]: money({original_cents: 4500, voided_cents: 500})},
+    });
+    const tree = await mount();
+    expect(renderedText(tree.toJSON())).toContain('NAD40.00');
+    await pressButton(tree, 'Process Payment');
+    expect(mockProcessPaymentIntent.mock.calls[0][0]).toBe(40);
+  });
+
+  it('E. a partly paid tab order: only what is still owed is payable', async () => {
+    // NAD30 live, NAD8 already settled against the first line -> NAD22 owed.
+    tabOrder(30, [line({cents: 2000, settledCents: 800}), line({cents: 1000})]);
+    const tree = await mount();
+    expect(renderedText(tree.toJSON())).toContain('NAD22.00');
+    await pressButton(tree, 'Process Payment');
+    expect(mockProcessPaymentIntent.mock.calls[0][0]).toBe(22);
+  });
+
+  it("F. card: the device asks with the live figure; the reader amount is the server's (chargeAmountEndToEnd)", async () => {
+    // payment.ts replaces this caller amount with prepare-payment's chargeCents whenever the
+    // server sends one -- pinned end to end in src/lib/__tests__/chargeAmountEndToEnd.test.ts.
+    tabOrder(30, [line({cents: 2000}), line({cents: 1000, voided: true})]);
+    const tree = await mount();
+    await pressButton(tree, 'Process Payment');
+    expect(mockProcessPaymentIntent).toHaveBeenCalledTimes(1);
+    expect(mockProcessPaymentIntent.mock.calls[0][0]).toBe(20);
+    expect(mockProcessPaymentIntent.mock.calls[0][1]).toBe(ORDER_ID);
+  });
+
+  it('G. cash: gated on, shown as and reported as the live tab figure', async () => {
+    mockGetTerminalInfo.mockResolvedValue({cardPaymentEnabled: false, cashPaymentEnabled: true});
+    tabOrder(30, [line({cents: 2000}), line({cents: 1000, voided: true})]);
+    const tree = await mount();
+
+    const tendered = tree.root.find(
+      n => n.props?.placeholder === '0.00' && typeof n.props?.onChangeText === 'function',
+    );
+    await act(async () => {
+      tendered.props.onChangeText('20');
+    });
+    // NAD20 tendered covers the live NAD20. Against the stored NAD30 this stayed disabled. Read
+    // before pressing: a successful confirm replaces the button.
+    const confirmButtons = tree.root.findAll(
+      n => typeof n.props?.onPress === 'function' && renderedText(n.props.children).includes('Confirm cash'),
+    );
+    expect(confirmButtons[confirmButtons.length - 1].props.disabled).toBe(false);
+    expect(renderedText(tree.toJSON())).toContain('NAD20.00');
+    await pressButton(tree, 'Confirm cash');
+    expect(mockCompletePayment).toHaveBeenCalledTimes(1);
+    expect(mockCompletePayment.mock.calls[0][0]).toBe(ORDER_ID);
+    expect(mockCompletePayment.mock.calls[0][2]).toMatchObject({amount: 20, paymentMethod: 'cash'});
   });
 });
