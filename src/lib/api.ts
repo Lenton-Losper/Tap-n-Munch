@@ -498,16 +498,42 @@ export async function getOrders(token: string): Promise<Order[]> {
   return (data.orders ?? []).map(row => mapRowToOrder(row));
 }
 
+/**
+ * ONE order, asked for by id (2026-09-30).
+ *
+ * This used to be `getOrders(token)` + `Array.find`: the whole live list for the restaurant --
+ * 4,675 rows / 11.8 MB at FNB ChowNow -- downloaded so the Payment and Order Detail screens could
+ * read one row, with the server paginating, projecting and computing financials for all of it
+ * first. The server now answers `?orderId=` with that order alone (or `{orders: []}`).
+ *
+ * The match by id is KEPT, and is deliberate: the APK and the worker deploy separately, and a
+ * worker older than the single-order read ignores the parameter and answers with the full list.
+ * Matching by id (never "the first row") keeps this correct against either.
+ */
 export async function getOrder(
   orderId: string,
   token: string,
 ): Promise<Order> {
-  const orders = await getOrders(token);
-  const order = orders.find(o => o.id === orderId);
-  if (!order) {
+  const response = await terminalFetch(
+    `${FLASHTAP_API_URL}/api/terminal/orders?orderId=${encodeURIComponent(orderId)}`,
+    {headers: {'Content-Type': 'application/json'}},
+    token,
+  );
+
+  throwIfUnauthorized(response);
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = (await response.json()) as {orders?: Record<string, unknown>[]};
+  const row = (data.orders ?? []).find(
+    r => String(r.id ?? r.order_id ?? '') === orderId,
+  );
+  if (!row) {
     throw new Error('Order not found');
   }
-  return order;
+  return mapRowToOrder(row);
 }
 
 export async function updateOrderStatus(
