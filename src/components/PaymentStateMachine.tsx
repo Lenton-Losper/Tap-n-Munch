@@ -158,6 +158,67 @@ async function loadForOrder(currentOrderId?: string): Promise<PaymentMachineStat
 }
 
 /**
+ * ================================================================================================
+ * AN UNCONFIRMED CARD SETTLE FROM THE TABLE SCREEN (RC sprint 2026-09-30)
+ * ================================================================================================
+ *
+ * TableDetailScreen charges several orders in one card attempt under the LEAD order's reference.
+ * When that attempt's outcome is unknown, no second payment may be taken for any of those orders
+ * until the server has answered -- the same rule this machine enforces on the Charge screen. The
+ * record is an ordinary UNCONFIRMED record under the lead order's key, so the Charge screen for the
+ * lead order opens on Check too, plus the full set the table screen needs to block.
+ */
+export type UnresolvedCardAttempt = {
+  leadOrderId: string;
+  orderIds: string[];
+  /** The signed sentence to show under the title. Null: the caller's default. */
+  detail: string | null;
+};
+
+export async function recordUnresolvedCardAttempt(
+  attempt: UnresolvedCardAttempt,
+  amount?: number,
+): Promise<void> {
+  await persistPaymentState(
+    {
+      state: 'PAYMENT_UNCONFIRMED',
+      orderId: attempt.leadOrderId,
+      amount,
+      error: attempt.detail ?? undefined,
+      settlementOrderIds: attempt.orderIds,
+    },
+    attempt.leadOrderId,
+  );
+}
+
+/**
+ * Every unresolved attempt that touches one of `orderIds` -- from a tab settle OR from the Charge
+ * screen (IN_PROGRESS or UNCONFIRMED), because either one means a card may have been charged.
+ */
+export async function readUnresolvedCardAttempts(
+  orderIds: string[],
+): Promise<UnresolvedCardAttempt[]> {
+  const found: UnresolvedCardAttempt[] = [];
+  for (const id of orderIds) {
+    const saved = await loadPaymentState(paymentStateStorageKey(id));
+    if (!holdsRecoveryState(saved.state)) {
+      continue;
+    }
+    found.push({
+      leadOrderId: id,
+      orderIds: saved.settlementOrderIds?.length ? saved.settlementOrderIds : [id],
+      detail: saved.state === 'PAYMENT_UNCONFIRMED' ? saved.error ?? null : null,
+    });
+  }
+  return found;
+}
+
+/** The server has answered for this attempt: the record goes. */
+export async function clearUnresolvedCardAttempt(leadOrderId: string): Promise<void> {
+  await persistPaymentState(INITIAL_STATE, leadOrderId);
+}
+
+/**
  * @param currentOrderId When set, ignore persisted state for a different order so a
  * prior payment's SUCCESS cannot paint over a new Charge.
  */

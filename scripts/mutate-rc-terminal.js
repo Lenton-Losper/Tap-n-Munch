@@ -6,7 +6,10 @@
  *   B    a cancellation is never shown as done without the server's word (5xx is not "nothing changed").
  *   I1   one wrong PIN is one /authorize POST and one lockout strike.
  *   E    an uncertain card payment survives Back, reopen, a restart and another order, and keeps
- *        Process Payment blocked until the server has answered.
+ *        Process Payment blocked until the server has answered; the failure report after a reader
+ *        success carries the reader's voucher.
+ *   TAB  an unconfirmed card settle on the table screen blocks card AND cash for its orders,
+ *        persists, and offers only Check.
  *
  * Same engine as scripts/mutate-d2d3.js: each mutation breaks ONE guard, prints the mutated line
  * back from disk, runs the suites that must catch it and requires them RED with a real test count
@@ -27,6 +30,7 @@ const ROUND_SUITE = 'src/screens/__tests__/rcRoundSendWire.test.tsx';
 const POS_SUITE = 'src/screens/__tests__/rcPosChargeWire.test.tsx';
 const CANCEL_SUITE = 'src/components/__tests__/rcCancelAuthWire.test.tsx';
 const PAY_SUITE = 'src/screens/__tests__/rcPaymentRecovery.test.tsx';
+const TAB_SUITE = 'src/screens/__tests__/rcTabSettleUnresolved.test.tsx';
 
 const MUTATIONS = [
   {
@@ -116,6 +120,46 @@ const MUTATIONS = [
     from: "    state === 'PAYMENT_IN_PROGRESS' ||\n    state === 'PAYMENT_UNCONFIRMED' ||\n",
     to: "    state === 'PAYMENT_IN_PROGRESS' ||\n",
     suites: [PAY_SUITE],
+  },
+  {
+    id: 'RC-E1v',
+    what: "the failure report after a reader SUCCESS drops the reader's voucher again",
+    file: 'src/screens/PaymentScreen.tsx',
+    from: '            lastResult?.success && lastResult.voucherNo ? lastResult.voucherNo : undefined;\n',
+    to: '            false && lastResult?.success && lastResult.voucherNo ? lastResult.voucherNo : undefined;\n',
+    suites: [PAY_SUITE],
+  },
+  {
+    id: 'RC-TAB',
+    what: 'an unconfirmed tab settle leaves Settle Entire Tab live',
+    file: 'src/screens/TableDetailScreen.tsx',
+    from: '  const entireTabBlockedByCard = unpaidOrders.some(order => unresolvedOrderIds.has(order.id));\n',
+    to: '  const entireTabBlockedByCard = false && unpaidOrders.some(order => unresolvedOrderIds.has(order.id));\n',
+    suites: [TAB_SUITE],
+  },
+  {
+    id: 'RC-TAB-guard',
+    what: 'runSettle charges orders an unconfirmed card attempt covers (handler guard removed)',
+    file: 'src/screens/TableDetailScreen.tsx',
+    from: '    if (orderIds.some(id => unresolvedOrderIdsRef.current.has(id))) {\n',
+    to: '    if (false && orderIds.some(id => unresolvedOrderIdsRef.current.has(id))) {\n',
+    suites: [TAB_SUITE],
+  },
+  {
+    id: 'RC-TAB-cash',
+    what: 'Take Cash stays live for orders an unconfirmed card attempt covers',
+    file: 'src/screens/TableDetailScreen.tsx',
+    from: '      cashSettling || settling || eligibleCount === 0 || blocked || blockedByUnresolvedCard;\n',
+    to: '      cashSettling || settling || eligibleCount === 0 || blocked;\n',
+    suites: [TAB_SUITE],
+  },
+  {
+    id: 'RC-TAB-persist',
+    what: 'the tab screen never reads a persisted unconfirmed attempt (lost on leave / restart)',
+    file: 'src/components/PaymentStateMachine.tsx',
+    from: '  for (const id of orderIds) {\n    const saved = await loadPaymentState(paymentStateStorageKey(id));\n',
+    to: '  for (const id of [] as string[]) {\n    const saved = await loadPaymentState(paymentStateStorageKey(id));\n',
+    suites: [TAB_SUITE],
   },
 ];
 

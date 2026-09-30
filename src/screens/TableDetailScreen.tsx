@@ -41,7 +41,15 @@ import {
   resetTabPin,
   settleAllocations,
   settleTab,
+  verifyTerminalPayment,
 } from '../lib/api';
+import {
+  clearUnresolvedCardAttempt,
+  readUnresolvedCardAttempts,
+  recordUnresolvedCardAttempt,
+  type UnresolvedCardAttempt,
+} from '../components/PaymentStateMachine';
+import {unconfirmedMessageForVerdict} from '../lib/paymentVerdict';
 import QRCode from 'react-native-qrcode-svg';
 import {
   prepareSplitPayment,
@@ -142,8 +150,12 @@ import {
 import {classifyFailureReport} from '../lib/paymentReportOutcome';
 import {
   SETTLE_ORDER_ALREADY_PAID,
+  UNCONFIRMED_CHECK_ACTION,
+  UNCONFIRMED_CHECK_FAILED,
+  UNCONFIRMED_CHECK_IN_PROGRESS,
   UNCONFIRMED_NOT_REPORTED,
   UNCONFIRMED_SETTLE_INSTRUCTION,
+  UNCONFIRMED_TITLE,
 } from '../constants/paymentCopy';
 import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
@@ -271,6 +283,26 @@ export default function TableDetailScreen({route, navigation}: Props) {
 
   const settleInFlight = useRef(false);
   /**
+   * UNCONFIRMED CARD ATTEMPTS ON THIS TAB (RC sprint 2026-09-30). A tab settle whose card result is
+   * unknown -- or a Charge-screen attempt on one of these orders that is -- may have taken the
+   * money. Until the server has answered, no payment of either kind is taken for the orders it
+   * covered, and the only action offered is Check. Persisted per lead order
+   * (PaymentStateMachine), so leaving the table or restarting the app keeps it.
+   *
+   * Before this the tab path showed an alert and left the card buttons live, and prepare-payment
+   * does not refuse while an attempt is unresolved: the next tap was a second SALE.
+   */
+  const [unresolvedCards, setUnresolvedCards] = useState<UnresolvedCardAttempt[]>([]);
+  /** The same set, readable synchronously by the settle handlers. */
+  const unresolvedOrderIdsRef = useRef<Set<string>>(new Set());
+  const unresolvedOrderIds = useMemo(
+    () => new Set(unresolvedCards.flatMap(attempt => attempt.orderIds)),
+    [unresolvedCards],
+  );
+  unresolvedOrderIdsRef.current = unresolvedOrderIds;
+  const [checkingUnresolved, setCheckingUnresolved] = useState(false);
+  const checkingUnresolvedRef = useRef(false);
+  /**
    * Server's in-flight window, from /api/terminal/tables. Never hardcoded — the countdown
    * must match the server that will actually accept or reject the settle.
    */
@@ -345,6 +377,50 @@ export default function TableDetailScreen({route, navigation}: Props) {
   const selectedOrders = useMemo(
     () => orders.filter(order => selectedIds.has(order.id)),
     [orders, selectedIds],
+  );
+
+  /**
+   * Re-read the unresolved attempts whenever the server's picture of the orders changes (mount,
+   * refresh). An attempt whose orders the server now shows PAID was resolved elsewhere -- the
+   * webhook, a Check on another device, the reconcile cron -- and its record goes.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const ids = orders.map(order => order.id);
+    void (async () => {
+      const attempts = await readUnresolvedCardAttempts(ids);
+      const open: UnresolvedCardAttempt[] = [];
+      for (const attempt of attempts) {
+        const present = orders.filter(order => attempt.orderIds.includes(order.id));
+        const settled =
+          present.length > 0 &&
+          present.every(order => String(order.payment_status).toLowerCase() === 'paid');
+        if (settled) {
+          await clearUnresolvedCardAttempt(attempt.leadOrderId);
+        } else {
+          open.push(attempt);
+        }
+      }
+      if (!cancelled) {
+        setUnresolvedCards(open);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [orders]);
+
+  const markCardUnresolved = useCallback(
+    async (orderIds: string[], amount: number, detail: string) => {
+      const attempt: UnresolvedCardAttempt = {leadOrderId: orderIds[0], orderIds, detail};
+      unresolvedOrderIdsRef.current = new Set([...unresolvedOrderIdsRef.current, ...orderIds]);
+      setUnresolvedCards(prev => [
+        ...prev.filter(a => a.leadOrderId !== attempt.leadOrderId),
+        attempt,
+      ]);
+      await recordUnresolvedCardAttempt(attempt, amount);
+    },
+    [],
   );
 
   /**
@@ -682,6 +758,12 @@ export default function TableDetailScreen({route, navigation}: Props) {
       return;
     }
 
+    // An unconfirmed card attempt covers one of these orders: no second charge. The buttons are
+    // disabled too; this is the check where the money is counted.
+    if (orderIds.some(id => unresolvedOrderIdsRef.current.has(id))) {
+      return;
+    }
+
     settleInFlight.current = true;
     setSettling(true);
     /** True once the reader has returned a charge; a settle refusal after this is post-charge. */
@@ -775,6 +857,11 @@ export default function TableDetailScreen({route, navigation}: Props) {
          */
         const classification = classifyFailureReport(completed);
         if (classification === 'unknown') {
+          await markCardUnresolved(
+            orderIds,
+            amount,
+            completed ? UNCONFIRMED_SETTLE_INSTRUCTION : UNCONFIRMED_NOT_REPORTED,
+          );
           throw new Error(
             completed
               ? UNCONFIRMED_SETTLE_INSTRUCTION
@@ -872,6 +959,14 @@ export default function TableDetailScreen({route, navigation}: Props) {
         Alert.alert(SETTLE_NOTHING_LEFT_AFTER_CARD_TITLE, SETTLE_NOTHING_LEFT_AFTER_CARD);
         await refreshTable();
         return;
+      }
+      /**
+       * The reader CHARGED and the settle did not complete (network, 5xx, a refusal). The money may
+       * already be recorded -- the webhook and verify-payment both settle from the lead order's
+       * reference -- so this is unresolved, never a live card button.
+       */
+      if (cardCharged) {
+        await markCardUnresolved(orderIds, amount, UNCONFIRMED_SETTLE_INSTRUCTION);
       }
       Alert.alert(
         'Error',
@@ -1299,6 +1394,101 @@ export default function TableDetailScreen({route, navigation}: Props) {
     }
   };
 
+  /** The orders a plan would take money for, whatever its shape. */
+  const ordersOfPlan = (target: SettlementPlan): string[] => {
+    if (target.kind === 'orders') {
+      return target.orderIds;
+    }
+    if (target.kind === 'allocations') {
+      const lineIds = new Set(target.allocate.map(a => a.lineId));
+      const allocationIds = new Set(target.settle);
+      return payable
+        .filter(
+          line =>
+            lineIds.has(line.id) || line.openAllocationIds.some(id => allocationIds.has(id)),
+        )
+        .map(line => line.orderId);
+    }
+    return [];
+  };
+  const planTouchesUnresolvedCard = (target: SettlementPlan): boolean =>
+    ordersOfPlan(target).some(id => unresolvedOrderIdsRef.current.has(id));
+
+  /** The orders the selection bar's buttons would charge, in either mode. */
+  const selectionOrderIds = byItem
+    ? payable.filter(line => selectedLineIds.has(line.id)).map(line => line.orderId)
+    : Array.from(selectedIds);
+  const selectionBlockedByCard = selectionOrderIds.some(id => unresolvedOrderIds.has(id));
+  const entireTabBlockedByCard = unpaidOrders.some(order => unresolvedOrderIds.has(order.id));
+
+  /**
+   * CHECK, for an unconfirmed card attempt on this tab. Asks the server about the LEAD order; the
+   * verify route resolves the whole settlement from its pending_settlement_id and settles it through
+   * the webhook's own writer. Idempotent, charges nothing, launches nothing.
+   *
+   * Only `paid` resolves anything. Anything else keeps the attempt, with the same signed sentence
+   * the Charge screen shows (lib/paymentVerdict) -- this device did not see the reader's own result,
+   * so "nothing was charged" is never available here.
+   */
+  const handleCheckUnresolved = async (attempt: UnresolvedCardAttempt) => {
+    if (checkingUnresolvedRef.current) {
+      return;
+    }
+    checkingUnresolvedRef.current = true;
+    setCheckingUnresolved(true);
+    const keep = async (detail: string) => {
+      const next: UnresolvedCardAttempt = {...attempt, detail};
+      setUnresolvedCards(prev => prev.map(a => (a.leadOrderId === attempt.leadOrderId ? next : a)));
+      await recordUnresolvedCardAttempt(next);
+    };
+    try {
+      const token = await getTerminalToken();
+      if (!token) {
+        throw new Error('Session expired');
+      }
+      const verdict = await verifyTerminalPayment(attempt.leadOrderId, token);
+      if (verdict.paid) {
+        await clearUnresolvedCardAttempt(attempt.leadOrderId);
+        const remaining = unresolvedCards.filter(a => a.leadOrderId !== attempt.leadOrderId);
+        unresolvedOrderIdsRef.current = new Set(remaining.flatMap(a => a.orderIds));
+        setUnresolvedCards(remaining);
+        setSelectedIds(new Set());
+        await refreshTable();
+        return;
+      }
+      await keep(unconfirmedMessageForVerdict(verdict, null));
+    } catch {
+      // The CHECK failed, which says nothing about the payment. Still unconfirmed.
+      await keep(UNCONFIRMED_CHECK_FAILED);
+    } finally {
+      checkingUnresolvedRef.current = false;
+      setCheckingUnresolved(false);
+    }
+  };
+
+  const renderUnresolvedCards = () =>
+    unresolvedCards.map(attempt => (
+      <View
+        key={attempt.leadOrderId}
+        style={styles.unresolvedCard}
+        testID={`tab-unresolved-card-${attempt.leadOrderId}`}>
+        <Text style={styles.unresolvedTitle}>{UNCONFIRMED_TITLE}</Text>
+        <Text style={styles.unresolvedBody}>
+          {attempt.detail ?? UNCONFIRMED_SETTLE_INSTRUCTION}
+        </Text>
+        <LoadingButton
+          style={styles.unresolvedButton}
+          loading={checkingUnresolved}
+          disabled={checkingUnresolved}
+          onPress={() => handleCheckUnresolved(attempt)}
+          spinnerColor={Colors.white}>
+          <Text style={styles.unresolvedButtonText}>
+            {checkingUnresolved ? UNCONFIRMED_CHECK_IN_PROGRESS : UNCONFIRMED_CHECK_ACTION}
+          </Text>
+        </LoadingButton>
+      </View>
+    ));
+
   const handleTakeCash = () => {
     // Cash too: a gratuity nobody is taking is not recordable, and payment_tips.staff_user_id is
     // NOT NULL, so it would be dropped here or refused there.
@@ -1331,6 +1521,10 @@ export default function TableDetailScreen({route, navigation}: Props) {
     if (target.kind === 'nothing') {
       return;
     }
+    if (planTouchesUnresolvedCard(target)) {
+      // The card attempt on these orders may have taken the money; the button is disabled too.
+      return;
+    }
     if (target.kind === 'orders' && !byItem) {
       setSelectedIds(new Set(target.orderIds));
     }
@@ -1352,14 +1546,14 @@ export default function TableDetailScreen({route, navigation}: Props) {
    * while a card payment is live the server refuses, so the button shows the remaining
    * wait instead of a bare "no".
    */
-  const renderCashButton = (eligibleCount: number) => {
+  const renderCashButton = (eligibleCount: number, blockedByUnresolvedCard = false) => {
     // Hidden, not disabled, at a venue that does not take cash. See methodsAvailable above.
     if (!methodsAvailable.cashEnabled) {
       return null;
     }
     const blocked = cashBlockedFor != null && cashBlockedFor > 0;
     const disabled =
-      cashSettling || settling || eligibleCount === 0 || blocked;
+      cashSettling || settling || eligibleCount === 0 || blocked || blockedByUnresolvedCard;
 
     let label = 'Take Cash';
     if (blocked) {
@@ -1970,6 +2164,8 @@ export default function TableDetailScreen({route, navigation}: Props) {
         </View>
       ) : null}
 
+      {renderUnresolvedCards()}
+
       {byItem ? (
         /**
          * THE BILL, BY ITEM. Take Payment's interaction is unchanged -- a list, checkboxes, a
@@ -2073,7 +2269,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
                 testID="settle-selected"
                 style={[
                   styles.settleButton,
-                  (settling || cashSettling) && styles.buttonDisabled,
+                  (settling || cashSettling || selectionBlockedByCard) && styles.buttonDisabled,
                 ]}
                 /*
                   cashSettling too. Without it this stayed lit while cash was being taken: the tap
@@ -2081,7 +2277,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
                   which reads as a frozen terminal. The mutex is unchanged; this only makes the
                   block it already performs visible.
                 */
-                disabled={settling || cashSettling}
+                disabled={settling || cashSettling || selectionBlockedByCard}
                 onPress={handleSettleSelected}>
                 {settling && busyButton === 'selected' ? (
                   <ActivityIndicator color={Colors.white} />
@@ -2092,10 +2288,12 @@ export default function TableDetailScreen({route, navigation}: Props) {
               <LoadingButton
                 style={[
                   styles.settleEntireOutlineButton,
-                  (settling || cashSettling || unpaidOrders.length === 0) &&
+                  (settling || cashSettling || unpaidOrders.length === 0 || entireTabBlockedByCard) &&
                     styles.buttonDisabled,
                 ]}
-                disabled={settling || cashSettling || unpaidOrders.length === 0}
+                disabled={
+                  settling || cashSettling || unpaidOrders.length === 0 || entireTabBlockedByCard
+                }
                 loading={settling && busyButton === 'entire'}
                 onPress={handleSettleEntireTab}
                 spinnerColor={Colors.textPrimary}>
@@ -2107,6 +2305,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
             byItem
               ? payable.filter(line => line.selectable && selectedLineIds.has(line.id)).length
               : selectedCashOrders.length,
+            selectionBlockedByCard,
           )}
         </View>
       ) : (
@@ -2120,10 +2319,12 @@ export default function TableDetailScreen({route, navigation}: Props) {
             <LoadingButton
               style={[
                 styles.settleEntireButton,
-                (settling || cashSettling || unpaidOrders.length === 0) &&
+                (settling || cashSettling || unpaidOrders.length === 0 || entireTabBlockedByCard) &&
                   styles.buttonDisabled,
               ]}
-              disabled={settling || cashSettling || unpaidOrders.length === 0}
+              disabled={
+                settling || cashSettling || unpaidOrders.length === 0 || entireTabBlockedByCard
+              }
               loading={settling && busyButton === 'entire'}
               onPress={handleSettleEntireTab}
               spinnerColor={Colors.white}>
@@ -2134,6 +2335,7 @@ export default function TableDetailScreen({route, navigation}: Props) {
             byItem
               ? payable.filter(line => line.selectable).length
               : cashSettleableOrders.length,
+            entireTabBlockedByCard,
           )}
         </View>
       )}
@@ -2668,6 +2870,36 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.textPrimary,
     textAlign: 'center',
+  },
+  unresolvedCard: {
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.amber,
+    backgroundColor: Colors.surface,
+  },
+  unresolvedTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.amber,
+  },
+  unresolvedBody: {
+    marginTop: Spacing.xs,
+    fontSize: 14,
+    color: Colors.textPrimary,
+  },
+  unresolvedButton: {
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    borderRadius: 10,
+    alignItems: 'center',
+    backgroundColor: Colors.amber,
+  },
+  unresolvedButtonText: {
+    color: Colors.white,
+    fontWeight: '700',
   },
   settleButton: {
     backgroundColor: Colors.primary,

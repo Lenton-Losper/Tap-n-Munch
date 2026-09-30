@@ -470,6 +470,16 @@ describe('E1 — reader SUCCESS, then the network drops before FlashTap hears', 
     expect(text).toContain(UNCONFIRMED_TITLE);
     expect(processPaymentBlocked(first.tree)).toBe(true);
 
+    // MUTATION GUARD (E1-voucher): the failure report that did land carries the reader's voucher,
+    // so reconciliation can tie this order to the card transaction.
+    const failed = callsTo('callback').filter(c => c.body?.status === 'failed');
+    expect(failed.length).toBeGreaterThanOrEqual(1);
+    expect(failed[failed.length - 1].body).toMatchObject({
+      reference: 'RC-TXN-1',
+      voucherNo: 'RC-TXN-1',
+      businessOrderNo: CONTRACT._meta.merchantOrderNo,
+    });
+
     // Even across a leave and reopen.
     await leave(first);
     const again = await mount();

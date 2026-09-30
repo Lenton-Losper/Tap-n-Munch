@@ -929,12 +929,23 @@ export default function PaymentScreen({route, navigation}: Props) {
             priorOutcomeKind: lastResult?.outcomeKind ?? '(none)',
             willSendCancelFields: cancelledBeforeThrow,
           });
+          /**
+           * RC sprint 2026-09-30 (E1). THE READER SAID SUCCESS and only the report was lost. Its
+           * voucher is the one identifier that ties this order to the card transaction, and the
+           * UNCONFIRMED-<epoch> placeholder threw it away. It rides as the report's `reference`
+           * (written verbatim into the failure audit metadata, branched on by nothing) and as
+           * `voucherNo`. No new field: the route already reads both. The server still verifies
+           * with Finatic before believing any "failed", so this changes the record, not the verdict.
+           */
+          const readerVoucher =
+            lastResult?.success && lastResult.voucherNo ? lastResult.voucherNo : undefined;
           const completed = await completePaymentReliably(orderId, reportToken, {
             status: 'failed',
-            reference: unconfirmedFailureReference(),
+            reference: readerVoucher ?? unconfirmedFailureReference(),
             amount: total,
             paymentMethod: 'card',
-            businessOrderNo: recovered.businessOrderNo,
+            businessOrderNo: recovered.businessOrderNo ?? lastResult?.businessOrderNo,
+            ...(readerVoucher ? {voucherNo: readerVoucher} : {}),
             ...(cancelledBeforeThrow
               ? {
                   cancellationReason: TERMINAL_USER_CANCELLED_REASON,

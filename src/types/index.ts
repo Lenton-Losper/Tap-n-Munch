@@ -185,4 +185,9 @@ export interface PaymentMachineState {
   amount?: number;
   reference?: string;
   error?: string;
+  /**
+   * RC sprint 2026-09-30. Set only on a record written by a TAB settle (TableDetailScreen): every
+   * order that card attempt covered, lead order first. The record itself lives under the lead order.
+   */
+  settlementOrderIds?: string[];
 }
