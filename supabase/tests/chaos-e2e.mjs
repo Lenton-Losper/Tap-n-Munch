@@ -573,6 +573,15 @@ function startProxy(pgrstPort) {
     upstream.on('error', (e) => { res.writeHead(502); res.end(String(e)) })
     req.pipe(upstream)
   })
+  /**
+   * The CLIENT must always be the side that retires an idle keep-alive socket. Node's default
+   * (5 s, advertised as `Keep-Alive: timeout=5`) leaves undici a 1 s margin, and a jest worker
+   * blocked compiling a module mid-scenario outlives it: the proxy closes the socket, the route
+   * reuses it, and a PostgREST write fails with ECONNRESET (measured 2026-09-30: payment-simulation
+   * S3's two audit inserts, intermittently). Harness plumbing only -- no route sees a difference.
+   */
+  server.keepAliveTimeout = 120_000
+  server.headersTimeout = 125_000
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)))
 }
 
