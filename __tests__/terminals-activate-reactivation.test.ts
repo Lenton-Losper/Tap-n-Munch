@@ -218,19 +218,39 @@ describe('reinstall: the SAME device, the SAME restaurant', () => {
 })
 
 describe('the SAME device, a DIFFERENT restaurant', () => {
-  it('is refused with 409 and an actionable message', async () => {
+  it('is refused with 409 and an actionable message that names no other restaurant', async () => {
     terminals = [ownedRow({ restaurant_id: VENUE_B }), pendingRow()]
     const res = await call({ code: CODE, device_id: DEVICE })
     const body = await res.json()
     expect(res.status).toBe(409)
     expect(body.code).toBe('DEVICE_REGISTERED_ELSEWHERE')
-    expect(body.error).toMatch(/different restaurant/i)
+    // Device management sprint (2026-09-30): no longer a dead end -- it says what to do next.
+    expect(body.error).toMatch(/registered to another restaurant/i)
+    expect(body.error).toMatch(/approve/i)
+    expect(body.transfer).toBe('approval_required')
   })
 
-  it('writes nothing at all', async () => {
+  /**
+   * Superseded 2026-09-30 (device management sprint): this used to assert that a cross-restaurant
+   * refusal writes NOTHING. It now records the transfer REQUEST on this restaurant's own pending
+   * code row, so a manager here can approve it. What the old assertion actually protected is kept,
+   * explicitly: the other restaurant's registration is never written, and the code stays unused.
+   */
+  it("never writes the other restaurant's registration; records only a transfer request on its own code row", async () => {
     terminals = [ownedRow({ restaurant_id: VENUE_B }), pendingRow()]
+    const owned = { ...terminals[0] }
     await call({ code: CODE, device_id: DEVICE })
-    expect(updates).toHaveLength(0)
+    expect(updates).toHaveLength(1)
+    expect(updates[0].id).toBe(PENDING_ROW)
+    expect(Object.keys(updates[0].patch).sort()).toEqual([
+      'transfer_approved_at',
+      'transfer_approved_by',
+      'transfer_request_device_id',
+      'transfer_requested_at',
+    ])
+    expect(updates[0].patch.transfer_request_device_id).toBe(DEVICE)
+    expect(updates[0].patch.transfer_approved_at).toBeNull()
+    expect(terminals.find((r) => r.id === OWN_ROW)).toEqual(owned)
     expect(terminals.find((r) => r.id === PENDING_ROW)!.activation_code).toBe(CODE)
   })
 })
