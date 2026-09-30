@@ -10,6 +10,7 @@ import { generateDocumentPdfBytes } from '@/lib/documents/generate-document-pdf'
  * invoice would quietly stop matching the downloaded one.
  */
 import { loadDocumentPayments, toBusinessDocumentRow } from '@/lib/documents/business-document-row'
+import { refreshInvoicePayments, unresolvedInvoicePaymentsBody } from '@/lib/documents/refresh-invoice-payments'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,20 +38,42 @@ export async function GET(
     }
 
     const supabase = createServerSupabaseClient()
-    const { data, error } = await supabase
+    const { data: found, error } = await supabase
       .from('business_documents')
       .select('*')
       .eq('id', documentId)
       .maybeSingle()
 
     if (error) throw error
-    if (!data) {
+    if (!found) {
       return NextResponse.json({ error: 'Document not found' }, { status: 404 })
     }
 
-    const restaurantId = String(data.restaurant_id)
+    const restaurantId = String(found.restaurant_id)
     const denied = await requirePermission(user.id, restaurantId, PERMISSIONS.DOCUMENTS_READ)
     if (denied) return denied
+
+    /**
+     * J8 (Sprint 2026-09-30): an order/tab invoice's payments are brought up to date with what was
+     * paid at the table BEFORE it is rendered, and it is not rendered at all if that cannot be
+     * done -- a PDF must never demand money that has already been paid. See
+     * lib/documents/refresh-invoice-payments.ts. The row is re-read because the refresh may move
+     * its balance and status.
+     */
+    let data = found
+    if (found.document_type === 'invoice') {
+      const refresh = await refreshInvoicePayments(supabase, documentId, user.id)
+      if (!refresh.balanceMatchesProjection) {
+        return NextResponse.json(unresolvedInvoicePaymentsBody(refresh), { status: 409 })
+      }
+      const { data: fresh, error: freshError } = await supabase
+        .from('business_documents')
+        .select('*')
+        .eq('id', documentId)
+        .single()
+      if (freshError) throw freshError
+      data = fresh
+    }
 
     let lineage: { originalInvoiceNumber?: string | null; replacementInvoiceNumber?: string | null } | undefined
     if (data.document_type === 'credit_note' && data.credited_by_id) {

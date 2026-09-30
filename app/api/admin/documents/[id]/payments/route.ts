@@ -4,6 +4,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
 import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
+import { refreshInvoicePayments } from '@/lib/documents/refresh-invoice-payments'
 
 export const dynamic = 'force-dynamic'
 
@@ -48,6 +49,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     const denied = await requirePermission(user.id, String(doc.restaurant_id), PERMISSIONS.DOCUMENTS_READ)
     if (denied) return denied
+
+    // J8 (Sprint 2026-09-30): the list includes payments taken at the table since the invoice was issued.
+    if (doc.document_type === 'invoice') await refreshInvoicePayments(supabase, documentId, user.id)
 
     const { data, error } = await supabase
       .from('document_payments')
@@ -118,7 +122,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (doc.status === 'void') {
       return NextResponse.json({ error: 'Cannot record a payment on a voided document' }, { status: 409 })
     }
-    const currentBalance = Number(doc.balance)
+    /**
+     * J8 (Sprint 2026-09-30): what was paid at the table since issue is recorded FIRST, so a manual
+     * payment is checked against what is really still owed -- not a stale balance that would let the
+     * same bill be recorded as paid twice.
+     */
+    const refreshed = await refreshInvoicePayments(supabase, documentId, user.id)
+    const currentBalance = refreshed.balance
     if (amount > currentBalance) {
       return NextResponse.json(
         { error: `Payment amount (${amount}) exceeds the remaining balance (${currentBalance})` },

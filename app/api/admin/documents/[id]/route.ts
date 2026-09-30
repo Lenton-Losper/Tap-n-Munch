@@ -6,6 +6,7 @@ import { PERMISSIONS } from '@/lib/permissions'
 import { type LineItemInput, type Party } from '@/lib/documents/create-document'
 import { getTaxRatesForRestaurant, defaultTaxRate } from '@/lib/tax-rates/queries'
 import { round2, resolveTaxRate, applyTaxToAmount } from '@/lib/tax-rates/apply-tax'
+import { refreshInvoicePayments } from '@/lib/documents/refresh-invoice-payments'
 
 export const dynamic = 'force-dynamic'
 
@@ -57,6 +58,15 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     const denied = await requirePermission(user.id, String(data.restaurant_id), PERMISSIONS.DOCUMENTS_READ)
     if (denied) return denied
+
+    // J8 (Sprint 2026-09-30): an order/tab invoice is shown with what has been paid since issue.
+    if (data.document_type === 'invoice') {
+      const refresh = await refreshInvoicePayments(supabase, documentId, user.id)
+      return NextResponse.json({
+        document: { ...data, status: refresh.status, balance: refresh.balance },
+        payments_up_to_date: refresh.balanceMatchesProjection,
+      })
+    }
 
     return NextResponse.json({ document: data })
   } catch (error: unknown) {

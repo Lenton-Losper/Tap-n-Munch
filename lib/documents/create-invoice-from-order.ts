@@ -12,7 +12,7 @@ import {
   type InvoiceRefusalCode,
   type SaleEventRow,
 } from '@/lib/documents/invoice-projection'
-import type { FinancialLineInput } from '@/lib/orders/order-financials'
+import type { FinancialLineInput, OrderFinancials } from '@/lib/orders/order-financials'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import { settledCentsByOrder } from '@/lib/payments/settled-cents'
 import { resolveTaxRate } from '@/lib/tax-rates/apply-tax'
@@ -230,7 +230,11 @@ async function issue(supabase: Supabase, params: CommonParams, loaded: Loaded): 
   }
 
   // ── 5. Payments, read for labelling BEFORE a number is burned ─────────────────────────────
-  const payments = await readPaymentRecords(supabase, restaurantId, loaded, plan)
+  const payments = await readInvoicePaymentRecords(supabase, restaurantId, {
+    perOrder: plan.perOrder,
+    orders: loaded.orders,
+    settledByOrder: loaded.settledByOrder,
+  })
   if (!payments) {
     return {
       ok: false,
@@ -424,13 +428,23 @@ async function findLiveInvoice(
   return null
 }
 
-async function readPaymentRecords(
+/**
+ * The projection's `paid`, broken into the payments a customer can recognise (method, reference).
+ * Shared by issue (step 5 above) and by the after-issue refresh
+ * (lib/documents/refresh-invoice-payments.ts), so an invoice's payments are labelled one way
+ * whether they were known at issue or arrived afterwards. Null when the item-ledger rows read for
+ * labelling disagree with the projection (see invoicePaymentRecords).
+ */
+export async function readInvoicePaymentRecords(
   supabase: Supabase,
   restaurantId: string,
-  loaded: Loaded,
-  plan: InvoicePlan,
+  input: {
+    perOrder: readonly OrderFinancials[]
+    orders: readonly InvoiceOrderRow[]
+    settledByOrder: ReadonlyMap<string, number>
+  },
 ) {
-  const paidOrderIds = plan.perOrder.filter((f) => f.paidCents > 0).map((f) => f.orderId)
+  const paidOrderIds = input.perOrder.filter((f) => f.paidCents > 0).map((f) => f.orderId)
   if (paidOrderIds.length === 0) return []
 
   // Item-ledger settlements, for method/reference. Same two-step shape as settledCentsByOrder.
@@ -475,9 +489,9 @@ async function readPaymentRecords(
   if (eventsError) throw eventsError
 
   return invoicePaymentRecords({
-    perOrder: plan.perOrder,
-    orders: loaded.orders,
-    settledByOrder: loaded.settledByOrder,
+    perOrder: input.perOrder,
+    orders: input.orders,
+    settledByOrder: input.settledByOrder,
     allocationSettlements,
     saleEvents: (events ?? []) as SaleEventRow[],
   })

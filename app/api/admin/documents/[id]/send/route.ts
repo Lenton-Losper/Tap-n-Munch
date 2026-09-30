@@ -6,6 +6,7 @@ import { PERMISSIONS } from '@/lib/permissions'
 import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
 import { loadDocumentPayments, recipientEmail } from '@/lib/documents/business-document-row'
 import { sendDocumentEmail } from '@/lib/documents/sendDocumentEmail'
+import { refreshInvoicePayments, unresolvedInvoicePaymentsBody } from '@/lib/documents/refresh-invoice-payments'
 
 export const dynamic = 'force-dynamic'
 
@@ -54,22 +55,43 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const supabase = createServerSupabaseClient()
     // `*` because the PDF is rendered from this row -- the same columns the download route reads.
-    const { data: doc, error: docError } = await supabase
+    const { data: found, error: docError } = await supabase
       .from('business_documents')
       .select('*')
       .eq('id', documentId)
       .maybeSingle()
     if (docError) throw docError
-    if (!doc) {
+    if (!found) {
       return NextResponse.json({ error: 'Document not found' }, { status: 404 })
     }
 
     const denied = await requirePermission(
       user.id,
-      String(doc.restaurant_id),
+      String(found.restaurant_id),
       PERMISSIONS.DOCUMENTS_WRITE,
     )
     if (denied) return denied
+
+    /**
+     * J8 (Sprint 2026-09-30): the emailed PDF states what has been paid NOW, not at issue. Refreshed
+     * before the status check below, so an invoice raised unpaid and since paid at the table is
+     * sendable as the paid invoice it has become -- and refused if its payments cannot be brought
+     * up to date. See lib/documents/refresh-invoice-payments.ts.
+     */
+    let doc = found
+    if (found.document_type === 'invoice') {
+      const refresh = await refreshInvoicePayments(supabase, documentId, user.id)
+      if (!refresh.balanceMatchesProjection) {
+        return NextResponse.json(unresolvedInvoicePaymentsBody(refresh), { status: 409 })
+      }
+      const { data: fresh, error: freshError } = await supabase
+        .from('business_documents')
+        .select('*')
+        .eq('id', documentId)
+        .single()
+      if (freshError) throw freshError
+      doc = fresh
+    }
 
     /**
      * DRAFTS, AND INVOICES THAT WERE ISSUED ALREADY PAID. An invoice raised from a tab that was
