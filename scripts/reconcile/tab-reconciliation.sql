@@ -19,7 +19,8 @@
 --                   owing statuses; settlement artefacts excluded)
 --   ledgers         payment_events 'sale' rows, non_gateway_payment_events, confirmed
 --                   allocation-scope terminal_payment_intents, and order_line_allocation_settlements
---   intents         terminal_payment_intents still launched/uncertain
+--   intents         terminal_payment_intents still launched/uncertain; one whose charge is already
+--                   settled (orders paid / allocations settled) is a MONEY failure
 --   tab             tabs.total vs the projection's outstanding
 --   invoice         each live invoice covering the tab: total = live, recorded payments = paid,
 --                   balance = outstanding, over exactly the orders it covers
@@ -255,6 +256,28 @@ results(ord, check_name, severity, expected_cents, actual_cents, detail) AS (
   SELECT 20, 'payments_in_flight', 'state', 0,
          (SELECT count(*) FROM public.terminal_payment_intents i JOIN tab ON i.tab_id = tab.id WHERE i.status IN ('launched', 'uncertain')),
          'charges started and not yet resolved'
+  UNION ALL
+  -- A charge whose money HAS been settled must have resolved its intent: every order an
+  -- orders-scope intent names is paid, or every allocation an allocation-scope intent names is
+  -- settled, yet the intent still says launched/uncertain. That is a settlement that left its
+  -- charge looking in flight -- a money-grade failure, not a state still converging.
+  SELECT 20.5, 'paid_charges_left_in_flight', 'money', 0,
+         (SELECT count(*) FROM public.terminal_payment_intents i JOIN tab ON i.tab_id = tab.id
+           WHERE i.status IN ('launched', 'uncertain')
+             AND ((i.scope = 'orders' AND cardinality(COALESCE(i.order_ids, '{}')) > 0
+                   AND NOT EXISTS (SELECT 1 FROM public.orders o WHERE o.id = ANY (i.order_ids)
+                                    AND lower(btrim(COALESCE(o.payment_status, ''))) <> 'paid'))
+               OR (i.scope = 'allocations' AND cardinality(COALESCE(i.allocation_ids, '{}')) > 0
+                   AND NOT EXISTS (SELECT 1 FROM unnest(i.allocation_ids) AS a(id)
+                                    WHERE NOT EXISTS (SELECT 1 FROM public.order_line_allocation_settlements s
+                                                       WHERE s.order_line_allocation_id = a.id))))),
+         COALESCE((SELECT string_agg(i.merchant_order_no || ' (' || i.scope || ', ' || i.status || ')', '; ')
+                     FROM public.terminal_payment_intents i JOIN tab ON i.tab_id = tab.id
+                    WHERE i.status IN ('launched', 'uncertain')
+                      AND i.scope = 'orders' AND cardinality(COALESCE(i.order_ids, '{}')) > 0
+                      AND NOT EXISTS (SELECT 1 FROM public.orders o WHERE o.id = ANY (i.order_ids)
+                                       AND lower(btrim(COALESCE(o.payment_status, ''))) <> 'paid')),
+                  'every settled charge resolved its intent')
   UNION ALL
   SELECT 21, 'outstanding', 'state', 0, (SELECT outstanding FROM tot), 'money still owed on the tab'
   UNION ALL

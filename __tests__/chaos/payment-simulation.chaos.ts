@@ -502,6 +502,8 @@ describe('payment simulation (card, Finatic simulated at the wire)', () => {
     expect({ sale: money.saleRows, nonGateway: money.nonGatewayRows, alloc: money.allocSettledCents }).toEqual({ sale: 1, nonGateway: 0, alloc: 0 })
     expect(asksFor(mo)).toHaveLength(1)
     const intent = intentOf(mo)
+    // Sprint 2026-09-30: the settled charge resolved its intent (was left 'launched' forever).
+    expect({ status: intent?.status, consumed: intent?.consumed_at != null }).toEqual({ status: 'confirmed', consumed: true })
 
     row.asked = String(asksFor(mo).map((x) => x.cents).join('+'))
     row.ledger = `${ledger.length} sale row, ${cents(ledger[0].amount)}`
@@ -537,6 +539,8 @@ describe('payment simulation (card, Finatic simulated at the wire)', () => {
     expect({ ps: o.payment_status, settled: o.settled_charge_cents }).toEqual({ ps: 'paid', settled: liveOf(A) })
     expect((await financials(tabId)).tab.outstanding_cents).toBe(0)
     const intent = intentOf(mo)
+    // Sprint 2026-09-30: the device-reported success resolved its intent.
+    expect({ status: intent?.status, consumed: intent?.consumed_at != null }).toEqual({ status: 'confirmed', consumed: true })
     row.asked = String(chargeCents)
     row.ledger = `${ledger.length} sale row (${ledger[0].origin}), ${cents(ledger[0].amount)}`
     row.allocated = `settled_charge ${o.settled_charge_cents}`

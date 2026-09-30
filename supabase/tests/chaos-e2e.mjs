@@ -324,6 +324,16 @@ const MUTATIONS = {
       to: '        intent: null,\n        merchantOrderNo,\n        transactionId: result.transactionId,\n',
     },
   },
+  OL8: {
+    scenario: 'owner-lifecycle',
+    what: 'a card tab settle leaves the charge intent launched (paid, but still reads as in flight)',
+    expect: 'L22',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/settle/route.ts',
+      from: '      await consumeSettledOrdersIntent(supabase, {\n        restaurantId: terminal.restaurantId,\n        merchantOrderNo: businessOrderNo || null,',
+      to: '      if (false) await consumeSettledOrdersIntent(supabase, {\n        restaurantId: terminal.restaurantId,\n        merchantOrderNo: businessOrderNo || null,',
+    },
+  },
   // --- invoice-chaos (node supabase/tests/chaos-e2e.mjs --scenario=invoice-chaos --mutate=all)
   IC1: {
     scenario: 'invoice-chaos',
@@ -353,6 +363,26 @@ const MUTATIONS = {
       file: 'app/api/admin/documents/[id]/pdf/route.ts',
       from: "    if (found.document_type === 'invoice') {\n",
       to: "    if (false && found.document_type === 'invoice') {\n",
+    },
+  },
+  PS6: {
+    scenario: 'payment-simulation',
+    what: 'the device success callback leaves the charge intent launched',
+    expect: 'S1b',
+    ts: {
+      file: 'app/api/terminal/orders/[orderId]/payment/route.ts',
+      from: '        await consumeSettledOrdersIntent(supabase, {\n          restaurantId: terminal.restaurantId,\n          merchantOrderNo: businessOrderNo || (order',
+      to: '        if (false) await consumeSettledOrdersIntent(supabase, {\n          restaurantId: terminal.restaurantId,\n          merchantOrderNo: businessOrderNo || (order',
+    },
+  },
+  PS7: {
+    scenario: 'payment-simulation',
+    what: 'a card tab settle leaves the charge intent launched',
+    expect: 'S1a',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/settle/route.ts',
+      from: '      await consumeSettledOrdersIntent(supabase, {\n        restaurantId: terminal.restaurantId,\n        merchantOrderNo: businessOrderNo || null,',
+      to: '      if (false) await consumeSettledOrdersIntent(supabase, {\n        restaurantId: terminal.restaurantId,\n        merchantOrderNo: businessOrderNo || null,',
     },
   },
   B1: {

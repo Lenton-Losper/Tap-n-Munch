@@ -11,6 +11,7 @@ import { recordPaymentAmountMismatch } from '@/lib/payments/record-amount-mismat
 // The single authority on what the reader was asked to charge. See the note at its call site.
 import { expectedChargeFor } from '@/lib/payments/expected-charge'
 import { markOrderPaidConfirmed } from '@/lib/payments/mark-order-paid-confirmed'
+import { consumeSettledOrdersIntent } from '@/lib/payments/consume-settled-orders-intent'
 import { recordNonGatewayPaymentEvent } from '@/lib/payments/record-non-gateway-payment-event'
 import { handleTerminalPaymentFailed } from '@/lib/payments/handle-terminal-payment-failed'
 import { recordRefusedSecondPayment } from '@/lib/payments/record-refused-second-payment'
@@ -313,6 +314,21 @@ export async function POST(
        * not change here. A failure is logged and reported as `ledger_event: 'failed'` so it is
        * visible and reconcilable, never silent.
        */
+      // Sprint 2026-09-30: a card success resolves the orders-scope intent this charge was
+      // prepared under (settle_order_payment does it on the gateway paths). Only an intent naming
+      // exactly this order qualifies. See consume-settled-orders-intent.ts.
+      if (methodUsesGateway(paymentMethod)) {
+        await consumeSettledOrdersIntent(supabase, {
+          restaurantId: terminal.restaurantId,
+          merchantOrderNo: businessOrderNo || (order.paycloud_merchant_order_no as string | null) || null,
+          settledOrderIds: [orderId],
+          chargedCents: Math.round(expectedAmount * 100),
+          transactionId: voucherNo || reference || null,
+          paymentMethod,
+          source: 'terminal/orders/payment',
+        })
+      }
+
       if (!methodUsesGateway(paymentMethod)) {
         const chargedCents = Math.round(expectedAmount * 100)
         const ledger = await recordNonGatewayPaymentEvent(supabase, {

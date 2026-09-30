@@ -773,6 +773,7 @@ describe("the owner's long tab", () => {
   })
 
   const card: { mo: string; lead: string; orderIds: string[]; cents: number } = { mo: '', lead: '', orderIds: [], cents: 0 }
+  const finalCard = { cents: 0 }
   step('L18 start another payment: every owing order, by card', async () => {
     const owing = owingOrderIds()
     card.lead = rounds.R1
@@ -861,23 +862,38 @@ describe("the owner's long tab", () => {
     expect(owingOrderIds()).toEqual([rounds.R8])
   })
 
-  step('L22 complete the payment: cash for what is left (F10)', async () => {
+  step('L22 complete the payment: card at the table for what is left (F10)', async () => {
     const owing = owingOrderIds()
     const amount = owing.reduce((s, id) => s + outstandingOf(id), 0)
-    recordCharge('L22', 'cash (tab settle)', amount, owing)
-    const res = await call(settleTab, `/api/terminal/tabs/${tabId}/settle`, { params: { tabId }, body: { order_ids: owing, method: 'cash', amount: amount / 100 } })
+    // TableDetail's card path: prepare -> reader approved -> tab settle (card) -> sale event.
+    const prep = await call(preparePayment, `/api/terminal/orders/${owing[0]}/prepare-payment`, { params: { orderId: owing[0] }, body: { order_ids: owing } })
+    expectStatus(prep, 200)
+    const mo = String(prep.body.merchantOrderNo)
+    recordCharge('L22', 'card (tab settle)', Number(prep.body.chargeCents), owing)
+    gw.txn += 1
+    const txn = `LIFE-TXN-${gw.txn}`
+    gw.asks.push({ mo, cents: amount, outcome: 'approved' })
+    gw.state.set(mo, { kind: 'paid', cents: amount, txn })
+    const res = await call(settleTab, `/api/terminal/tabs/${tabId}/settle`, {
+      params: { tabId },
+      body: { order_ids: owing, method: 'card', amount: amount / 100, gateway_reference: txn, voucher_no: txn, business_order_no: mo },
+    })
     expectStatus(res, 200)
-    expect(res.body.can_close).toBe(true)
+    expect(res.body).toMatchObject({ can_close: true, sale_event: 'recorded' })
     const ref = String(res.body.payment_reference)
     for (const id of owing) {
       const o = orders.get(id)!
       o.wholeCents = outstandingOf(id)
       o.paymentStatus = 'paid'
-      o.method = 'cash'
+      o.method = 'card'
       o.reference = ref
     }
-    ledgerRows.nonGateway += 1
+    ledgerRows.sale += 1
     expect(outstandingTotal()).toBe(0)
+    // The charge's intent is resolved by the settlement (Sprint 2026-09-30).
+    const [intent] = sql(`SELECT status, consumed_at IS NOT NULL AS consumed, gateway_amount_cents FROM terminal_payment_intents WHERE merchant_order_no = '${mo}'`)
+    expect(intent).toEqual({ status: 'confirmed', consumed: true, gateway_amount_cents: amount })
+    finalCard.cents = amount
   })
 
   let invoice: Json = {}
@@ -917,8 +933,8 @@ describe("the owner's long tab", () => {
     // Payments on the document = the ledger, by method.
     const dp = sql<{ method: string; c: number }>(`SELECT method, sum(round(amount*100))::int AS c FROM document_payments WHERE document_id = '${invoice.id}' GROUP BY method ORDER BY method`)
     const byMethod = new Map(dp.map((r) => [r.method, r.c]))
-    expect(byMethod.get('cash')).toBe(50700 + orders.get(rounds.R8)!.wholeCents)
-    expect(byMethod.get('card')).toBe(card.cents + lineOf((l) => l.key === 'cheesecake' && l.order_id === rounds.R4).totalCents)
+    expect(byMethod.get('cash')).toBe(50700)
+    expect(byMethod.get('card')).toBe(card.cents + lineOf((l) => l.key === 'cheesecake' && l.order_id === rounds.R4).totalCents + finalCard.cents)
     // VAT is inside the total, not on top of it.
     expect(cents(invoice.subtotal) + cents(invoice.vat_amount)).toBe(cents(invoice.total))
   })
@@ -966,12 +982,12 @@ describe("the owner's long tab", () => {
   step('L26 the ledger, row by row', async () => {
     const l = ledger()
     expect({ sale: l.sale, split: l.split, alloc: l.alloc }).toEqual({
-      sale: { c: card.cents, n: 1 },
+      sale: { c: card.cents + finalCard.cents, n: 2 },
       split: { c: 5500, n: 1 },
       alloc: { c: 50700 + 5500, n: 3 },
     })
     const ng = sql<{ method: string; c: number; allocs: boolean }>(`SELECT method, amount_cents AS c, allocation_ids IS NOT NULL AS allocs FROM non_gateway_payment_events WHERE tab_id = '${tabId}' ORDER BY created_at`)
-    expect(ng).toEqual([{ method: 'cash', c: 50700, allocs: true }, { method: 'cash', c: orders.get(rounds.R8)!.wholeCents, allocs: false }])
+    expect(ng).toEqual([{ method: 'cash', c: 50700, allocs: true }])
     expect(l.total).toBe(liveOf())
     // Never the stored totals: the gross of every order is more than was ever taken.
     const gross = [...orders.values()].reduce((s, o) => s + o.grossCents, 0)
