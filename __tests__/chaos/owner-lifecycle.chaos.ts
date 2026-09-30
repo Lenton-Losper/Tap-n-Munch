@@ -537,10 +537,13 @@ describe("the owner's long tab", () => {
     ledgerRows.nonGateway += 1
     // Part-paid: the order still owes the rest and is not paid.
     expect(sql(`SELECT payment_status FROM orders WHERE id = '${rounds.R1}'`)[0].payment_status).toBe('pending')
-    const ng = sql(`SELECT method, amount_cents, allocation_ids, payment_reference FROM non_gateway_payment_events WHERE tab_id = '${tabId}'`)
+    const ng = sql(`SELECT method, amount_cents, payment_reference FROM non_gateway_payment_events WHERE tab_id = '${tabId}'`)
     expect(ng).toHaveLength(1)
-    expect({ method: ng[0].method, amount: ng[0].amount_cents, allocs: [...ng[0].allocation_ids].sort() }).toEqual({ method: 'cash', amount: asked, allocs: [...itemAllocationIds].sort() })
+    expect({ method: ng[0].method, amount: ng[0].amount_cents }).toEqual({ method: 'cash', amount: asked })
     expect(ng[0].payment_reference).toBeTruthy()
+    // Which allocations that row pays for is checked by the reconciliation script at this
+    // checkpoint (item_settlements_unexplained), deliberately not here: mutation OL5 proves the
+    // script sees a ledger row that no longer explains its settlements when every total agrees.
   })
 
   const r3: Want[] = [

@@ -296,12 +296,12 @@ const MUTATIONS = {
   },
   OL5: {
     scenario: 'owner-lifecycle',
-    what: 'the cash ledger row loses its allocation link (totals still agree; only the reconciliation can see it)',
+    what: 'the cash ledger row names only one of the allocations it paid (every total still agrees; only the reconciliation sees it)',
     expect: 'L04',
     ts: {
       file: 'app/api/terminal/tabs/[tabId]/settle-allocations/route.ts',
       from: '        allocationIds: result.applied.map((a) => a.allocation_id),\n',
-      to: '        allocationIds: undefined as unknown as string[],\n',
+      to: '        allocationIds: result.applied.map((a) => a.allocation_id).slice(0, 1),\n',
     },
   },
   OL6: {
@@ -320,8 +320,8 @@ const MUTATIONS = {
     expect: 'L20',
     ts: {
       file: 'app/api/terminal/orders/[orderId]/verify-payment/route.ts',
-      from: '        leadOrderIds: [orderId],\n        intent,\n        merchantOrderNo,\n',
-      to: '        leadOrderIds: [orderId],\n        intent: null,\n        merchantOrderNo,\n',
+      from: '        intent,\n        merchantOrderNo,\n        transactionId: result.transactionId,\n',
+      to: '        intent: null,\n        merchantOrderNo,\n        transactionId: result.transactionId,\n',
     },
   },
   // --- invoice-chaos (node supabase/tests/chaos-e2e.mjs --scenario=invoice-chaos --mutate=all)
@@ -342,7 +342,7 @@ const MUTATIONS = {
     ts: {
       file: 'lib/documents/invoice-projection.ts',
       from: '      if (f.cancelled || line.voided) {\n',
-      to: '      if (f.cancelled) {\n',
+      to: '      if (f.cancelled /* IC2: voided lines billed */) {\n',
     },
   },
   IC3: {
