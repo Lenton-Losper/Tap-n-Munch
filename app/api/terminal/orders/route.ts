@@ -62,6 +62,36 @@ async function financialsByOrder(
   return out
 }
 
+/** The statuses the terminal lists. The single-order read uses the same set, so it can never
+ *  return an order the list would not have offered. */
+const LIVE_ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'completed']
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Order rows as the terminal receives them: the stored row plus its payment and money figures. */
+async function enrichOrders(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  restaurantId: string,
+  data: Record<string, unknown>[],
+) {
+  const orderIds = data.map((o: any) => String(o.id)).filter(Boolean)
+  const projections = await getPaymentProjections(supabase, restaurantId, orderIds)
+  const financials = await financialsByOrder(supabase, data)
+
+  return data.map((order: any) => {
+    const projection = projections.get(String(order.id)) ?? null
+    const money = financials.get(String(order.id))
+    return {
+      ...order,
+      // Distinct from orders.payment_status (paid/pending settlement flag).
+      payment_status_derived: projection?.paymentStatus ?? null,
+      refunded_amount: projection?.refundedAmount ?? 0,
+      // Additive, and ABSENT (not zero) when it could not be read. See financialsByOrder.
+      ...(money ? { financials: money } : {}),
+    }
+  })
+}
+
 export async function GET(req: Request) {
   try {
     const terminal = await requireTerminalAuth(req)
@@ -73,6 +103,46 @@ export async function GET(req: Request) {
         { error: 'Missing permission: orders:read' },
         { status: 403 }
       )
+    }
+
+    /**
+     * SINGLE-ORDER READ (?orderId=). The Payment and Order Detail screens need one order; before
+     * this they pulled the whole live list -- 4,675 rows at FNB ChowNow on 2026-09-30 -- and picked
+     * one out on the device, while this route paginated, projected and computed financials for every
+     * row. Production logs that morning: p90 >= 13 s.
+     *
+     * Same auth, record check and permission gate as the list, above. The query keeps the list's
+     * restaurant scope and live-status set and ADDS the id, so it can only narrow what this terminal
+     * could already see: another venue's order, or one outside the live set, is simply not found --
+     * `{ orders: [] }`, the same envelope the list gives, which the terminal already reads as
+     * "Order not found". Nothing distinguishes "exists elsewhere" from "does not exist".
+     *
+     * NO STALE-ORDER SWEEP HERE. autoCancelStalePosOrders is restaurant-wide and unrelated to the
+     * order being read; it still runs on every list poll below and on the two-minute cron, so its
+     * cadence is unchanged. Running it here only put a restaurant-wide scan in front of one row.
+     */
+    const url = new URL(req.url)
+    if (url.searchParams.has('orderId')) {
+      const orderId = (url.searchParams.get('orderId') ?? '').trim()
+      if (!UUID_RE.test(orderId)) {
+        return NextResponse.json(
+          { error: 'orderId must be a UUID', code: 'INVALID_ORDER_ID' },
+          { status: 400 },
+        )
+      }
+
+      const { data: row, error } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('restaurant_id', terminal.restaurantId)
+        .eq('id', orderId)
+        .in('status', LIVE_ORDER_STATUSES)
+        .maybeSingle()
+      if (error) throw new Error(`terminal-order: ${error.message}`)
+      if (!row) return NextResponse.json({ orders: [] })
+
+      const orders = await enrichOrders(supabase, terminal.restaurantId, [row as Record<string, unknown>])
+      return NextResponse.json({ orders })
     }
 
     // Lazy cleanup, same pattern as recomputeInvoiceStatus's lazy overdue check: no scheduled
@@ -91,27 +161,12 @@ export async function GET(req: Request) {
         .from('orders')
         .select('*')
         .eq('restaurant_id', terminal.restaurantId)
-        .in('status', ['pending', 'confirmed', 'preparing', 'ready', 'completed'])
+        .in('status', LIVE_ORDER_STATUSES)
         .order('placed_at', { ascending: false }),
       { label: 'terminal-orders' },
     )
 
-    const orderIds = (data ?? []).map((o: any) => String(o.id)).filter(Boolean)
-    const projections = await getPaymentProjections(supabase, terminal.restaurantId, orderIds)
-    const financials = await financialsByOrder(supabase, data ?? [])
-
-    const enriched = (data ?? []).map((order: any) => {
-      const projection = projections.get(String(order.id)) ?? null
-      const money = financials.get(String(order.id))
-      return {
-        ...order,
-        // Distinct from orders.payment_status (paid/pending settlement flag).
-        payment_status_derived: projection?.paymentStatus ?? null,
-        refunded_amount: projection?.refundedAmount ?? 0,
-        // Additive, and ABSENT (not zero) when it could not be read. See financialsByOrder.
-        ...(money ? { financials: money } : {}),
-      }
-    })
+    const enriched = await enrichOrders(supabase, terminal.restaurantId, data ?? [])
 
     return NextResponse.json({ orders: enriched })
   } catch (err: unknown) {
