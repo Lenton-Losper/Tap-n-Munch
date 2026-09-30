@@ -516,3 +516,72 @@ describe('E2 / E3 — unknown result, checked repeatedly', () => {
     expect(processPaymentBlocked(m.tree)).toBe(true);
   });
 });
+
+describe('verify-payment attemptResolution (web sprint/rc-races)', () => {
+  const withResolution = (attemptResolution: string | undefined, over: Record<string, unknown> = {}) => ({
+    status: 200,
+    body: {
+      ...CONTRACT.verifyNoRecord.body,
+      ...(attemptResolution === undefined ? {} : {attemptResolution}),
+      ...over,
+    },
+  });
+
+  async function unconfirmedThenCheck(reply: Reply) {
+    readerRejects('PAYMENT_AMBIGUOUS', '9027');
+    replies.verify = [CONTRACT.verifyNoRecord, reply];
+    replies.callback = [CONTRACT.callbackUncertain];
+    const m = await mount();
+    await press(m.tree, 'Process Payment');
+    expect(screenText(m.tree)).toContain(UNCONFIRMED_TITLE);
+    await press(m.tree, UNCONFIRMED_CHECK_ACTION);
+    return m;
+  }
+
+  it("MUTATION GUARD (resolved_not_paid): 'resolved_not_paid' clears the block — still owed, Process Payment live, record gone", async () => {
+    const m = await unconfirmedThenCheck(
+      withResolution('resolved_not_paid', {isE04111: false, status: '1', outcome: null}),
+    );
+    expect(screenText(m.tree)).not.toContain(UNCONFIRMED_TITLE);
+    expect(screenText(m.tree)).not.toContain('Payment successful');
+    expect(processPaymentBlocked(m.tree)).toBe(false);
+    expect([...disk.keys()].filter(k => k.includes(ORDER_ID))).toEqual([]);
+    // Taking payment again is now a legitimate second attempt.
+    readerApproves('RC-TXN-2');
+    replies.callback = [CONTRACT.callbackSuccess];
+    await press(m.tree, 'Process Payment');
+    expect(launchPayment).toHaveBeenCalledTimes(2);
+    expect(screenText(m.tree)).toContain('Payment successful');
+  });
+
+  it("MUTATION GUARD (unresolved-keeps): E04111 answered 'unresolved' keeps the block and Check", async () => {
+    const m = await unconfirmedThenCheck(withResolution('unresolved'));
+    expect(screenText(m.tree)).toContain(UNCONFIRMED_TITLE);
+    expect(processPaymentBlocked(m.tree)).toBe(true);
+    expect(pressables(m.tree, UNCONFIRMED_CHECK_ACTION).length).toBeGreaterThan(0);
+    expect(launchPayment).toHaveBeenCalledTimes(1);
+  });
+
+  it('CONTROL: an older server (no attemptResolution) behaves exactly as before — blocked', async () => {
+    const m = await unconfirmedThenCheck(withResolution(undefined, {isE04111: false, status: '1'}));
+    expect(screenText(m.tree)).toContain(UNCONFIRMED_TITLE);
+    expect(processPaymentBlocked(m.tree)).toBe(true);
+  });
+
+  it("CONTROL: 'resolved_not_paid' alongside paid:true is NOT a release (paid wins)", async () => {
+    const m = await unconfirmedThenCheck({
+      status: 200,
+      body: {...CONTRACT.verifyPaid.body, attemptResolution: 'resolved_not_paid'},
+    });
+    expect(screenText(m.tree)).toContain('Payment successful');
+    expect(pressables(m.tree, 'Process Payment')).toHaveLength(0);
+  });
+
+  it("the resolution survives a leave: reopening after 'resolved_not_paid' is a normal Charge screen", async () => {
+    const m = await unconfirmedThenCheck(withResolution('resolved_not_paid', {isE04111: false}));
+    await leave(m);
+    const again = await mount();
+    expect(screenText(again.tree)).not.toContain(UNCONFIRMED_TITLE);
+    expect(processPaymentBlocked(again.tree)).toBe(false);
+  });
+});

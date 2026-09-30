@@ -93,6 +93,21 @@ export function isNeverStartedVerdict(
 }
 
 /**
+ * RC sprint 2026-09-30. THE ONLY ANSWER THAT LIFTS AN UNCONFIRMED BLOCK WITHOUT MONEY.
+ *
+ * The server's `attemptResolution: 'resolved_not_paid'` means the attempt has been definitively
+ * resolved as NOT PAID (a recognised gateway status, and nothing left in flight): the order is
+ * still owed, and taking payment for it again is correct. EXACT match, and paired with
+ * `paid !== true` so a server bug that set both can never release a paid order for a second charge.
+ *
+ * Every other value -- 'unresolved', 'paid', anything unknown, and ABSENT (an older server) -- is
+ * not this, so the block stays exactly as it was. E04111 is 'unresolved' at any count or age.
+ */
+export function isResolvedNotPaid(verdict: {paid: boolean; attemptResolution?: string}): boolean {
+  return verdict.paid !== true && verdict.attemptResolution === 'resolved_not_paid';
+}
+
+/**
  * Should the screen record that it could not classify this not-paid answer?
  *
  * SHIPPING THE INSTRUMENT, because the branch above is unreachable until the server changes and an

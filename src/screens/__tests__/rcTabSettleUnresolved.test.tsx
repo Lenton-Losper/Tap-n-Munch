@@ -365,3 +365,48 @@ describe('other ways into the unresolved state', () => {
     expect(disk.has('flashtap_payment_state:order-1')).toBe(false);
   });
 });
+
+describe('verify-payment attemptResolution on the table panel (web sprint/rc-races)', () => {
+  const reply = (attemptResolution: string | undefined, over: Record<string, unknown> = {}) => ({
+    status: 200,
+    body: {
+      ...VERIFY_NO_RECORD.body,
+      ...(attemptResolution === undefined ? {} : {attemptResolution}),
+      ...over,
+    },
+  });
+
+  it("MUTATION GUARD (tab resolved_not_paid): 'resolved_not_paid' lifts the block — still owed, card and cash back, record gone", async () => {
+    verifyReplies = [reply('resolved_not_paid', {isE04111: false, status: '1'})];
+    const tree = await renderScreen();
+    await press(tree.root, 'Settle Entire Tab');
+    expect(textOf(tree.root)).toContain(UNCONFIRMED_TITLE);
+    await press(tree.root, UNCONFIRMED_CHECK_ACTION);
+    expect(textOf(tree.root)).not.toContain(UNCONFIRMED_TITLE);
+    expect(allDisabled(tree.root, 'Settle Entire Tab')).toBe(false);
+    expect(allDisabled(tree.root, 'Take Cash')).toBe(false);
+    expect([...disk.keys()].filter(k => k.includes('order-1'))).toEqual([]);
+    await press(tree.root, 'Settle Entire Tab');
+    expect(mockProcessPaymentIntent).toHaveBeenCalledTimes(2);
+  });
+
+  it("MUTATION GUARD (tab unresolved-keeps): 'unresolved' keeps the block and Check", async () => {
+    verifyReplies = [reply('unresolved')];
+    const tree = await renderScreen();
+    await press(tree.root, 'Settle Entire Tab');
+    await press(tree.root, UNCONFIRMED_CHECK_ACTION);
+    expect(textOf(tree.root)).toContain(UNCONFIRMED_TITLE);
+    expect(textOf(tree.root)).toContain(UNCONFIRMED_NO_CONFIRMATION_YET);
+    expect(allDisabled(tree.root, 'Settle Entire Tab')).toBe(true);
+    expect(mockProcessPaymentIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('CONTROL: an older server (no attemptResolution, recognised not-paid) keeps the block', async () => {
+    verifyReplies = [reply(undefined, {isE04111: false, status: '1'})];
+    const tree = await renderScreen();
+    await press(tree.root, 'Settle Entire Tab');
+    await press(tree.root, UNCONFIRMED_CHECK_ACTION);
+    expect(textOf(tree.root)).toContain(UNCONFIRMED_TITLE);
+    expect(allDisabled(tree.root, 'Settle Entire Tab')).toBe(true);
+  });
+});

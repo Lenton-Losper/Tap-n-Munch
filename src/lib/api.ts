@@ -1573,6 +1573,14 @@ export type VerifyTerminalPaymentResult = {
   amount?: number | null;
   expectedAmount?: number;
   error?: string;
+  /**
+   * RC sprint 2026-09-30 (web sprint/rc-races). The server's ONE typed answer about the attempt:
+   * 'paid', 'resolved_not_paid' (definitively not paid AND nothing left in flight -- the order is
+   * still owed and may be charged again), or 'unresolved' (E04111 at any count or age, an
+   * unrecognised status, no credentials, provider unreachable). Absent from an older server, which
+   * must behave exactly as before. Read through lib/paymentVerdict, never directly.
+   */
+  attemptResolution?: 'paid' | 'resolved_not_paid' | 'unresolved' | string;
 };
 
 /**

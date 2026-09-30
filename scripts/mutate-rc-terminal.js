@@ -161,6 +161,22 @@ const MUTATIONS = [
     to: '  for (const id of [] as string[]) {\n    const saved = await loadPaymentState(paymentStateStorageKey(id));\n',
     suites: [TAB_SUITE],
   },
+  {
+    id: 'RC-RNP-ignore',
+    what: "the server's 'resolved_not_paid' is ignored (the block never lifts)",
+    file: 'src/lib/paymentVerdict.ts',
+    from: "  return verdict.paid !== true && verdict.attemptResolution === 'resolved_not_paid';\n",
+    to: "  return verdict.paid !== true && verdict.attemptResolution === 'resolved_not_paid_MUTATED';\n",
+    suites: [PAY_SUITE, TAB_SUITE],
+  },
+  {
+    id: 'RC-RNP-unresolved',
+    what: "the block is lifted on 'unresolved' / an absent field too (anything not paid)",
+    file: 'src/lib/paymentVerdict.ts',
+    from: "  return verdict.paid !== true && verdict.attemptResolution === 'resolved_not_paid';\n",
+    to: "  return verdict.paid !== true && verdict.attemptResolution !== 'paid';\n",
+    suites: [PAY_SUITE, TAB_SUITE],
+  },
 ];
 
 function runJest(suites) {

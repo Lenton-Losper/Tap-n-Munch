@@ -41,6 +41,7 @@ import {
 import {resolveOrderMoney, type OrderMoneyState} from '../lib/orderLiveMoney';
 import {LIVE_TOTAL_AFTER_VOIDS, LIVE_TOTAL_UNAVAILABLE} from '../constants/liveTotalCopy';
 import {
+  isResolvedNotPaid,
   isUnclassifiedNotPaid,
   unconfirmedMessageForVerdict,
 } from '../lib/paymentVerdict';
@@ -1056,6 +1057,34 @@ export default function PaymentScreen({route, navigation}: Props) {
         );
         // Owner D2 spec: confirmed paid refreshes the order from the server, so what the screen
         // shows as owed is the server's figure, not the one from before the charge.
+        loadOrder();
+        return;
+      }
+
+      /**
+       * RC sprint 2026-09-30 (web sprint/rc-races): THE SERVER'S AUTHORITATIVE "RESOLVED, NOT PAID".
+       * The attempt is closed as not paid and nothing is in flight, so the order is still owed and
+       * the normal Charge screen comes back -- the same reset the signed "Try again" performs, and
+       * the record goes with it. Only from UNCONFIRMED and only with no card attempt running on
+       * this screen: the over-ceiling Check can be pressed while the reader is still open, and a
+       * live reader is never overruled here. Absent / 'unresolved' / anything else: no change.
+       */
+      if (
+        isResolvedNotPaid(verdict) &&
+        machineState.state === 'PAYMENT_UNCONFIRMED' &&
+        !cardPaymentInFlight.current
+      ) {
+        attemptReaderOutcome.current = null;
+        reset();
+        setTenderedText('');
+        applyPaymentMethodAvailability(
+          cardPaymentEnabled,
+          cashPaymentEnabled,
+          paytodayPaymentEnabled,
+        );
+        if (enabledMethods.length > 1) {
+          setPaymentMethod(null);
+        }
         loadOrder();
         return;
       }

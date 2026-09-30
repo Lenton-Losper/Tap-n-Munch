@@ -49,7 +49,7 @@ import {
   recordUnresolvedCardAttempt,
   type UnresolvedCardAttempt,
 } from '../components/PaymentStateMachine';
-import {unconfirmedMessageForVerdict} from '../lib/paymentVerdict';
+import {isResolvedNotPaid, unconfirmedMessageForVerdict} from '../lib/paymentVerdict';
 import QRCode from 'react-native-qrcode-svg';
 import {
   prepareSplitPayment,
@@ -1447,7 +1447,10 @@ export default function TableDetailScreen({route, navigation}: Props) {
         throw new Error('Session expired');
       }
       const verdict = await verifyTerminalPayment(attempt.leadOrderId, token);
-      if (verdict.paid) {
+      // Paid, or the server's authoritative 'resolved_not_paid' (still owed, nothing in flight):
+      // either way the server has answered, the block goes and the refreshed tab decides what is
+      // owed. Absent or 'unresolved' falls through and keeps the block.
+      if (verdict.paid || isResolvedNotPaid(verdict)) {
         await clearUnresolvedCardAttempt(attempt.leadOrderId);
         const remaining = unresolvedCards.filter(a => a.leadOrderId !== attempt.leadOrderId);
         unresolvedOrderIdsRef.current = new Set(remaining.flatMap(a => a.orderIds));
