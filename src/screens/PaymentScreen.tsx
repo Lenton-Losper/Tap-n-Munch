@@ -15,7 +15,7 @@ import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import LoadingButton from '../components/LoadingButton';
-import {usePaymentStateMachine} from '../components/PaymentStateMachine';
+import {holdsRecoveryState, usePaymentStateMachine} from '../components/PaymentStateMachine';
 import StrandedRequestPrompt from '../components/StrandedRequestPrompt';
 import HeldOrphanPaymentNotice from '../components/HeldOrphanPaymentNotice';
 import {PAYMENT_ADVISORY_CEILING_S} from '../constants';
@@ -379,8 +379,18 @@ export default function PaymentScreen({route, navigation}: Props) {
   }, []);
 
   // Android back / replace away must not leave a SUCCESS that the next Charge hydrates.
+  //
+  // E6 (RC sprint 2026-09-30): EXCEPT an attempt that may have taken money. reset() here used to
+  // wipe an IN_PROGRESS or UNCONFIRMED record on Back, so reopening the order offered a live
+  // Process Payment -- a second SALE for a card that may already be charged. Those two are left
+  // alone: the record stays, and the next visit to this order opens on Check.
+  const machineStateRef = useRef(machineState.state);
+  machineStateRef.current = machineState.state;
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', () => {
+      if (holdsRecoveryState(machineStateRef.current)) {
+        return;
+      }
       reset();
     });
     return unsub;

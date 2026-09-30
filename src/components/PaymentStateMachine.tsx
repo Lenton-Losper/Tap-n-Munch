@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useReducer, useState} from 'react';
+import React, {useCallback, useEffect, useReducer, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {StyleSheet, Text, View} from 'react-native';
 import {PAYMENT_STATE_STORAGE_KEY} from '../constants';
@@ -63,7 +63,31 @@ function paymentReducer(
   }
 }
 
-async function persistPaymentState(state: PaymentMachineState): Promise<void> {
+/**
+ * E4 / E6 (RC sprint 2026-09-30). ONE RECORD PER ORDER, not one slot for the whole device.
+ *
+ * The single `flashtap_payment_state` slot lost an uncertain payment three ways, each of which put
+ * a live "Process Payment" back in front of the waiter for an order whose card may have been
+ * charged -- a second SALE under the same merchant order number:
+ *   1. Back / hardware back ran reset(), and the persist effect then REMOVED the slot;
+ *   2. opening ANY other order's Charge screen dropped the slot as "another order's state";
+ *   3. every POS sale called clearPersistedPaymentState(), which removed it.
+ * Keyed by order, a record is only ever written or removed by that order's own machine.
+ */
+export function paymentStateStorageKey(orderId?: string): string {
+  return orderId ? `${PAYMENT_STATE_STORAGE_KEY}:${orderId}` : PAYMENT_STATE_STORAGE_KEY;
+}
+
+/** The two states worth surviving a restart. Everything else is removed on write. */
+export function holdsRecoveryState(state: PaymentMachineState['state']): boolean {
+  return state === 'PAYMENT_IN_PROGRESS' || state === 'PAYMENT_UNCONFIRMED';
+}
+
+async function persistPaymentState(
+  state: PaymentMachineState,
+  orderId?: string,
+): Promise<void> {
+  const key = paymentStateStorageKey(orderId);
   // Only crash-recover in-flight payments. Never persist SUCCESS/FAILED — otherwise
   // Sale → Charge for a new order hydrates a prior success and skips Finatic.
   //
@@ -72,22 +96,24 @@ async function persistPaymentState(state: PaymentMachineState): Promise<void> {
   // reasons the other two are not persisted do not apply to it: a stale SUCCESS is dangerous
   // because it claims money arrived, and a stale FAILED is noise, but a stale UNCONFIRMED merely
   // repeats "check this before releasing", which is never the wrong instruction. The two guards
-  // that already contain a stale payload cover it unchanged — hydrate() drops any state whose
+  // that already contain a stale payload cover it unchanged — hydrate() ignores any state whose
   // orderId is not the one on screen, and POSCartScreen calls clearPersistedPaymentState() before
-  // every new charge.
-  if (
-    state.state !== 'PAYMENT_IN_PROGRESS' &&
-    state.state !== 'PAYMENT_UNCONFIRMED'
-  ) {
-    await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
-    return;
+  // every new charge. (RC 2026-09-30: neither may touch ANOTHER order's record any more — see
+  // paymentStateStorageKey.)
+  try {
+    if (!holdsRecoveryState(state.state)) {
+      await AsyncStorage.removeItem(key);
+      return;
+    }
+    await AsyncStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    // Best effort: a storage failure must never fail the payment in front of the waiter.
   }
-  await AsyncStorage.setItem(PAYMENT_STATE_STORAGE_KEY, JSON.stringify(state));
 }
 
-async function loadPaymentState(): Promise<PaymentMachineState> {
+async function loadPaymentState(key: string): Promise<PaymentMachineState> {
   try {
-    const raw = await AsyncStorage.getItem(PAYMENT_STATE_STORAGE_KEY);
+    const raw = await AsyncStorage.getItem(key);
     if (!raw) {
       return INITIAL_STATE;
     }
@@ -97,9 +123,38 @@ async function loadPaymentState(): Promise<PaymentMachineState> {
   }
 }
 
-/** Clear crash-recovery key — call when starting a new Sale charge so a prior SUCCESS cannot flash. */
+/**
+ * Clear the LEGACY single slot — call when starting a new Sale charge so a prior SUCCESS cannot
+ * flash. A new sale is a new order id with no per-order record of its own, and another order's
+ * in-flight or unconfirmed record is deliberately NOT touched (E4/E6 above).
+ */
 export async function clearPersistedPaymentState(): Promise<void> {
   await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
+}
+
+/**
+ * The record this order starts from: its own key, or -- once, from a build before per-order keys --
+ * the legacy slot. A legacy record for ANOTHER order that may have taken money is moved to that
+ * order's own key rather than dropped; anything else in the legacy slot is dropped.
+ */
+async function loadForOrder(currentOrderId?: string): Promise<PaymentMachineState> {
+  if (!currentOrderId) {
+    return loadPaymentState(PAYMENT_STATE_STORAGE_KEY);
+  }
+  const own = await loadPaymentState(paymentStateStorageKey(currentOrderId));
+  const legacy = await loadPaymentState(PAYMENT_STATE_STORAGE_KEY);
+  if (legacy.state === 'IDLE') {
+    return own;
+  }
+  try {
+    if (legacy.orderId && legacy.orderId !== currentOrderId && holdsRecoveryState(legacy.state)) {
+      await AsyncStorage.setItem(paymentStateStorageKey(legacy.orderId), JSON.stringify(legacy));
+    }
+    await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
+  } catch {
+    // The legacy slot stays for the next mount rather than being lost.
+  }
+  return own.state === 'IDLE' && legacy.orderId === currentOrderId ? legacy : own;
 }
 
 /**
@@ -109,23 +164,30 @@ export async function clearPersistedPaymentState(): Promise<void> {
 export function usePaymentStateMachine(currentOrderId?: string) {
   const [machineState, dispatch] = useReducer(paymentReducer, INITIAL_STATE);
   const [isHydrated, setIsHydrated] = useState(false);
+  /** The machine's state as the actions below have left it, ahead of React. See `apply`. */
+  const latest = useRef<PaymentMachineState>(INITIAL_STATE);
 
   useEffect(() => {
+    const restore = (payload: PaymentMachineState) => {
+      latest.current = payload;
+      dispatch({type: 'RESTORE', payload});
+    };
+
     async function hydrate() {
-      const saved = await loadPaymentState();
+      const saved = await loadForOrder(currentOrderId);
       if (saved.state === 'IDLE') {
         setIsHydrated(true);
         return;
       }
 
       // Stale success/fail from another order (or legacy persisted SUCCESS) must not
-      // show "Payment successful" before Finatic launches.
+      // show "Payment successful" before Finatic launches. Ignored, never removed: with per-order
+      // keys a mismatch is a corrupt record, and deleting it could delete another order's.
       if (
         currentOrderId &&
         saved.orderId &&
         saved.orderId !== currentOrderId
       ) {
-        await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
         setIsHydrated(true);
         return;
       }
@@ -139,24 +201,21 @@ export function usePaymentStateMachine(currentOrderId?: string) {
          * not move, and "Please retry" then invites a second charge on an order that may already
          * be paid.
          */
-        dispatch({
-          type: 'RESTORE',
-          payload: {
-            ...saved,
-            state: 'PAYMENT_UNCONFIRMED',
-            reference: undefined,
-            error: UNCONFIRMED_INTERRUPTED,
-          },
+        restore({
+          ...saved,
+          state: 'PAYMENT_UNCONFIRMED',
+          reference: undefined,
+          error: UNCONFIRMED_INTERRUPTED,
         });
       } else if (
         saved.state === 'PAYMENT_FAILED' ||
         saved.state === 'PAYMENT_UNCONFIRMED'
       ) {
         // Legacy key may still hold FAILED; only restore for this order.
-        dispatch({type: 'RESTORE', payload: saved});
+        restore(saved);
       } else {
         // Drop legacy PAYMENT_SUCCESS — require a real Process Payment for this order.
-        await AsyncStorage.removeItem(PAYMENT_STATE_STORAGE_KEY);
+        await AsyncStorage.removeItem(paymentStateStorageKey(currentOrderId));
       }
       setIsHydrated(true);
     }
@@ -164,33 +223,57 @@ export function usePaymentStateMachine(currentOrderId?: string) {
     hydrate();
   }, [currentOrderId]);
 
-  useEffect(() => {
-    if (!isHydrated) {
-      return;
-    }
-    persistPaymentState(machineState);
-  }, [machineState, isHydrated]);
+  /**
+   * E6 (RC sprint 2026-09-30). PERSISTED BY THE ACTION, NOT BY A RENDER EFFECT.
+   *
+   * A card attempt outlives its screen: the waiter can leave while the reader is open, and the
+   * attempt's own code still runs to its end and calls one of these. An effect only runs while the
+   * component is mounted, so an answer that arrived after Back was never written -- a later 9027
+   * left no record, and a later decline could never clear one. Writing from the action makes the
+   * record follow the attempt, mounted or not. `latest` runs the same reducer ahead of React, so
+   * the record a later action writes carries the fields (orderId, amount) of the one before it.
+   */
+  const apply = useCallback(
+    (action: PaymentAction) => {
+      latest.current = paymentReducer(latest.current, action);
+      persistPaymentState(latest.current, currentOrderId);
+      dispatch(action);
+    },
+    [currentOrderId],
+  );
 
-  const startPayment = useCallback((orderId: string, amount: number) => {
-    dispatch({type: 'START_PAYMENT', orderId, amount});
-  }, []);
+  const startPayment = useCallback(
+    (orderId: string, amount: number) => {
+      apply({type: 'START_PAYMENT', orderId, amount});
+    },
+    [apply],
+  );
 
-  const paymentSuccess = useCallback((reference: string) => {
-    dispatch({type: 'PAYMENT_SUCCESS', reference});
-  }, []);
+  const paymentSuccess = useCallback(
+    (reference: string) => {
+      apply({type: 'PAYMENT_SUCCESS', reference});
+    },
+    [apply],
+  );
 
-  const paymentFailed = useCallback((error: string) => {
-    dispatch({type: 'PAYMENT_FAILED', error});
-  }, []);
+  const paymentFailed = useCallback(
+    (error: string) => {
+      apply({type: 'PAYMENT_FAILED', error});
+    },
+    [apply],
+  );
 
   /** #327. `detail` must be one complete sentence, not a fragment to glue onto another. */
-  const paymentUnconfirmed = useCallback((detail?: string) => {
-    dispatch({type: 'PAYMENT_UNCONFIRMED', detail});
-  }, []);
+  const paymentUnconfirmed = useCallback(
+    (detail?: string) => {
+      apply({type: 'PAYMENT_UNCONFIRMED', detail});
+    },
+    [apply],
+  );
 
   const reset = useCallback(() => {
-    dispatch({type: 'RESET'});
-  }, []);
+    apply({type: 'RESET'});
+  }, [apply]);
 
   return {
     machineState,

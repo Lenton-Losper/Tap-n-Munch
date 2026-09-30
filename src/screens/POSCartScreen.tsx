@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -28,14 +28,21 @@ export default function POSCartScreen() {
   const {cart, updateQuantity, clearCart, saleAttemptKey} = useCart();
   const {restaurantId} = route.params;
   const [charging, setCharging] = useState(false);
+  /**
+   * A4 (RC sprint 2026-09-30). Synchronous, because `charging` is React state and two presses in one
+   * batch both read it false: both POSTed, and each answer ran navigation.replace('Payment') for the
+   * same order. Released in the `finally`, so a retry after a failure is never blocked.
+   */
+  const chargeInFlight = useRef(false);
 
   const total = cart.reduce((sum, i) => sum + i.subtotal, 0);
   const subtotal = total;
 
   const handleCharge = async () => {
-    if (cart.length === 0) {
+    if (cart.length === 0 || chargeInFlight.current) {
       return;
     }
+    chargeInFlight.current = true;
     setCharging(true);
     try {
       const token = await getTerminalToken();
@@ -106,6 +113,7 @@ export default function POSCartScreen() {
         err instanceof Error ? err.message : 'Failed to create order';
       Alert.alert('Error', message);
     } finally {
+      chargeInFlight.current = false;
       setCharging(false);
     }
   };
@@ -161,12 +169,16 @@ export default function POSCartScreen() {
             <View style={styles.qtyControls}>
               <TouchableOpacity
                 style={styles.qtyButton}
+                // A5: frozen while the order is being created. The request carries the cart as it
+                // was; an edit now would ride the retry under the same key and be refused (409).
+                disabled={charging}
                 onPress={() => updateQuantity(item.lineKey, -1)}>
                 <Text style={styles.qtyButtonText}>−</Text>
               </TouchableOpacity>
               <Text style={styles.itemQty}>{item.quantity}</Text>
               <TouchableOpacity
                 style={styles.qtyButton}
+                disabled={charging}
                 onPress={() => updateQuantity(item.lineKey, 1)}>
                 <Text style={styles.qtyButtonText}>+</Text>
               </TouchableOpacity>

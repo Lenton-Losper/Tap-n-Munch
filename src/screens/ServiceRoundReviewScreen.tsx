@@ -115,6 +115,15 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
   const [sentTableLabel, setSentTableLabel] = useState('');
   /** When THIS round was first sent. Survives retries; only narrows Check the table's search. */
   const firstSentAtRef = useRef<number | null>(null);
+  /**
+   * A4 (RC sprint 2026-09-30). THE SYNCHRONOUS RE-ENTRANCY GUARD ON SEND. `sending` is React state,
+   * which has not re-rendered between two presses dispatched in the same batch, so a double tap
+   * reached POST /rounds twice under the same key. Two CONCURRENT same-key requests are not a safe
+   * replay: the route's line write is checked-then-written with no unique index behind it, so both
+   * can write the round's lines and the kitchen gets it twice. Same fix as PaymentScreen's
+   * `cardPaymentInFlight`: claimed before the first await, released in the `finally`.
+   */
+  const sendInFlightRef = useRef(false);
 
   /**
    * NO WAY OFF THIS SCREEN WHILE THE ROUND IS IN DOUBT, hardware back included. Leaving would end
@@ -142,7 +151,7 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
   }, [endSession, navigation]);
 
   const handleSend = useCallback(async () => {
-    if (!table || sending) {
+    if (!table || sendInFlightRef.current) {
       return;
     }
     const items = buildRoundItems(lines);
@@ -162,6 +171,7 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
       return;
     }
 
+    sendInFlightRef.current = true;
     setSending(true);
     setOutcome(null);
     setCheck(null);
@@ -295,6 +305,7 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
         message: err instanceof Error ? err.message : 'Could not send the round.',
       });
     } finally {
+      sendInFlightRef.current = false;
       setSending(false);
     }
   }, [
@@ -305,7 +316,6 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
     lockRound,
     navigation,
     orderInstructions,
-    sending,
     table,
     unlockRound,
   ]);
@@ -606,7 +616,9 @@ export default function ServiceRoundReviewScreen({navigation}: Props) {
           style={styles.instructionsInput}
           value={orderInstructions}
           onChangeText={setOrderInstructions}
-          editable={!locked}
+          // A5: not while the send is out either. The note rides in the body, the route does not
+          // compare it on a replay, so a note typed mid-send would be dropped by the retry's replay.
+          editable={!locked && !sending}
           placeholder="e.g. allergy: shellfish"
           placeholderTextColor={Colors.textMuted}
           multiline
