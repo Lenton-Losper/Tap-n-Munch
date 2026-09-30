@@ -12,6 +12,11 @@
  *                                                     MUTATION belongs to the scenario it names
  *                                                     (`scenario:`, default tab-lifecycle); --mutate=all
  *                                                     runs the chosen scenario's own mutations.
+ *   --scenario=owner-lifecycle                        the owner's 28-step long tab (F/L/N, Sprint
+ *                                                     2026-09-30), with the reconciliation script at
+ *                                                     every checkpoint; mutations OL1-OL6.
+ *   --scenario=invoice-chaos                          J1-J10 through the real PDF and send routes;
+ *                                                     mutations IC1-IC3.
  *
  * WHAT IS REAL. The scenario in __tests__/chaos/tab-lifecycle.chaos.ts imports the Next route
  * modules themselves (rounds, amend, lines, allocate, settle-allocations, settle, prepare-payment,
@@ -246,6 +251,108 @@ const MUTATIONS = {
       file: 'lib/payments/handle-terminal-payment-failed.ts',
       from: '  if (params.releaseAttemptOnly === true) {\n',
       to: '  if (false && params.releaseAttemptOnly === true) {\n',
+    },
+  },
+  // --- owner-lifecycle (node supabase/tests/chaos-e2e.mjs --scenario=owner-lifecycle --mutate=all)
+  OL1: {
+    scenario: 'owner-lifecycle',
+    what: 'the card charge asks for orders.total instead of what is still owed',
+    expect: 'L18',
+    ts: {
+      file: 'app/api/terminal/orders/[orderId]/prepare-payment/route.ts',
+      from: '        financials.get(String(row.id))?.outstandingCents ?? 0\n',
+      to: '        Math.round(Number((row as { total?: unknown }).total) * 100) + 0 * (financials.get(String(row.id))?.outstandingCents ?? 0)\n',
+    },
+  },
+  OL2: {
+    scenario: 'owner-lifecycle',
+    what: 'the live payable no longer excludes voided lines',
+    expect: 'L06',
+    ts: {
+      file: 'lib/orders/order-financials.ts',
+      from: '    if (voided) voidedCents += totalCents\n',
+      to: '    if (voided) voidedCents += 0\n',
+    },
+  },
+  OL3: {
+    scenario: 'owner-lifecycle',
+    what: 'a retried Send (same key, same body) is accepted as a NEW round',
+    expect: 'L15',
+    ts: {
+      file: 'app/api/terminal/rounds/route.ts',
+      from: '      idempotencyKey,\n      // Stays on the tab',
+      to: '      idempotencyKey: priorRound ? `${idempotencyKey}:retry` : idempotencyKey,\n      // Stays on the tab',
+    },
+  },
+  OL4: {
+    scenario: 'owner-lifecycle',
+    what: 'a cash item payment writes no non-gateway ledger row (money with no ledger record)',
+    expect: 'L04',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/settle-allocations/route.ts',
+      from: "    if (method === 'cash') {\n      const ledger = await recordNonGatewayPaymentEvent(",
+      to: "    if (false && method === 'cash') {\n      const ledger = await recordNonGatewayPaymentEvent(",
+    },
+  },
+  OL5: {
+    scenario: 'owner-lifecycle',
+    what: 'the cash ledger row loses its allocation link (totals still agree; only the reconciliation can see it)',
+    expect: 'L04',
+    ts: {
+      file: 'app/api/terminal/tabs/[tabId]/settle-allocations/route.ts',
+      from: '        allocationIds: result.applied.map((a) => a.allocation_id),\n',
+      to: '        allocationIds: undefined as unknown as string[],\n',
+    },
+  },
+  OL6: {
+    scenario: 'owner-lifecycle',
+    what: "the reconciliation script's own live projection stops subtracting voided lines",
+    expect: 'L06',
+    ts: {
+      file: 'scripts/reconcile/tab-reconciliation.sql',
+      from: 'WHERE it.order_id = o.id AND l.voided), 0)::bigint AS voided,',
+      to: 'WHERE it.order_id = o.id AND l.voided AND false), 0)::bigint AS voided,',
+    },
+  },
+  OL7: {
+    scenario: 'owner-lifecycle',
+    what: '"Check payment status" settles without the intent it was launched under (the intent stays launched forever)',
+    expect: 'L20',
+    ts: {
+      file: 'app/api/terminal/orders/[orderId]/verify-payment/route.ts',
+      from: '        leadOrderIds: [orderId],\n        intent,\n        merchantOrderNo,\n',
+      to: '        leadOrderIds: [orderId],\n        intent: null,\n        merchantOrderNo,\n',
+    },
+  },
+  // --- invoice-chaos (node supabase/tests/chaos-e2e.mjs --scenario=invoice-chaos --mutate=all)
+  IC1: {
+    scenario: 'invoice-chaos',
+    what: 'J8 fix removed: a payment taken after the invoice never reaches it (stale invoice)',
+    expect: 'J8',
+    ts: {
+      file: 'lib/documents/refresh-invoice-payments.ts',
+      from: '  if (missing) {\n',
+      to: '  if (false && missing) {\n',
+    },
+  },
+  IC2: {
+    scenario: 'invoice-chaos',
+    what: 'the invoice bills voided lines (the invoice projection drops the voided exclusion)',
+    expect: 'J4',
+    ts: {
+      file: 'lib/documents/invoice-projection.ts',
+      from: '      if (f.cancelled || line.voided) {\n',
+      to: '      if (f.cancelled) {\n',
+    },
+  },
+  IC3: {
+    scenario: 'invoice-chaos',
+    what: 'the PDF route renders the stored invoice without bringing its payments up to date',
+    expect: 'J8',
+    ts: {
+      file: 'app/api/admin/documents/[id]/pdf/route.ts',
+      from: "    if (found.document_type === 'invoice') {\n",
+      to: "    if (false && found.document_type === 'invoice') {\n",
     },
   },
   B1: {
