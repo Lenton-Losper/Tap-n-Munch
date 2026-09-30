@@ -103,7 +103,7 @@ function replaceEvery(sql, from, to) {
 
 const MUTATIONS = {
   // Sprint 2026-09-30 RC-ORDERS (supabase/tests/orders-rc.test.sql).
-  MRC1: {
+  MRO1: {
     what: 'order_lines accepts a second line for one ordered item (no unique index)',
     expect: ['rc_orders/second_line_for_one_item_refused'],
     apply: (sql) =>
@@ -112,13 +112,13 @@ const MUTATIONS = {
         'CREATE INDEX IF NOT EXISTS order_lines_one_line_per_item',
       ),
   },
-  MRC2: {
+  MRO2: {
     what: 'settle_order_line_allocations settles a share on a PAID order',
     expect: ['rc_orders/share_on_paid_order_refused', 'rc_orders/share_on_paid_order_no_ledger_row'],
     apply: (sql) =>
       sql.replace("    IF lower(btrim(COALESCE(v_order.payment_status, ''))) = 'paid' THEN", '    IF false THEN'),
   },
-  MRC3: {
+  MRO3: {
     what: 'settle_order_line_allocations settles a share on a CANCELLED order',
     expect: ['rc_orders/share_on_cancelled_order_refused', 'rc_orders/share_on_cancelled_order_unclaimed'],
     apply: (sql) =>
