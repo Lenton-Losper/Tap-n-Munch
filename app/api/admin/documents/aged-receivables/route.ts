@@ -6,7 +6,7 @@ import {
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
-import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
+import { refreshInvoicePayments } from '@/lib/documents/refresh-invoice-payments'
 
 export const dynamic = 'force-dynamic'
 
@@ -62,7 +62,9 @@ export async function GET(request: Request) {
 
     const rows = data ?? []
     for (const row of rows) {
-      const recomputed = await recomputeDocumentStatus(supabase, String(row.id))
+      // J8 (Sprint 2026-09-30): an order/tab invoice paid at the table after issue is brought up to
+      // date first -- otherwise this report chases a customer for a bill they have paid.
+      const recomputed = await refreshInvoicePayments(supabase, String(row.id), user.id)
       row.balance = recomputed.balance
       row.status = recomputed.status
     }

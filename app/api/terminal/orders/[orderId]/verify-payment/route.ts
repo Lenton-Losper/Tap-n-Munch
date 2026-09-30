@@ -23,6 +23,7 @@ import {
 import { expectedChargeFor } from '@/lib/payments/expected-charge'
 import { resolveSettlementTarget } from '@/lib/payments/settlement-target'
 import { settleWholeOrderPayment } from '@/lib/payments/settle-whole-order-payment'
+import { findIntentByMerchantOrderNo, type PaymentIntent } from '@/lib/payments/payment-intents'
 
 import {
   releaseUnresolvedAttemptNotPaid,
@@ -347,9 +348,36 @@ export async function POST(
        * cancels an order the gateway says was charged. What changes is that the set the amount is
        * checked against is provably the set that gets written.
        */
+      /**
+       * THE INTENT THE CHARGE WAS LAUNCHED UNDER (Sprint 2026-09-30, found by the tab
+       * reconciliation). prepare-payment records an orders-scope intent for this reference; the
+       * webhook hands it to settleWholeOrderPayment, and settle_order_payment then CONSUMES it
+       * (status 'confirmed', consumed_at, the gateway's figures). This route did not, so a charge
+       * settled through "Check payment status" -- the E04111 recovery path -- left its intent
+       * 'launched' forever: a paid tab that still reads as a charge in flight, and a gratuity keyed
+       * on the intent never recorded. Passed only when it is this venue's, orders-scope and still
+       * unresolved (launched/uncertain); otherwise the target is resolved from the lead order exactly as before.
+       */
+      let intent: PaymentIntent | null = null
+      try {
+        const found = await findIntentByMerchantOrderNo(supabase, merchantOrderNo)
+        if (
+          found &&
+          found.restaurantId === terminal.restaurantId &&
+          found.scope === 'orders' &&
+          (found.status === 'launched' || found.status === 'uncertain')
+        ) {
+          intent = found
+        }
+      } catch (intentError) {
+        // Not fatal: settling without the intent is what this route always did.
+        console.error('[verify-payment] intent lookup failed', intentError)
+      }
+
       const resolvedTarget = await resolveSettlementTarget(supabase, {
         restaurantId: terminal.restaurantId,
         leadOrderIds: [orderId],
+        intent,
       })
       // Reported only. A failure here is not fatal: settleWholeOrderPayment resolves the target
       // itself and fails closed on its own if it cannot, so this never becomes a second opinion
@@ -359,6 +387,7 @@ export async function POST(
       const settled = await settleWholeOrderPayment(supabase, {
         restaurantId: terminal.restaurantId,
         leadOrderIds: [orderId],
+        intent,
         merchantOrderNo,
         transactionId: result.transactionId,
         gatewayAmount: result.amount,

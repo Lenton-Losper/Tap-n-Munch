@@ -7,6 +7,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requirePermission } from '@/lib/permissions/authorize'
 import { PERMISSIONS } from '@/lib/permissions'
 import { recomputeDocumentStatus } from '@/lib/documents/recompute-status'
+import { refreshInvoicePayments } from '@/lib/documents/refresh-invoice-payments'
 import { createBusinessDocument } from '@/lib/documents/create-document'
 
 export const dynamic = 'force-dynamic'
@@ -264,7 +265,7 @@ export async function GET(request: Request) {
 
     let query = supabase
       .from('business_documents')
-      .select('id, document_type, document_number, issued_at, due_date, bill_to, total, balance, status, sent_at')
+      .select('id, document_type, document_number, issued_at, due_date, bill_to, total, balance, status, sent_at, order_id, order_ids')
       .eq('restaurant_id', restaurantId)
       .order('issued_at', { ascending: false })
 
@@ -280,6 +281,28 @@ export async function GET(request: Request) {
     // same recomputeDocumentStatus used after payments/send, cheap no-op when nothing changed.
     const rows = data ?? []
     for (const row of rows) {
+      /**
+       * J8 (Sprint 2026-09-30): an invoice raised from an order or tab that still shows a balance is
+       * brought up to date with what has since been paid at the table, so the list never shows a
+       * paid tab's invoice as owing. A failure here leaves the row as stored rather than failing the
+       * whole list; the PDF and send routes refuse such an invoice instead of rendering it.
+       */
+      const linked = Boolean(row.order_id) || (Array.isArray(row.order_ids) && row.order_ids.length > 0)
+      if (
+        row.document_type === 'invoice' &&
+        linked &&
+        Number(row.balance) > 0 &&
+        !['void', 'converted', 'expired', 'declined', 'cancelled', 'paid'].includes(String(row.status))
+      ) {
+        try {
+          const refreshed = await refreshInvoicePayments(supabase, String(row.id), user.id)
+          row.status = refreshed.status
+          row.balance = refreshed.balance
+        } catch (refreshError) {
+          console.error('[documents] invoice payment refresh failed', row.id, refreshError)
+        }
+        continue
+      }
       if (
         row.document_type === 'invoice' &&
         row.due_date &&

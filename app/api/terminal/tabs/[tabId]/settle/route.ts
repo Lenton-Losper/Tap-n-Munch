@@ -6,6 +6,7 @@ import { safeIssueReceiptsForOrders } from '@/lib/receipts/safeIssueReceipt'
 import { parseTipCents, recordTip } from '@/lib/payments/tips'
 import { recordGatewaySaleEvent } from '@/lib/payments/record-gateway-sale-event'
 import { recordNonGatewayPaymentEvent } from '@/lib/payments/record-non-gateway-payment-event'
+import { consumeSettledOrdersIntent } from '@/lib/payments/consume-settled-orders-intent'
 import {
   centsToMajor,
   FINANCIAL_ORDER_COLUMNS,
@@ -1129,6 +1130,17 @@ export async function POST(
         source: 'terminal/tabs/settle',
       })
       saleEventOutcome = sale.outcome
+      // Sprint 2026-09-30: the charge's orders-scope intent is resolved by this settlement, as
+      // settle_order_payment does on the gateway paths. See consume-settled-orders-intent.ts.
+      await consumeSettledOrdersIntent(supabase, {
+        restaurantId: terminal.restaurantId,
+        merchantOrderNo: businessOrderNo || null,
+        settledOrderIds: claimedIds,
+        chargedCents: expectedCents + tipCents,
+        transactionId: voucherNo || gatewayReference || null,
+        paymentMethod: method,
+        source: 'terminal/tabs/settle',
+      })
       if (sale.outcome === 'failed' || sale.outcome === 'skipped_no_reference') {
         console.error('[terminal/tabs/settle] payment ledger row NOT written', {
           tabId,
