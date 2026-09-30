@@ -67,11 +67,43 @@ type ItemFormState = {
     options: Array<string | WritableVariantOption>
   }>
   has_addons: boolean
-  addons: Array<{ name: string; price: number }>
+  /** `null` while the price box is empty, as for variants. */
+  addons: Array<{ name: string; price: number | null }>
   allow_special_instructions: boolean
   is_popular: boolean
   status: 'available' | 'out_of_stock' | 'hidden'
   tax_rate_id: string
+}
+
+/*
+ * The variant and add-on price boxes share these, so the two cannot drift into different
+ * behaviours. Both used to read `Number(value) || 0`: clearing the box wrote 0, the controlled
+ * input re-rendered "0", and the only way to replace it was to type in front of the 0 and delete
+ * it afterwards. An empty box now stays EMPTY (null) and handleSaveItem validates what is left.
+ */
+function priceFromInput(value: string): number | null {
+  return value.trim() === '' ? null : Number(value)
+}
+
+function priceForInput(price: number | null | undefined): number | '' {
+  return typeof price === 'number' && Number.isFinite(price) ? price : ''
+}
+
+function isValidPrice(price: number | null | undefined): price is number {
+  return typeof price === 'number' && Number.isFinite(price) && price >= 0
+}
+
+/** Focusing a price box selects it, so the first keystroke replaces the current value. */
+function selectOnFocus(event: React.FocusEvent<HTMLInputElement>) {
+  event.currentTarget.select()
+}
+
+/**
+ * The add-on rows Save writes: every row except one left entirely blank (no name, no price),
+ * which is what the Add-ons switch and "Add Add-on" create before anything is typed.
+ */
+function addonsToWrite(addons: ItemFormState['addons']): ItemFormState['addons'] {
+  return addons.filter((addon) => addon.name.trim() !== '' || addon.price !== null)
 }
 
 /**
@@ -392,7 +424,7 @@ function MenuItemFormContent({
     variants: sanitizedVariants.length > 0 ? sanitizedVariants : undefined,
     variantGroups: sanitizedVariantGroups.length > 0 ? sanitizedVariantGroups : undefined,
     has_addons: itemForm.has_addons,
-    addons: itemForm.has_addons ? itemForm.addons : [],
+    addons: itemForm.has_addons ? addonsToWrite(itemForm.addons) : [],
     allow_special_instructions: itemForm.allow_special_instructions,
     is_popular: itemForm.is_popular,
     status: itemForm.status,
@@ -474,10 +506,7 @@ function MenuItemFormContent({
     // saved item without a word by sanitizedVariants.
     const variantPriceErrors = itemForm.variants
       .filter((variant) => String(variant.size || '').trim() || String(variant.label || '').trim())
-      .filter(
-        (variant) =>
-          typeof variant.price !== 'number' || !Number.isFinite(variant.price) || variant.price < 0,
-      )
+      .filter((variant) => !isValidPrice(variant.price))
       .map(
         (variant) =>
           `Enter a valid price for variant "${String(variant.label || variant.size).trim()}".`,
@@ -489,6 +518,27 @@ function MenuItemFormContent({
         variant: 'destructive',
       })
       setActiveTab('pricing')
+      return
+    }
+
+    // Add-ons have no sanitiser -- they are written as they stand -- so an empty price here would
+    // reach the item as `price: null`. Every add-on that is written must carry a valid price.
+    const addonPriceErrors = itemForm.has_addons
+      ? addonsToWrite(itemForm.addons)
+          .filter((addon) => !isValidPrice(addon.price))
+          .map((addon) =>
+            addon.name.trim()
+              ? `Enter a valid price for add-on "${addon.name.trim()}".`
+              : 'Enter a valid price for every add-on.',
+          )
+      : []
+    if (addonPriceErrors.length > 0) {
+      toast({
+        title: 'Validation Error',
+        description: [...new Set(addonPriceErrors)].join('\n'),
+        variant: 'destructive',
+      })
+      setActiveTab('options')
       return
     }
 
@@ -623,12 +673,7 @@ function MenuItemFormContent({
       const next = [...prev.variants]
       if (!next[index]) return prev
       if (field === 'price') {
-        /*
-         * An empty box stays EMPTY. This read `Number(value) || 0`, so clearing the box wrote 0,
-         * the input re-rendered "0", and the only way to replace it was to type in front of the 0
-         * and delete it afterwards. handleSaveItem validates whatever is left.
-         */
-        next[index] = { ...next[index], price: value.trim() === '' ? null : Number(value) }
+        next[index] = { ...next[index], price: priceFromInput(value) }
       } else {
         next[index] = { ...next[index], [field]: value }
       }
@@ -733,7 +778,7 @@ function MenuItemFormContent({
   const handleAddAddon = () => {
     setItemForm((prev) => ({
       ...prev,
-      addons: [...prev.addons, { name: '', price: Number(prev.base_price) || 0 }],
+      addons: [...prev.addons, { name: '', price: Number(prev.base_price) || null }],
     }))
   }
 
@@ -743,7 +788,7 @@ function MenuItemFormContent({
       if (!next[index]) return prev
       next[index] =
         field === 'price'
-          ? { ...next[index], price: Number(value) || 0 }
+          ? { ...next[index], price: priceFromInput(value) }
           : { ...next[index], name: value }
       return { ...prev, addons: next }
     })
@@ -920,12 +965,8 @@ function MenuItemFormContent({
                         step="0.01"
                         placeholder="25.00"
                         min="0"
-                        value={
-                          typeof variant.price === 'number' && Number.isFinite(variant.price)
-                            ? variant.price
-                            : ''
-                        }
-                        onFocus={(event) => event.currentTarget.select()}
+                        value={priceForInput(variant.price)}
+                        onFocus={selectOnFocus}
                         onChange={(event) =>
                           handleUpdateVariantRow(index, 'price', event.target.value)
                         }
@@ -1187,7 +1228,8 @@ function MenuItemFormContent({
                     setItemForm((prev) => ({
                       ...prev,
                       has_addons: checked,
-                      addons: checked && prev.addons.length === 0 ? [{ name: '', price: 0 }] : prev.addons,
+                      addons:
+                        checked && prev.addons.length === 0 ? [{ name: '', price: null }] : prev.addons,
                     }))
                   }
                 />
@@ -1207,7 +1249,9 @@ function MenuItemFormContent({
                         type="number"
                         step="0.01"
                         placeholder="Price"
-                        value={Number.isFinite(addon.price) ? addon.price : ''}
+                        min="0"
+                        value={priceForInput(addon.price)}
+                        onFocus={selectOnFocus}
                         onChange={(event) => handleUpdateAddon(index, 'price', event.target.value)}
                       />
                       <Button
