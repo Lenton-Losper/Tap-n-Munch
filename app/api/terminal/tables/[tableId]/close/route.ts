@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { closeTableSession } from '@/lib/session-manager'
+import { guardCloseOutstandingBalance } from '@/lib/tabs/close-balance-guard'
 
 export const dynamic = 'force-dynamic'
 
@@ -50,6 +51,18 @@ export async function POST(
     })
     if (guard.blocked) {
       return NextResponse.json(guard.body, { status: guard.status })
+    }
+
+    /**
+     * NOTHING OWED, OR NO CLOSE (RC-RACES 2026-09-30). This route is every waiter's; writing off a
+     * debt is the walkout route's, behind a manager PIN. See lib/tabs/close-balance-guard.ts.
+     */
+    const balance = await guardCloseOutstandingBalance(supabase, {
+      restaurantId: terminal.restaurantId,
+      tableId,
+    })
+    if (balance.blocked) {
+      return NextResponse.json(balance.body, { status: balance.status })
     }
 
     await closeTableSession({

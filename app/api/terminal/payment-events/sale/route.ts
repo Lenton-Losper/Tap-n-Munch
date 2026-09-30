@@ -6,6 +6,7 @@ import {
   saleAmountMismatchAudit,
 } from '@/lib/payments/reconcile-sale-amount'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { SECOND_PAYMENT_REFUSED_ACTION } from '@/lib/payments/record-refused-second-payment'
 import { requireTerminalAuth, validateTerminalRecord } from '@/lib/terminal-auth'
 import { issueReceiptForOrder } from '@/lib/receipts/issueReceipt'
 
@@ -308,6 +309,74 @@ export async function POST(req: Request) {
         return NextResponse.json(
           { error: 'Failed to load existing payment event' },
           { status: 500 },
+        )
+      }
+
+      /**
+       * TWO READERS REPORTED A SALE ON ONE REFERENCE (RC-RACES, 2026-09-30, D4).
+       *
+       * One charge happens on one reader. A sale for this reference already reported by a
+       * DIFFERENT terminal, with a different transaction id, is a second card charge -- the case the
+       * FTOWN guard (20260930110000) prevents inside its window and cannot prevent after it (the
+       * first reader answered late, after a second terminal took over). Returning the first row as
+       * an idempotent replay recorded the second charge nowhere. It is written down as a probable
+       * double charge for staff to refund, and refused. The device treats this call as
+       * fire-and-forget, so a 409 changes nothing at the till.
+       */
+      const existingTerminal = String(existing.terminal_id ?? '').trim()
+      const existingTxn = String(existing.transaction_id ?? '').trim()
+      // Only a row a DEVICE reported carries that device's voucher: this route's own rows, and the
+      // tab settle route's (it records the settling terminal's voucher). A row settle_order_payment
+      // wrote holds the GATEWAY's transaction id, which need not match any voucher, so comparing
+      // against it would raise a false double-charge alarm.
+      const reportedByDevice =
+        existing.origin === 'terminal_device' ||
+        (existing.raw_gateway_response as { source?: unknown } | null)?.source === 'terminal/tabs/settle'
+      if (
+        reportedByDevice &&
+        existingTerminal &&
+        existingTerminal !== terminal.terminalId &&
+        existingTxn &&
+        existingTxn !== transactionId
+      ) {
+        const { error: auditError } = await supabase.from('audit_logs').insert({
+          restaurant_id: terminal.restaurantId,
+          action: SECOND_PAYMENT_REFUSED_ACTION,
+          entity_type: 'payment_events',
+          entity_id: String(existing.id),
+          metadata: {
+            source: 'terminal/payment-events/sale',
+            reason: 'sale_reported_by_another_terminal',
+            distinctGatewayTransaction: true,
+            attemptedReference: businessOrderNo,
+            attemptedTransactionId: transactionId,
+            attemptedTerminalId: terminal.terminalId,
+            attemptedAmount: amount,
+            existingTransactionId: existingTxn,
+            existingTerminalId: existingTerminal,
+            order_ids: orderIds,
+            note:
+              'Two terminals reported a card sale on the same reference with different ' +
+              'transactions. Only the first is recorded. The customer was very likely charged ' +
+              'twice -- check the gateway and refund.',
+            recordedAt: new Date().toISOString(),
+          },
+        })
+        if (auditError) {
+          console.error('[terminal/payment-events/sale] second-terminal sale audit failed', auditError)
+        }
+        console.error(
+          `[SECOND-PAYMENT-REFUSED] PROBABLE DOUBLE CHARGE reference=${businessOrderNo} ` +
+            `txn=${transactionId} terminal=${terminal.terminalId} first=${existingTxn}@${existingTerminal}`,
+        )
+        return NextResponse.json(
+          {
+            error:
+              'Another terminal already recorded a card sale on this reference. This charge was ' +
+              'not recorded; it has been flagged for a refund check.',
+            code: 'SALE_REPORTED_BY_ANOTHER_TERMINAL',
+          },
+          { status: 409 },
         )
       }
 
