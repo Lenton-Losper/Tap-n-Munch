@@ -90,6 +90,7 @@ import {getTerminalToken} from '../lib/storage';
 import {MainStackParamList} from '../navigation/AppNavigator';
 import StatusBadge from '../components/StatusBadge';
 import {Order} from '../types';
+import {markPaymentTimeline} from '../lib/paymentTimeline';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'Payment'>;
 
@@ -611,6 +612,15 @@ export default function PaymentScreen({route, navigation}: Props) {
         }
       }
 
+      // T6: the server's answer to POST .../payment is in (paymentTimeline.ts). Record-only.
+      markPaymentTimeline('report_done', {
+        orderId,
+        businessOrderNo: opts.businessOrderNo,
+        status: 'success',
+        outcome: held ? 'held_order_changed' : paymentResult.outcome ?? 'ok',
+        method: opts.paymentMethod,
+      });
+
       if (
         opts.recordFinaticSale &&
         opts.businessOrderNo &&
@@ -663,6 +673,8 @@ export default function PaymentScreen({route, navigation}: Props) {
         setCanCloseTable(action.canClose);
         paymentSuccess(opts.reference);
       }
+      // T7: the outcome is on screen (paymentTimeline.ts). Record-only.
+      markPaymentTimeline('ui_state', {orderId, state: held ? 'held' : 'success', method: opts.paymentMethod});
     },
     [
       order,
@@ -820,6 +832,12 @@ export default function PaymentScreen({route, navigation}: Props) {
          * with Finatic, found the money, and the operator was told the payment failed.
          */
         const classification = classifyFailureReport(completed);
+        markPaymentTimeline('report_done', {
+          orderId,
+          businessOrderNo: result.businessOrderNo,
+          status: 'failed',
+          outcome: completed?.outcome ?? '(not reported)',
+        });
         recordWiretapEvent('payment.report.classified', {
           orderId,
           outcome: completed?.outcome ?? '(none)',
@@ -840,6 +858,7 @@ export default function PaymentScreen({route, navigation}: Props) {
           // Unknown. One complete sentence, never a concatenation.
           paymentUnconfirmed(completed ? baseError : UNCONFIRMED_NOT_REPORTED);
         }
+        markPaymentTimeline('ui_state', {orderId, state: classification});
       }
     } catch (err) {
       const message =

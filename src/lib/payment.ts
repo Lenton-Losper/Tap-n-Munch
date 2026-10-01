@@ -9,6 +9,7 @@ import {PAYMENT_TIMED_OUT_MESSAGE} from '../constants/paymentCopy';
 import {getTerminalToken, holdOrphanPayment} from './storage';
 import {decideOrphanDisposition} from './orphanPaymentGuard';
 import {recordWiretapEvent} from './wiretap';
+import {markPaymentTimeline} from './paymentTimeline';
 import {prepareRefusalFromError, type PrepareRefusal} from './settlementRefusal';
 
 export type PaymentOutcomeKind =
@@ -641,6 +642,9 @@ export async function processPaymentIntent(
     };
   }
 
+  // T0: FlashTap starts this payment (see paymentTimeline.ts). Record-only.
+  markPaymentTimeline('t0_start', {orderId, suppliedRef: Boolean(options?.merchantOrderNo)});
+
   // Recover a prior orphaned callback before starting a new SALE (process death case).
   //
   // #344 SITE 1 OF 2. Guarded by applyOrHoldOrphan: an orphan is applied ONLY when it names this
@@ -662,6 +666,8 @@ export async function processPaymentIntent(
   }
 
   let readerLaunched = false;
+  /** Whether result_in_js was marked on the resolve path, so the catch does not mark it twice. */
+  let resultMarked = false;
   try {
     const token = await getTerminalToken();
     if (!token) {
@@ -716,6 +722,7 @@ export async function processPaymentIntent(
     }
 
     const amountInCents = String(Math.round(chargeAmount * 100));
+    markPaymentTimeline('prepare_done', {orderId, businessOrderNo: merchantOrderNo, prepared: !suppliedRef});
 
     // Everything above this line happens before any card is presented. A typed prepare refusal is
     // only believed when this is still false -- see the catch.
@@ -724,6 +731,7 @@ export async function processPaymentIntent(
     // launchPayment's Promise only resolves when WiseCashier returns. Start it
     // first so native startActivityForResult runs, then mark attempt-started
     // before awaiting the payment outcome (handoff: fire at launch, not result).
+    markPaymentTimeline('launch_requested', {orderId, businessOrderNo: merchantOrderNo});
     const launchPromise = PaymentModule.launchPayment(
       amountInCents,
       orderId,
@@ -773,6 +781,14 @@ export async function processPaymentIntent(
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
     }
+    // T5 as JS sees it: WiseCashier has finished and its result reached this promise (or the
+    // ceiling fired first). A REJECTED result is marked in the catch below.
+    markPaymentTimeline('result_in_js', {
+      orderId,
+      businessOrderNo: merchantOrderNo,
+      settled: raced === TIMED_OUT ? 'timed_out' : 'resolved',
+    });
+    resultMarked = true;
 
     if (raced === TIMED_OUT) {
       recordWiretapEvent('payment.result.timeout', {
@@ -824,6 +840,11 @@ export async function processPaymentIntent(
       businessOrderNo: result.businessOrderNo || merchantOrderNo,
     });
   } catch (error: unknown) {
+    // T5 for a REJECTED result: the native module rejects every non-success WiseCashier outcome.
+    // Only after the reader launched -- a prepare-payment failure never reached WiseCashier.
+    if (readerLaunched && !resultMarked) {
+      markPaymentTimeline('result_in_js', {orderId, settled: 'rejected'});
+    }
     // After a lost Promise, the native side may have persisted an orphaned result.
     //
     // #344 SITE 2 OF 2, and it was the more exposed of the two: it returned the orphan with no
