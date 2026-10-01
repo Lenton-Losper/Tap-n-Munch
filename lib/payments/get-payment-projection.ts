@@ -1,4 +1,5 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { mapWithConcurrency } from '@/lib/util/map-with-concurrency'
 
 export type PaymentStatus = 'paid' | 'partially_refunded' | 'refunded'
 
@@ -133,15 +134,28 @@ export async function getPaymentProjections(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   restaurantId: string,
   orderIds: string[],
+  options: {
+    /**
+     * Chunks read at once (default 1: one after another, as before -- every existing caller).
+     *
+     * perf/latency-sprint 2026-10-01. The chunks are independent reads, so a caller with
+     * connections to spare can send them together; results are concatenated in chunk order, so
+     * `sales` is the same array either way. It is NOT a free win: a worker holds six simultaneous
+     * connections, and in GET /api/terminal/orders, where the financials batches already fill them,
+     * parallel chunks MEASURED slower (depth 32 vs 29). Set it from a measurement, per caller.
+     */
+    concurrency?: number
+  } = {},
 ): Promise<Map<string, PaymentProjection>> {
   const result = new Map<string, PaymentProjection>()
   const uniqueOrderIds = [...new Set(orderIds.map((id) => String(id).trim()).filter(Boolean))]
   if (uniqueOrderIds.length === 0) return result
 
   const orderIdSet = new Set(uniqueOrderIds)
+  const concurrency = options.concurrency ?? 1
 
-  const sales: { business_order_no: string; amount: number; currency: string; order_ids: unknown; created_at: string }[] = []
-  for (const batch of chunk(uniqueOrderIds)) {
+  type SaleEventRow = { business_order_no: string; amount: number; currency: string; order_ids: unknown; created_at: string }
+  const saleBatches = await mapWithConcurrency(chunk(uniqueOrderIds), async (batch) => {
     const { data, error: saleError } = await supabase
       .from('payment_events')
       .select('business_order_no, amount, currency, order_ids, created_at')
@@ -151,8 +165,9 @@ export async function getPaymentProjections(
       .order('created_at', { ascending: false })
 
     if (saleError) throw saleError
-    sales.push(...((data ?? []) as typeof sales))
-  }
+    return (data ?? []) as SaleEventRow[]
+  }, concurrency)
+  const sales: SaleEventRow[] = saleBatches.flat()
 
   // Re-sort across batches: "newest sale wins" has to hold over the whole set, not per batch.
   sales.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
@@ -189,8 +204,8 @@ export async function getPaymentProjections(
     ...new Set([...saleByOrderId.values()].map((s) => s.business_order_no)),
   ]
 
-  const priorRefunds: { amount: number; origin_business_order_no: string }[] = []
-  for (const batch of chunk(originNos)) {
+  type RefundEventRow = { amount: number; origin_business_order_no: string }
+  const refundBatches = await mapWithConcurrency(chunk(originNos), async (batch) => {
     const { data, error: priorError } = await supabase
       .from('payment_events')
       .select('amount, origin_business_order_no')
@@ -199,8 +214,9 @@ export async function getPaymentProjections(
       .in('origin_business_order_no', batch)
 
     if (priorError) throw priorError
-    priorRefunds.push(...((data ?? []) as typeof priorRefunds))
-  }
+    return (data ?? []) as RefundEventRow[]
+  }, concurrency)
+  const priorRefunds: RefundEventRow[] = refundBatches.flat()
 
   const refundedByOrigin = new Map<string, number>()
   for (const row of priorRefunds) {

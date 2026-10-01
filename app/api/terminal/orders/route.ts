@@ -9,7 +9,8 @@ import { enrichOrderItemsWithRouteTo } from '@/lib/order-routing'
 import { getPaymentProjections } from '@/lib/payments/get-payment-projection'
 import { autoCancelStalePosOrders } from '@/lib/orders/auto-cancel-stale-pos-orders'
 import { checkStockSufficiency } from '@/lib/orders/check-stock-sufficiency'
-import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+import { fetchAllRowsConcurrently } from '@/lib/supabase/fetch-all-rows'
+import { mapWithConcurrency } from '@/lib/util/map-with-concurrency'
 import {
   financialsWire,
   projectOrderRows,
@@ -26,6 +27,16 @@ export const dynamic = 'force-dynamic'
 
 /** Orders per projection read. Keeps each `.in('order_id', ...)` URL well under PostgREST's limit. */
 const FINANCIALS_BATCH = 200
+/**
+ * How many financials batches / payment-projection chunks are in flight at once on the list path
+ * (perf/latency-sprint 2026-10-01). CHOSEN BY MEASUREMENT, not by reasoning: both compete for the
+ * worker's six simultaneous connections, and __tests__/terminal-orders-list-latency.test.ts at FNB
+ * scale (4,675 orders, 133 calls) measured sequential depth for projection x financials of
+ * 1x1 51, 1x2 34, 2x2 28, 3x3 26, 3x4 25, 6x2 32, 6x4 26. The floor is ~26 (133 calls / 6, plus
+ * auth, sweep and page 0). Re-measure before changing either number.
+ */
+const FINANCIALS_FANOUT = 4
+const PROJECTION_FANOUT = 3
 
 /**
  * WHAT EACH LISTED ORDER IS WORTH NOW (Sprint 2026-09-29, F-TERMPAY task 8).
@@ -46,18 +57,31 @@ async function financialsByOrder(
   rows: Record<string, unknown>[],
 ): Promise<Map<string, FinancialsWire>> {
   const out = new Map<string, FinancialsWire>()
-  for (let i = 0; i < rows.length; i += FINANCIALS_BATCH) {
-    const batch = rows.slice(i, i + FINANCIALS_BATCH) as unknown as FinancialOrderInput[]
-    try {
-      const projected = await projectOrderRows(supabase, batch)
-      for (const [id, f] of projected) out.set(id, financialsWire(f))
-    } catch (e) {
-      console.error('[terminal/orders] financials unreadable; listing without them', {
-        batchStart: i,
-        batchSize: batch.length,
-        error: e instanceof Error ? e.message : String(e),
-      })
-    }
+  const starts: number[] = []
+  for (let i = 0; i < rows.length; i += FINANCIALS_BATCH) starts.push(i)
+  // perf/latency-sprint 2026-10-01: the batches are independent, so they are read FINANCIALS_FANOUT
+  // at a time rather than one ~200 ms round trip after another (24 in a row at FNB's 4,675 orders).
+  // Fail-soft stays PER BATCH, and results are applied in batch order.
+  const perBatch = await mapWithConcurrency(
+    starts,
+    async (i) => {
+      const batch = rows.slice(i, i + FINANCIALS_BATCH) as unknown as FinancialOrderInput[]
+      try {
+        return await projectOrderRows(supabase, batch)
+      } catch (e) {
+        console.error('[terminal/orders] financials unreadable; listing without them', {
+          batchStart: i,
+          batchSize: batch.length,
+          error: e instanceof Error ? e.message : String(e),
+        })
+        return null
+      }
+    },
+    FINANCIALS_FANOUT,
+  )
+  for (const projected of perBatch) {
+    if (!projected) continue
+    for (const [id, f] of projected) out.set(id, financialsWire(f))
   }
   return out
 }
@@ -68,6 +92,23 @@ const LIVE_ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'comp
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/** ?scope=active: what the terminal's New / Preparing / Ready tabs show. */
+const ACTIVE_ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready']
+const COMPLETED_PAGE_DEFAULT = 50
+const COMPLETED_PAGE_MAX = 200
+/** A timestamptz as PostgREST writes it back, e.g. 2026-09-30T12:01:02.123456+00:00. */
+const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/
+
+/** The completed-history cursor: the last row's placed_at and id, `<placed_at>~<id>`. */
+function parseCursor(raw: string): { placedAt: string; id: string } | null {
+  const sep = raw.lastIndexOf('~')
+  if (sep < 0) return null
+  const placedAt = raw.slice(0, sep)
+  const id = raw.slice(sep + 1)
+  if (!TIMESTAMP_RE.test(placedAt) || !Number.isFinite(Date.parse(placedAt)) || !UUID_RE.test(id)) return null
+  return { placedAt, id }
+}
+
 /** Order rows as the terminal receives them: the stored row plus its payment and money figures. */
 async function enrichOrders(
   supabase: ReturnType<typeof createServerSupabaseClient>,
@@ -75,8 +116,12 @@ async function enrichOrders(
   data: Record<string, unknown>[],
 ) {
   const orderIds = data.map((o: any) => String(o.id)).filter(Boolean)
-  const projections = await getPaymentProjections(supabase, restaurantId, orderIds)
-  const financials = await financialsByOrder(supabase, data)
+  // Independent reads of the same rows: together, not one after the other. A projection failure
+  // still fails the request (as it did when it ran first); financials stay fail-soft.
+  const [projections, financials] = await Promise.all([
+    getPaymentProjections(supabase, restaurantId, orderIds, { concurrency: PROJECTION_FANOUT }),
+    financialsByOrder(supabase, data),
+  ])
 
   return data.map((order: any) => {
     const projection = projections.get(String(order.id)) ?? null
@@ -145,6 +190,80 @@ export async function GET(req: Request) {
       return NextResponse.json({ orders })
     }
 
+    /**
+     * BOUNDED VIEWS (perf/latency-sprint 2026-10-01). Without a `scope` this route returns every
+     * live order with no date bound -- 4,675 rows for FNB ChowNow on 2026-10-01, 4,543 of them
+     * completed -- and every terminal in the field polls exactly that every 30 s. That response is
+     * UNCHANGED below. A terminal that asks for a scope gets only what one screen shows:
+     *
+     *   ?scope=active                        pending/confirmed/preparing/ready, all (with the sweep)
+     *   ?scope=completed[&limit=N][&cursor=]  completed, newest first, N per page (default 50, max
+     *                                         200), plus `nextCursor` (null on the last page)
+     *
+     * Anything else in `scope`, `limit` or `cursor` is a 400 before anything is read.
+     */
+    const scope = url.searchParams.get('scope')
+    if (scope !== null && scope !== 'active' && scope !== 'completed') {
+      return NextResponse.json({ error: 'scope must be active or completed', code: 'INVALID_SCOPE' }, { status: 400 })
+    }
+
+    if (scope === 'completed') {
+      const rawLimit = url.searchParams.get('limit')
+      const limit = rawLimit === null ? COMPLETED_PAGE_DEFAULT : /^\d+$/.test(rawLimit) ? Number(rawLimit) : NaN
+      if (!Number.isInteger(limit) || limit < 1 || limit > COMPLETED_PAGE_MAX) {
+        return NextResponse.json(
+          { error: `limit must be an integer from 1 to ${COMPLETED_PAGE_MAX}`, code: 'INVALID_LIMIT' },
+          { status: 400 },
+        )
+      }
+      const rawCursor = url.searchParams.get('cursor')
+      const cursor = rawCursor === null ? null : parseCursor(rawCursor)
+      if (rawCursor !== null && !cursor) {
+        return NextResponse.json({ error: 'cursor is not one this route issued', code: 'INVALID_CURSOR' }, { status: 400 })
+      }
+
+      /**
+       * KEYSET ON (placed_at, id), newest first. Two timestamps can be equal, so the cursor carries
+       * the id as a tie-break. "After the cursor" is (placed_at < X) OR (placed_at = X AND id < Y):
+       * TWO plain-filter queries sent together, not one `.or()` -- `.or()` parses its argument, and
+       * this one would be built from the caller's input.
+       *
+       * NO SWEEP: autoCancelStalePosOrders only ever cancels non-completed orders, so it cannot
+       * change what a completed page holds; it still runs on every legacy and ?scope=active poll.
+       *
+       * A completed order with NULL placed_at (the column is nullable; staging had none on
+       * 2026-10-01) has no place on a keyset and is not paged here; the legacy list still has it.
+       */
+      const base = () =>
+        supabase
+          .from('orders')
+          .select('*')
+          .eq('restaurant_id', terminal.restaurantId)
+          .eq('status', 'completed')
+          .not('placed_at', 'is', null)
+          .limit(limit)
+      const [older, tied] = await Promise.all([
+        (cursor ? base().lt('placed_at', cursor.placedAt) : base())
+          .order('placed_at', { ascending: false })
+          .order('id', { ascending: false }),
+        cursor
+          ? base().eq('placed_at', cursor.placedAt).lt('id', cursor.id).order('id', { ascending: false })
+          : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+      ])
+      if (older.error) throw new Error(`terminal-orders-completed: ${older.error.message}`)
+      if (tied.error) throw new Error(`terminal-orders-completed: ${tied.error.message}`)
+      // Rows tied with the cursor's timestamp sort ahead of every strictly older row.
+      const page = [
+        ...((tied.data ?? []) as Record<string, unknown>[]),
+        ...((older.data ?? []) as Record<string, unknown>[]),
+      ].slice(0, limit)
+      const last = page[page.length - 1]
+      const nextCursor = page.length === limit && last ? `${String(last.placed_at)}~${String(last.id)}` : null
+
+      const orders = await enrichOrders(supabase, terminal.restaurantId, page)
+      return NextResponse.json({ orders, nextCursor })
+    }
+
     // Lazy cleanup, same pattern as recomputeInvoiceStatus's lazy overdue check: no scheduled
     // job needed for the terminal's own polling to self-heal abandoned Sale-tab orders, since
     // this route is what the terminal calls to list its own orders in the first place.
@@ -152,17 +271,25 @@ export async function GET(req: Request) {
     // stay fast/independent of Finatic's uptime. Only orders that never got a
     // paycloud_merchant_order_no (no payment attempt reached Finatic) are cancelled inline;
     // anything mid-flight is resolved by the Finatic-verified cron instead (up to ~2min extra).
+    //
+    // THE SWEEP RUNS FIRST, NOT ALONGSIDE THE READ (perf/latency-sprint 2026-10-01). It cancels
+    // pending orders, which drops them out of the status filter below; landing between two of the
+    // concurrent offset pages, that shifts every later page and silently SKIPS a row. Steady state
+    // it is a single round trip.
     await autoCancelStalePosOrders(supabase, { restaurantId: terminal.restaurantId, verifyWithFinatic: false })
 
-    // #323: every live order for the restaurant, no date bound -- 739 for FNB ChowNow today.
-    // fetchAllRows throws on failure; the enclosing try/catch already answers with JSON.
-    const data = await fetchAllRows<Record<string, unknown>>(
-      supabase
-        .from('orders')
-        .select('*')
-        .eq('restaurant_id', terminal.restaurantId)
-        .in('status', LIVE_ORDER_STATUSES)
-        .order('placed_at', { ascending: false }),
+    // #323: every live order for the restaurant, no date bound (legacy), or the active set.
+    // Pages after the first are fetched concurrently (fetchAllRowsConcurrently), kept in page order.
+    // It throws on failure; the enclosing try/catch already answers with JSON.
+    const statuses = scope === 'active' ? ACTIVE_ORDER_STATUSES : LIVE_ORDER_STATUSES
+    const data = await fetchAllRowsConcurrently<Record<string, unknown>>(
+      () =>
+        supabase
+          .from('orders')
+          .select('*')
+          .eq('restaurant_id', terminal.restaurantId)
+          .in('status', statuses)
+          .order('placed_at', { ascending: false }),
       { label: 'terminal-orders' },
     )
 

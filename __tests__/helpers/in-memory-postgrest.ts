@@ -110,7 +110,8 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
     payload: Row | Row[]
     onConflict?: string
   } | null = null
-  private orderBy: { column: string; ascending: boolean } | null = null
+  /** Every .order() call, in call order: PostgREST appends sort keys, it does not replace them. */
+  private orderBy: Array<{ column: string; ascending: boolean }> = []
   private limitN: number | null = null
   private rangeBounds: { from: number; to: number } | null = null
 
@@ -204,7 +205,7 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
     return this
   }
   order(column: string, opts?: { ascending?: boolean }) {
-    this.orderBy = { column, ascending: opts?.ascending !== false }
+    this.orderBy.push({ column, ascending: opts?.ascending !== false })
     return this
   }
   limit(n: number) {
@@ -279,15 +280,18 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
         return f.values.every((v) => held.includes(String(v)))
       })
     }
-    if (this.orderBy) {
-      const { column, ascending } = this.orderBy
+    if (this.orderBy.length > 0) {
+      const keys = this.orderBy
       out = [...out].sort((a, b) => {
-        // Numbers sort as numbers: order #1000 is after #999, as Postgres has it.
-        const c =
-          typeof a[column] === 'number' && typeof b[column] === 'number'
-            ? (a[column] as number) - (b[column] as number)
-            : String(a[column] ?? '').localeCompare(String(b[column] ?? ''))
-        return ascending ? c : -c
+        for (const { column, ascending } of keys) {
+          // Numbers sort as numbers: order #1000 is after #999, as Postgres has it.
+          const c =
+            typeof a[column] === 'number' && typeof b[column] === 'number'
+              ? (a[column] as number) - (b[column] as number)
+              : String(a[column] ?? '').localeCompare(String(b[column] ?? ''))
+          if (c !== 0) return ascending ? c : -c
+        }
+        return 0
       })
     }
     if (this.limitN != null) out = out.slice(0, this.limitN)

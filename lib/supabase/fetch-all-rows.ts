@@ -87,3 +87,58 @@ export async function fetchAllRows<Row>(
     }
   }
 }
+
+/**
+ * fetchAllRows, with the pages after the first requested `concurrency` at a time
+ * (perf/latency-sprint 2026-10-01).
+ *
+ * From a worker ~200 ms from the database, FNB's 4,675 live orders were five back-to-back round
+ * trips. Here page 0 is read alone (most sets fit in it); if it is full, the next `concurrency`
+ * pages are requested together, and so on. Same stop rule (first SHORT page, in page order), same
+ * ceiling, same throw, and rows come back in page order -- the identical array. The price is up to
+ * `concurrency - 1` speculative reads past the end of the set.
+ *
+ * TAKES A FACTORY, NOT A BUILDER. postgrest-js `.range()` writes the offset into the builder's own
+ * URL and returns the same object, and the request is only built when it is awaited, a microtask
+ * later. Ranging one builder several times in the same tick therefore sends the LAST offset every
+ * time -- duplicate pages, missing rows, no error. Each page needs its own builder.
+ * (__tests__/fetch-all-rows-concurrent.test.ts drives the real postgrest-js to pin this.)
+ *
+ * Six is the Workers limit on simultaneous open connections per invocation; more just queues.
+ */
+export async function fetchAllRowsConcurrently<Row>(
+  build: () => RangeableQuery<Row>,
+  options: FetchAllOptions & { concurrency?: number } = {},
+): Promise<Row[]> {
+  const pageSize = Math.min(Math.max(1, options.pageSize ?? POSTGREST_MAX_ROWS), POSTGREST_MAX_ROWS)
+  const maxRows = options.maxRows ?? 50_000
+  const label = options.label ?? 'fetchAllRows'
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? 6))
+
+  const readPage = async (offset: number): Promise<Row[]> => {
+    const { data, error } = await build().range(offset, offset + pageSize - 1)
+    if (error) throw new Error(`${label}: ${error.message}`)
+    return data ?? []
+  }
+
+  const rows: Row[] = []
+  let offset = 0
+  let wave = 1
+  for (;;) {
+    const offsets = Array.from({ length: wave }, (_, i) => offset + i * pageSize)
+    const pages = await Promise.all(offsets.map(readPage))
+    for (const page of pages) {
+      rows.push(...page)
+      // Pages after the first short one are past the end: discarded.
+      if (page.length < pageSize) return rows
+      if (rows.length >= maxRows) {
+        throw new Error(
+          `${label}: exceeded maxRows (${maxRows}). Refusing to return a truncated set -- ` +
+            `narrow the query, or raise maxRows deliberately.`,
+        )
+      }
+    }
+    offset += wave * pageSize
+    wave = concurrency
+  }
+}

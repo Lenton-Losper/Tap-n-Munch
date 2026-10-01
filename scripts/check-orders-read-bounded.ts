@@ -73,7 +73,7 @@ const NARROWING_COLUMNS = [
 ]
 
 /** The paginating helper. A read that goes through it is bounded by definition. */
-const PAGINATION_HELPERS = ['fetchAllRows', 'fetchAllPaginated']
+const PAGINATION_HELPERS = ['fetchAllRows', 'fetchAllRowsConcurrently', 'fetchAllPaginated']
 
 /**
  * Empty on purpose. The paginating helper is generic and never names a table, so it does not need
