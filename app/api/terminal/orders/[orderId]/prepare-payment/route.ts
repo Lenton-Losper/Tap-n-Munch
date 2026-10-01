@@ -75,7 +75,18 @@ export async function POST(
   try {
     const terminal = await requireTerminalAuth(req)
     const supabase = createServerSupabaseClient()
-    await validateTerminalRecord(supabase, terminal)
+    /**
+     * perf/latency-sprint 2026-10-01: the terminal check and the credentials lookup are both reads
+     * and independent, so they go out together. Their results are still EVALUATED in the original
+     * order -- terminal (401), permission (403), order id (400), then credentials -- so every
+     * response is the one it was, and nothing below writes (not even the refusal audit) until the
+     * terminal check has passed.
+     */
+    const [terminalChecked, credentialsRead] = await Promise.allSettled([
+      validateTerminalRecord(supabase, terminal),
+      getRestaurantFinaticCredentials(terminal.restaurantId),
+    ])
+    if (terminalChecked.status === 'rejected') throw terminalChecked.reason
 
     if (!terminal.permissions.includes('orders:update')) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
@@ -100,7 +111,7 @@ export async function POST(
     // is deliberately the LAST thing that happens.
     // ------------------------------------------------------------------------------------------
     try {
-      await getRestaurantFinaticCredentials(terminal.restaurantId)
+      if (credentialsRead.status === 'rejected') throw credentialsRead.reason
     } catch (credErr: unknown) {
       const missing = isMissingFinaticCredentialsError(credErr)
       const outcome = missing
@@ -241,34 +252,28 @@ export async function POST(
         { status: 400 },
       )
     }
-    if (tipCents > 0) {
-      const { data: tipMember, error: tipMemberError } = await supabase
-        .from('restaurant_users')
-        .select('user_id')
-        .eq('restaurant_id', terminal.restaurantId)
-        .eq('user_id', tipStaffUserId)
-        .maybeSingle()
-      // FAILS CLOSED, and it costs only a retry: nothing has been charged yet.
-      if (tipMemberError || !tipMember) {
-        return NextResponse.json(
-          { error: 'That person does not work at this venue.', code: 'TIP_STAFF_NOT_A_MEMBER' },
-          { status: 400 },
-        )
-      }
-    }
-
-    try {
-      const { merchantOrderNo, created } = await ensureTerminalMerchantOrderNo(supabase, {
-        orderId,
-        restaurantId: terminal.restaurantId,
-      })
-
-      /**
-       * The order total is the SERVER's, re-read here rather than taken from the device -- the
-       * device's figure is what we are about to check, so it cannot also be the thing we check it
-       * against.
-       */
-      const { data: orderRows, error: orderReadError } = await supabase
+    /**
+     * ONE READ OF THE SETTLEMENT SET, alongside the gratuity check (perf/latency-sprint 2026-10-01).
+     *
+     * The lead order used to be read twice: once by ensureTerminalMerchantOrderNo, then again with
+     * the whole set below. Both are reads, nothing between them wrote except the mint, and the mint
+     * changes only paycloud_merchant_order_no -- which nothing below reads off the row (the minted
+     * value comes back from the helper) and which `charge_basis` does not cover (it fingerprints
+     * id, total and items). So the set is read once, here, and the lead row is handed to the helper.
+     *
+     * Evaluated in the original order: the gratuity refusal first, then -- inside the try, where the
+     * helper's own read used to fail -- the read, with the helper's exact error.
+     */
+    const [tipMemberRead, settlementRead] = await Promise.allSettled([
+      tipCents > 0
+        ? supabase
+            .from('restaurant_users')
+            .select('user_id')
+            .eq('restaurant_id', terminal.restaurantId)
+            .eq('user_id', tipStaffUserId)
+            .maybeSingle()
+        : Promise.resolve(null),
+      supabase
         .from('orders')
         // tab_id is selected so the payment intent can name the tab it belongs to. A tab-less
         // order (a POS walk-up) yields null, which the column permits. The financial columns are
@@ -279,9 +284,45 @@ export async function POST(
         // It is handed back with the expectation so the database can refuse to record a figure
         // computed from an order that has since moved. See the expectation write.
         // order_number names a refused order to the waiter (not_claimable below).
-        .select(`${FINANCIAL_ORDER_COLUMNS}, pending_settlement_id, charge_basis, order_number`)
+        // paycloud_merchant_order_no is for ensureTerminalMerchantOrderNo's checks on the lead.
+        .select(`${FINANCIAL_ORDER_COLUMNS}, pending_settlement_id, charge_basis, order_number, paycloud_merchant_order_no`)
         .in('id', settlementOrderIds)
-        .eq('restaurant_id', terminal.restaurantId)
+        .eq('restaurant_id', terminal.restaurantId),
+    ])
+
+    if (tipCents > 0) {
+      if (tipMemberRead.status === 'rejected') throw tipMemberRead.reason
+      const { data: tipMember, error: tipMemberError } = tipMemberRead.value as {
+        data: unknown
+        error: unknown
+      }
+      // FAILS CLOSED, and it costs only a retry: nothing has been charged yet.
+      if (tipMemberError || !tipMember) {
+        return NextResponse.json(
+          { error: 'That person does not work at this venue.', code: 'TIP_STAFF_NOT_A_MEMBER' },
+          { status: 400 },
+        )
+      }
+    }
+
+    try {
+      // Where ensureTerminalMerchantOrderNo's own read used to fail: same place, same message.
+      if (settlementRead.status === 'rejected') throw settlementRead.reason
+      const { data: orderRows, error: orderReadError } = settlementRead.value
+      if (orderReadError) throw new Error(`Failed to load order: ${orderReadError.message}`)
+      const leadRead = (orderRows ?? []).find((r) => String(r.id) === orderId) ?? null
+
+      const { merchantOrderNo, created } = await ensureTerminalMerchantOrderNo(
+        supabase,
+        { orderId, restaurantId: terminal.restaurantId },
+        leadRead,
+      )
+
+      /**
+       * The order total is the SERVER's, read above rather than taken from the device -- the
+       * device's figure is what we are about to check, so it cannot also be the thing we check it
+       * against.
+       */
 
       // Every named order must be readable. A partial read would understate the charge, which is
       // the failure this whole change exists to remove.

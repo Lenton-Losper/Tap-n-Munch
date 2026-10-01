@@ -44,15 +44,25 @@ type Supabase = ReturnType<typeof createServerSupabaseClient>
 export async function ensureTerminalMerchantOrderNo(
   supabase: Supabase,
   params: { orderId: string; restaurantId: string },
+  /**
+   * perf/latency-sprint 2026-10-01. The lead order as the CALLER already read it -- by this id AND
+   * this restaurant, with at least these columns -- so the same row is not fetched twice in one
+   * request. `null` means the caller's read found no such order. Omitted, this reads it itself,
+   * exactly as before; every check below runs the same either way.
+   */
+  preloaded?: { id: unknown; payment_status: unknown; paycloud_merchant_order_no: unknown } | null,
 ): Promise<{ merchantOrderNo: string; created: boolean }> {
   const { orderId, restaurantId } = params
 
-  const { data: order, error: orderError } = await supabase
-    .from('orders')
-    .select('id, payment_status, paycloud_merchant_order_no')
-    .eq('id', orderId)
-    .eq('restaurant_id', restaurantId)
-    .maybeSingle()
+  const { data: order, error: orderError } =
+    preloaded !== undefined
+      ? { data: preloaded, error: null }
+      : await supabase
+          .from('orders')
+          .select('id, payment_status, paycloud_merchant_order_no')
+          .eq('id', orderId)
+          .eq('restaurant_id', restaurantId)
+          .maybeSingle()
 
   if (orderError) {
     throw new Error(`Failed to load order: ${orderError.message}`)
