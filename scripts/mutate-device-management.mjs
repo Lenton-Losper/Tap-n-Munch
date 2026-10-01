@@ -181,6 +181,17 @@ const MUTATIONS = [
     marker: '  const lastSeen = ms(row.last_seen_at)',
     suites: [STATE],
   },
+  {
+    // 2026-10-01. Revoke must NOT release the physical identity; only Remove does. Caught only by
+    // the identity-holding screen in admin-devices-routes ("lifecycle semantics with a real device
+    // identity") -- the original screen fixtures hold no identity, so they cannot see this.
+    id: 'DM-18',
+    what: 'revoke releases the physical device identity (collapsed into remove)',
+    file: LIFECYCLE,
+    from: "    status: 'revoked',\n    active: false,\n",
+    to: "    status: 'revoked',\n    active: false,\n    device_id: null,\n    device_serial: `ft-${ctx.deviceId}`,\n    sn: null,\n",
+    suites: [ROUTES],
+  },
 ]
 
 function runJest(suites) {

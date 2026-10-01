@@ -112,6 +112,14 @@ const MUTATIONS = {
       'ALTER TABLE public.restaurant_terminals DROP CONSTRAINT restaurant_terminals_device_id_unique;\n' +
       'ALTER TABLE public.restaurant_terminals DROP CONSTRAINT restaurant_terminals_device_serial_unique;\n',
   },
+  DT11: {
+    what: "the old till's payment history is re-attributed to the new terminal (history rewritten)",
+    expect: ['transfer/order_and_payment_history_byte_identical'],
+    apply: (sql) => sql.replace(
+      '    v_released := v_released || v_holder.id;\n',
+      '    UPDATE public.payment_events SET terminal_id = v_code.id::text WHERE terminal_id = v_holder.id::text;\n' +
+        '    v_released := v_released || v_holder.id;\n'),
+  },
 }
 
 function buildDatabase(mutation) {
@@ -165,10 +173,36 @@ async function runConcurrencyProbe() {
   const [r1, r2] = await Promise.all([s1, s2])
   const holders = Number(psqlValue(`SELECT public._dt_holders();`))
   const succeeded = [r1.code === 0, r2.code === 0].filter(Boolean).length
-  const ok = holders === 1 && succeeded >= 1
-  console.log(`  concurrency: session1 exit ${r1.code}, session2 exit ${r2.code}, holders afterwards ${holders} -> ${ok ? 'OK' : 'FAIL'}`)
+  /**
+   * WHY the loser lost, not only that it did (2026-10-01). "One holder" alone would also read OK if
+   * session 2 died of anything at all -- a typo, a dropped connection. The loser must have been
+   * stopped by the identity guard: the unique constraint (it scanned for holders before session 1
+   * committed, so only the index can see session 1's new row) or a TRANSFER_* refusal.
+   */
+  const loser = r1.code === 0 ? r2 : r1
+  const loserReason = /duplicate key value violates unique constraint "(restaurant_terminals_device_\w+_unique)"/.exec(loser.out)?.[1]
+    ?? /TRANSFER_[A-Z_]+/.exec(loser.out)?.[0]
+    ?? `UNEXPECTED: ${loser.out.trim().split('\n').pop()?.slice(0, 160)}`
+  const ok = holders === 1 && succeeded === 1 && !loserReason.startsWith('UNEXPECTED')
+  console.log(
+    `  concurrency (B and C race for A's device): session1 exit ${r1.code}, session2 exit ${r2.code}, ` +
+      `holders afterwards ${holders}, loser stopped by ${loserReason} -> ${ok ? 'OK' : 'FAIL'}`,
+  )
   if (!ok) console.log(`    s1: ${r1.out.trim().slice(0, 300)}\n    s2: ${r2.out.trim().slice(0, 300)}`)
-  return ok
+  return { ok, holders }
+}
+
+/**
+ * DTQ (2026-10-01): the race mutation. The release logic stays INTACT; only the two unique identity
+ * constraints are dropped. Session 2 cannot see session 1's newly bound row (its holder scan began
+ * first), so without the index BOTH bind the device -- the probe must then find two owners. This
+ * proves the index, not timing luck, is what decides the race.
+ */
+const RACE_MUTATION = {
+  apply: (sql) => `${sql}\n-- DTQ: unique identity constraints dropped before this migration ran\n`,
+  sqlBeforeMigration:
+    'ALTER TABLE public.restaurant_terminals DROP CONSTRAINT restaurant_terminals_device_id_unique;\n' +
+    'ALTER TABLE public.restaurant_terminals DROP CONSTRAINT restaurant_terminals_device_serial_unique;\n',
 }
 
 async function main() {
@@ -187,9 +221,19 @@ async function main() {
     console.error(`FAIL:\n  ${base.failedNames.join('\n  ')}`)
     failures++
   }
-  if (!(await runConcurrencyProbe())) failures++
+  if (!(await runConcurrencyProbe()).ok) failures++
 
-  if (which) {
+  if (which === 'all' || which === 'DTQ') {
+    buildDatabase(RACE_MUTATION)
+    runSuite() // loads the _dt_* helpers the probe seeds with; its own verdict is not this check's
+    const raced = await runConcurrencyProbe()
+    const caught = raced.holders >= 2
+    console.log(`  DTQ (unique identity constraints dropped; the race must then yield two owners): ${caught ? 'RED (caught)' : 'GREEN (NOT CAUGHT)'}  holders=${raced.holders}`)
+    if (!caught) failures++
+    buildDatabase(null)
+  }
+
+  if (which && which !== 'DTQ') {
     const names = which === 'all' ? Object.keys(MUTATIONS) : [which]
     for (const name of names) {
       const m = MUTATIONS[name]

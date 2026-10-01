@@ -77,7 +77,28 @@ BEGIN
     (restaurant_id, terminal_id, merchant_order_no, amount_cents, scope, order_ids, status)
   VALUES ('aaaaaaaa-0000-4000-8000-000000000001', 'a0000000-0000-4000-8000-00000000000a', 'FT-HISTORY-1',
           3400, 'orders', ARRAY['eeeeeeee-0000-4000-8000-00000000000e']::uuid[], 'confirmed');
+
+  -- 2026-10-01: an order and its gateway sale event, attributed to A's till, so "history untouched"
+  -- is checked against rows that exist (an empty table cannot change).
+  INSERT INTO public.orders (id, restaurant_id, channel, placed_at)
+  VALUES ('eeeeeeee-0000-4000-8000-00000000000e', 'aaaaaaaa-0000-4000-8000-000000000001', 'pos', now() - interval '1 day');
+  INSERT INTO public.payment_events
+    (restaurant_id, event_type, business_order_no, origin_business_order_no, transaction_id, terminal_id,
+     amount, idempotency_key, reason_code, order_ids)
+  VALUES ('aaaaaaaa-0000-4000-8000-000000000001', 'sale', 'FT-HISTORY-1', 'FT-HISTORY-1', 'TX-HISTORY-1',
+          'a0000000-0000-4000-8000-00000000000a', 34, 'history-sale-1', 'sale',
+          ARRAY['eeeeeeee-0000-4000-8000-00000000000e']::uuid[]);
 END;
+$$;
+
+-- Every row of order/payment history, as one digest. A transfer must leave it byte-identical.
+CREATE OR REPLACE FUNCTION public._dt_history_digest()
+RETURNS text LANGUAGE sql AS $$
+  SELECT md5(concat_ws('|',
+    (SELECT string_agg(t::text, ',' ORDER BY t::text) FROM public.orders t),
+    (SELECT string_agg(t::text, ',' ORDER BY t::text) FROM public.payment_events t),
+    (SELECT string_agg(t::text, ',' ORDER BY t::text) FROM public.payments t),
+    (SELECT string_agg(t::text, ',' ORDER BY t::text) FROM public.terminal_payment_intents t)));
 $$;
 
 CREATE OR REPLACE FUNCTION public._dt_transfer(p_code uuid, p_device text DEFAULT 'dev-6799')
@@ -100,9 +121,11 @@ DECLARE
   b public.restaurant_terminals%ROWTYPE;
   c public.restaurant_terminals%ROWTYPE;
   intents_before int;
+  history_before text;
 BEGIN
   PERFORM public._dt_seed();
   SELECT count(*) INTO intents_before FROM public.terminal_payment_intents;
+  history_before := public._dt_history_digest();
   -- A transfer that THROWS must fail these assertions, not abort the suite: an escaped error
   -- would stop psql, and every later test would simply never be counted.
   BEGIN
@@ -147,6 +170,10 @@ BEGIN
     (SELECT count(*) FROM public.terminal_payment_intents
       WHERE terminal_id = 'a0000000-0000-4000-8000-00000000000a' AND status = 'confirmed' AND amount_cents = 3400) = 1
     AND (SELECT count(*) FROM public.terminal_payment_intents) = intents_before, NULL);
+  PERFORM public._expect('transfer/history_seeded_not_vacuous',
+    (SELECT count(*) FROM public.orders) >= 1 AND (SELECT count(*) FROM public.payment_events) >= 1, NULL);
+  PERFORM public._expect('transfer/order_and_payment_history_byte_identical',
+    public._dt_history_digest() = history_before, NULL);
 END $$;
 
 -- ------------------------------------------------------------------------------------------------

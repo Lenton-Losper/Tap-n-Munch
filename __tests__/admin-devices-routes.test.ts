@@ -381,3 +381,74 @@ describe('activity', () => {
     expect(body.events.map((e) => e.description)).toEqual(expect.arrayContaining(['Renamed', 'Deactivated']))
   })
 })
+
+/**
+ * LIFECYCLE SEMANTICS, against devices that hold a REAL physical identity (2026-10-01).
+ *
+ * The screen fixtures above hold no identity (device_id null, placeholder ft-<uuid> serial), so a
+ * revoke that wiped the identity would leave them looking exactly the same -- the revoke test could
+ * not see that regression. These rows carry a real device_id, device_serial and sn.
+ *
+ *   deactivate  keeps the registration AND the identity; the device cannot operate
+ *   revoke      (screens) ends the session; keeps the registration AND the identity
+ *   remove      deletes the registration, releasing the identity
+ *
+ * Order/payment history is byte-identical after every one of them.
+ */
+describe('lifecycle semantics with a real device identity', () => {
+  const SCREEN_WITH_IDENTITY = 'c4c4c4c4-0000-4000-8000-0000000000c4'
+  const screenWithIdentity = () =>
+    p5({
+      id: SCREEN_WITH_IDENTITY,
+      station_kind: 'kitchen',
+      terminal_name: 'Pass screen',
+      device_id: 'kds-android-7f3a',
+      device_serial: 'kds-android-7f3a',
+      sn: 'KDS-SN-0001',
+    })
+  const identityOf = (id: string) => {
+    const r = row(id)
+    return r ? { device_id: r.device_id, device_serial: r.device_serial, sn: r.sn } : null
+  }
+  const history = () => JSON.stringify([mockDb.rows('payment_events'), mockDb.rows('terminal_payment_intents')])
+
+  beforeEach(() => seed([screenWithIdentity()]))
+
+  it('REVOKE keeps the physical identity (it is NOT released): signed out, row kept, identity unchanged', async () => {
+    const before = identityOf(SCREEN_WITH_IDENTITY)
+    const historyBefore = history()
+    const res = await patch(SCREEN_WITH_IDENTITY, { action: 'revoke' })
+    expect(res.status).toBe(200)
+    expect(row(SCREEN_WITH_IDENTITY)).toMatchObject({ status: 'revoked', active: false, refresh_token_hash: null })
+    expect(identityOf(SCREEN_WITH_IDENTITY)).toEqual(before)
+    expect(before).toEqual({ device_id: 'kds-android-7f3a', device_serial: 'kds-android-7f3a', sn: 'KDS-SN-0001' })
+    expect(history()).toBe(historyBefore)
+    expect(auditFor(SCREEN_WITH_IDENTITY).map((a) => a.action)).toEqual(['terminal.revoked'])
+  })
+
+  it('DEACTIVATE keeps the identity and the session; the device cannot operate (status inactive)', async () => {
+    const before = identityOf(P5_A)
+    const historyBefore = history()
+    expect((await patch(P5_A, { action: 'deactivate' })).status).toBe(200)
+    expect(row(P5_A)).toMatchObject({ status: 'inactive', refresh_token_hash: 'live-refresh' })
+    expect(identityOf(P5_A)).toEqual(before)
+    expect(history()).toBe(historyBefore)
+  })
+
+  it('REMOVE releases the identity (the registration is gone) and leaves history untouched', async () => {
+    const historyBefore = history()
+    expect((await remove(SCREEN_WITH_IDENTITY)).status).toBe(200)
+    expect(row(SCREEN_WITH_IDENTITY)).toBeUndefined()
+    expect(
+      mockDb.rows('restaurant_terminals').some((r) => r.device_id === 'kds-android-7f3a' || r.device_serial === 'kds-android-7f3a'),
+    ).toBe(false)
+    expect(history()).toBe(historyBefore)
+    const removed = auditFor(SCREEN_WITH_IDENTITY).find((a) => a.action === 'terminal.removed')
+    expect((removed?.metadata as Row)?.releasedDeviceId).toBe('kds-android-7f3a')
+  })
+
+  it('the three stay three: revoke is refused on a payment terminal, whose "stop it" is deactivate', async () => {
+    expect((await patch(P5_A, { action: 'revoke' })).status).toBe(409)
+    expect(row(P5_A)).toMatchObject({ status: 'active', device_id: 'b68914779e542823' })
+  })
+})
