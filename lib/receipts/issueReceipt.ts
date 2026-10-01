@@ -443,25 +443,51 @@ async function generateDocumentNumber(
 export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocument> {
   const supabase = createServerSupabaseClient()
 
-  const { data: existingEarly } = await supabase
-    .from('receipt_documents')
-    .select('*')
-    .eq('order_id', orderId)
-    .eq('document_type', DOCUMENT_TYPE)
-    .eq('version', 1)
-    .maybeSingle()
+  /**
+   * ROUND TRIPS (perf/latency-sprint 2026-10-01). Every paid path awaits this before answering, and
+   * it was nine database calls in a row (~200 ms each from the worker). It is now four waves:
+   *
+   *   1. the existing-receipt check  ||  the order
+   *   2. restaurant || billing || vat_registered || sale events || tip   (each needs only the order)
+   *   3. the document number
+   *   4. the insert
+   *
+   * EVERY OUTCOME IS THE ONE-AT-A-TIME OUTCOME. All of waves 1-2 are reads; their results are
+   * unwrapped in the original order (`inOrder`), so the same check fails first and the same error
+   * is thrown -- including when several fail at once, and including a read that throws rather than
+   * returning an error. The two billing reads stay two reads: see the note on vat_registered.
+   * Issuance is NOT moved behind the response -- it is silent (#234), so a dropped background
+   * issuance would be a lost tax document. __tests__/receipt-issuance-latency.test.ts pins it.
+   */
+  const inOrder = <T>(r: PromiseSettledResult<T>): T => {
+    if (r.status === 'rejected') throw r.reason
+    return r.value
+  }
+
+  const [existingSettled, orderSettled] = await Promise.allSettled([
+    supabase
+      .from('receipt_documents')
+      .select('*')
+      .eq('order_id', orderId)
+      .eq('document_type', DOCUMENT_TYPE)
+      .eq('version', 1)
+      .maybeSingle(),
+    supabase
+      .from('orders')
+      .select(
+        'id, restaurant_id, payment_status, payment_method, payment_reference, paycloud_merchant_order_no, paid_at, subtotal, tax, total, items, customer_name, table_number, channel, order_instructions',
+      )
+      .eq('id', orderId)
+      .single(),
+  ])
+
+  const { data: existingEarly } = inOrder(existingSettled)
 
   if (existingEarly) {
     return existingEarly as ReceiptDocument
   }
 
-  const { data: order, error: orderError } = await supabase
-    .from('orders')
-    .select(
-      'id, restaurant_id, payment_status, payment_method, payment_reference, paycloud_merchant_order_no, paid_at, subtotal, tax, total, items, customer_name, table_number, channel, order_instructions',
-    )
-    .eq('id', orderId)
-    .single()
+  const { data: order, error: orderError } = inOrder(orderSettled)
 
   if (orderError || !order) {
     throw new Error(`issueReceiptForOrder: order not found (${orderId})`)
@@ -473,21 +499,43 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
     )
   }
 
-  const { data: restaurant, error: restaurantError } = await supabase
-    .from('restaurants')
-    .select('name, address, currency')
-    .eq('id', order.restaurant_id)
-    .single()
+  const tipReference = String(order.payment_reference || '').trim()
+  const [restaurantSettled, billingSettled, registrationSettled, saleEventsSettled, tipSettled] =
+    await Promise.allSettled([
+      supabase.from('restaurants').select('name, address, currency').eq('id', order.restaurant_id).single(),
+      supabase
+        .from('restaurant_billing_profiles')
+        .select('vat_number, registration_number')
+        .eq('restaurant_id', order.restaurant_id)
+        .maybeSingle(),
+      supabase
+        .from('restaurant_billing_profiles')
+        .select('vat_registered')
+        .eq('restaurant_id', order.restaurant_id)
+        .maybeSingle(),
+      supabase
+        .from('payment_events')
+        .select('amount, transaction_id, business_order_no, created_at')
+        .eq('restaurant_id', order.restaurant_id)
+        .eq('event_type', 'sale')
+        .contains('order_ids', [orderId]),
+      tipReference
+        ? supabase
+            .from('payment_tips')
+            .select('tip_cents')
+            .eq('restaurant_id', order.restaurant_id)
+            .eq('payment_reference', tipReference)
+            .maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+    ])
+
+  const { data: restaurant, error: restaurantError } = inOrder(restaurantSettled)
 
   if (restaurantError || !restaurant) {
     throw new Error(`issueReceiptForOrder: restaurant not found (${order.restaurant_id})`)
   }
 
-  const { data: billing } = await supabase
-    .from('restaurant_billing_profiles')
-    .select('vat_number, registration_number')
-    .eq('restaurant_id', order.restaurant_id)
-    .maybeSingle()
+  const { data: billing } = inOrder(billingSettled)
 
   /**
    * READ SEPARATELY, AND TOLERANTLY, BECAUSE THE COLUMN MAY NOT EXIST YET.
@@ -507,21 +555,12 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
    */
   let vatRegistered: boolean | null = null
   {
-    const { data: registrationRow } = await supabase
-      .from('restaurant_billing_profiles')
-      .select('vat_registered')
-      .eq('restaurant_id', order.restaurant_id)
-      .maybeSingle()
+    const { data: registrationRow } = inOrder(registrationSettled)
     const value = (registrationRow as { vat_registered?: unknown } | null)?.vat_registered
     if (typeof value === 'boolean') vatRegistered = value
   }
 
-  const { data: saleEvents, error: saleEventsError } = await supabase
-    .from('payment_events')
-    .select('amount, transaction_id, business_order_no, created_at')
-    .eq('restaurant_id', order.restaurant_id)
-    .eq('event_type', 'sale')
-    .contains('order_ids', [orderId])
+  const { data: saleEvents, error: saleEventsError } = inOrder(saleEventsSettled)
 
   if (saleEventsError) {
     throw new Error(
@@ -542,14 +581,8 @@ export async function issueReceiptForOrder(orderId: string): Promise<ReceiptDocu
    */
   let tipAmount: number | undefined
   {
-    const reference = String(order.payment_reference || '').trim()
-    if (reference) {
-      const { data: tipRow } = await supabase
-        .from('payment_tips')
-        .select('tip_cents')
-        .eq('restaurant_id', order.restaurant_id)
-        .eq('payment_reference', reference)
-        .maybeSingle()
+    if (tipReference) {
+      const { data: tipRow } = inOrder(tipSettled)
       const cents = tipRow?.tip_cents
       if (typeof cents === 'number' && Number.isFinite(cents) && cents > 0) {
         tipAmount = round2(cents / 100)

@@ -335,20 +335,34 @@ export async function POST(
       }
 
       if (result.tabId) {
-        const { data: remainingOrders } = await supabase
-          .from('orders')
-          .select('id, payment_status')
-          .eq('tab_id', result.tabId)
+        const tabId = result.tabId
+        /**
+         * perf/latency-sprint 2026-10-01. can-close comes from the statuses markOrderPaidConfirmed
+         * read to compute the tab total -- the same read, so the total and can-close cannot
+         * disagree (the failure its comment describes) -- and only falls back to a read of its own
+         * when that one failed. The tab-state writes do not depend on it, so they go out alongside.
+         */
+        const statuses = async (): Promise<unknown[]> => {
+          if (result.tabPaymentStatuses) return result.tabPaymentStatuses
+          const { data: remainingOrders } = await supabase
+            .from('orders')
+            .select('id, payment_status')
+            .eq('tab_id', tabId)
+          return (remainingOrders ?? []).map((o) => o.payment_status)
+        }
 
-        canClose = (remainingOrders ?? []).every((o) => !owesMoney(o.payment_status))
+        const [tabStatuses] = await Promise.all([
+          statuses(),
+          clearReadyToPayAndReopenTab(supabase, {
+            tabId,
+            logPrefix: '[terminal/orders/payment]',
+            // Money was taken. #287: if this tab still owes, the ready-to-pay RECORD survives so the
+            // other diners' request is not erased by the first person to pay.
+            reason: 'money_taken',
+          }),
+        ])
 
-        await clearReadyToPayAndReopenTab(supabase, {
-          tabId: result.tabId,
-          logPrefix: '[terminal/orders/payment]',
-          // Money was taken. #287: if this tab still owes, the ready-to-pay RECORD survives so the
-          // other diners' request is not erased by the first person to pay.
-          reason: 'money_taken',
-        })
+        canClose = tabStatuses.every((s) => !owesMoney(s as string | null))
       }
     } else {
       // Never trust a terminal failure report alone when Finatic may already have

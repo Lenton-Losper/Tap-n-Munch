@@ -39,7 +39,18 @@ export type MarkOrderPaidConfirmedParams = {
 }
 
 export type MarkOrderPaidConfirmedResult =
-  | { claimed: true; orderId: string; tabId: string | null }
+  | {
+      claimed: true
+      orderId: string
+      tabId: string | null
+      /**
+       * perf/latency-sprint 2026-10-01, additive. The payment_status of every order on the tab, from
+       * the SAME read the tab total was computed from -- so a caller deriving can-close from these
+       * agrees with the total by construction. `null` when there is no tab or that read failed: the
+       * caller must then read for itself, exactly as before.
+       */
+      tabPaymentStatuses?: unknown[] | null
+    }
   | { claimed: false; reason: 'already_paid' | 'claim_conflict' }
   /**
    * 20260929120000. The order changed after its card charge was prepared, so the database refused
@@ -141,109 +152,134 @@ export async function markOrderPaidConfirmed(
     return { claimed: false, reason }
   }
 
-  const { error: auditError } = await supabase.from('audit_logs').insert({
-    restaurant_id: restaurantId,
-    action: 'payment.completed',
-    entity_type: 'order',
-    entity_id: orderId,
-    /**
-     * WHOSE FIGURE IS THIS? (#238, #268)
-     *
-     * `clientAmount: amount` used to sit here, duplicating `amount` under a name that was wrong
-     * for most callers. Measured across all six call sites: four pass the ORDER'S OWN TOTAL
-     * (terminal callback, terminal verify-payment, the PayCloud webhook, the reconcile cron) and
-     * two pass FINATIC'S figure (the auto-cancel cron's pre-cancel check, and the terminal
-     * payment-failure correction). So the field was not the client's amount in four cases and
-     * was not the client's amount in the other two either -- it was simply `amount` again, under
-     * a label that made a historical mismatch look investigable when it was not.
-     *
-     * Nothing read it. Grepped `clientAmount` across *.ts, *.tsx, *.sql, __tests__ and the
-     * terminal app: the only other hits are unrelated local variables in the receipt route and a
-     * parameter name in payment-integrity. It was write-only, which is why correcting it is safe.
-     *
-     * Now: `amount` is what the caller asserted, `amountMeaning` says whose figure that is, and
-     * `gatewayAmount` carries the provider's own number when the caller has one. A mismatch
-     * between the last two is the thing #268 wants auditable.
-     */
-    metadata: {
-      reference,
-      voucherNo: paymentVoucherNo,
-      businessOrderNo: reference,
-      amount,
-      // `null` = the caller had no provider figure. Deliberately distinct from a gateway that
-      // genuinely reported 0, which would record as 0.
-      gatewayAmount: gatewayAmount ?? null,
-      amountMeaning: gatewayAmount != null ? 'gateway_reported' : 'order_total',
-      paymentMethod,
-      terminalId,
-      source,
-      ...extraAuditMetadata,
-    },
-  })
-  if (auditError) {
-    console.error(`[markOrderPaidConfirmed:${source}] audit_logs insert failed:`, auditError)
+  /**
+   * AFTER THE CLAIM: THREE INDEPENDENT STEPS, SENT TOGETHER (perf/latency-sprint 2026-10-01).
+   *
+   * The audit row, the tab-total recompute and the receipt each depend only on the claim having
+   * landed, never on one another, and each already absorbs its own failure (logged, not thrown).
+   * One after another they were 1 + 2 + 9 round trips (~200 ms each from the worker); together
+   * they cost the longest of the three. Results are unwrapped in the original order, so a step
+   * that THROWS still surfaces exactly as it did when it ran first.
+   *
+   * The receipt stays awaited, NOT moved behind the response: issuance is silent (#234), so a
+   * dropped background issuance would be a lost tax document.
+   */
+  const recordAudit = async () => {
+    const { error: auditError } = await supabase.from('audit_logs').insert({
+      restaurant_id: restaurantId,
+      action: 'payment.completed',
+      entity_type: 'order',
+      entity_id: orderId,
+      /**
+       * WHOSE FIGURE IS THIS? (#238, #268)
+       *
+       * `clientAmount: amount` used to sit here, duplicating `amount` under a name that was wrong
+       * for most callers. Measured across all six call sites: four pass the ORDER'S OWN TOTAL
+       * (terminal callback, terminal verify-payment, the PayCloud webhook, the reconcile cron) and
+       * two pass FINATIC'S figure (the auto-cancel cron's pre-cancel check, and the terminal
+       * payment-failure correction). So the field was not the client's amount in four cases and
+       * was not the client's amount in the other two either -- it was simply `amount` again, under
+       * a label that made a historical mismatch look investigable when it was not.
+       *
+       * Nothing read it. Grepped `clientAmount` across *.ts, *.tsx, *.sql, __tests__ and the
+       * terminal app: the only other hits are unrelated local variables in the receipt route and a
+       * parameter name in payment-integrity. It was write-only, which is why correcting it is safe.
+       *
+       * Now: `amount` is what the caller asserted, `amountMeaning` says whose figure that is, and
+       * `gatewayAmount` carries the provider's own number when the caller has one. A mismatch
+       * between the last two is the thing #268 wants auditable.
+       */
+      metadata: {
+        reference,
+        voucherNo: paymentVoucherNo,
+        businessOrderNo: reference,
+        amount,
+        // `null` = the caller had no provider figure. Deliberately distinct from a gateway that
+        // genuinely reported 0, which would record as 0.
+        gatewayAmount: gatewayAmount ?? null,
+        amountMeaning: gatewayAmount != null ? 'gateway_reported' : 'order_total',
+        paymentMethod,
+        terminalId,
+        source,
+        ...extraAuditMetadata,
+      },
+    })
+    if (auditError) {
+      console.error(`[markOrderPaidConfirmed:${source}] audit_logs insert failed:`, auditError)
+    }
   }
 
   const tabId = claimed.tab_id ? String(claimed.tab_id) : null
-  if (tabId) {
-    // Partitioned with owesMoney(), not `.neq('payment_status','paid')` -- "not paid" is also
-    // true of a CANCELLED order, so a cancelled order's money kept being carried in tabs.total
-    // (#104, the fifth site of the same question; the other four are in the terminal routes).
-    // This one matters doubly because the caller at
-    // app/api/terminal/orders/[orderId]/payment/route.ts recomputes canClose two statements
-    // later: while these disagreed, one request wrote can_close true and a tab total that
-    // still owed money, and /api/terminal/tables hands staff both figures at once.
-    const { data: tabOrderRows, error: tabOrderRowsError } = await supabase
-      .from('orders')
-      .select('total, payment_status')
-      .eq('tab_id', tabId)
+  /** The tab's order statuses as read for the total, handed back so a caller need not re-read them. */
+  let tabPaymentStatuses: unknown[] | null = null
+  const recomputeTabTotal = async () => {
+    if (tabId) {
+      // Partitioned with owesMoney(), not `.neq('payment_status','paid')` -- "not paid" is also
+      // true of a CANCELLED order, so a cancelled order's money kept being carried in tabs.total
+      // (#104, the fifth site of the same question; the other four are in the terminal routes).
+      // This one matters doubly because the caller at
+      // app/api/terminal/orders/[orderId]/payment/route.ts recomputes canClose two statements
+      // later: while these disagreed, one request wrote can_close true and a tab total that
+      // still owed money, and /api/terminal/tables hands staff both figures at once.
+      const { data: tabOrderRows, error: tabOrderRowsError } = await supabase
+        .from('orders')
+        .select('total, payment_status')
+        .eq('tab_id', tabId)
 
-    /**
-     * A FAILED READ MUST NOT BECOME A TAB TOTAL OF ZERO.
-     *
-     * The error used to be discarded, so `tabOrderRows` came back null on any failure, `?? []`
-     * turned it into an empty list, and the reduce produced 0 — which was then WRITTEN. A
-     * transient database failure set a tab that still owed money to N$0.00.
-     *
-     * That is precisely the defect the comment above says this code exists to prevent: a tab total
-     * that disagrees with what is owed, handed to staff by /api/terminal/tables alongside a
-     * can_close figure computed from something else. The guard against it could produce it.
-     *
-     * Absence and failure lead to different actions. A tab whose orders cannot be read keeps the
-     * total it already has — stale, and honest about being stale — rather than being overwritten
-     * with a number nothing computed. The next settle on the tab recomputes it.
-     */
-    if (tabOrderRowsError) {
-      console.error(`[markOrderPaidConfirmed:${source}] tab total NOT recomputed; read failed`, {
-        tabId,
-        orderId,
-        error: tabOrderRowsError.message,
-        note: 'the tab keeps its previous total rather than being zeroed',
-      })
-    } else {
-      const newTotal = (tabOrderRows ?? [])
-        .filter((o: { payment_status: unknown }) => owesMoney(o.payment_status))
-        .reduce((sum: number, o: { total: unknown }) => sum + Number(o.total), 0)
-
-      // The write's own error was discarded too, so a total that silently failed to persist looked
-      // exactly like one that succeeded.
-      const { error: tabUpdateError } = await supabase
-        .from('tabs')
-        .update({ total: newTotal })
-        .eq('id', tabId)
-      if (tabUpdateError) {
-        console.error(`[markOrderPaidConfirmed:${source}] tab total write failed`, {
+      /**
+       * A FAILED READ MUST NOT BECOME A TAB TOTAL OF ZERO.
+       *
+       * The error used to be discarded, so `tabOrderRows` came back null on any failure, `?? []`
+       * turned it into an empty list, and the reduce produced 0 — which was then WRITTEN. A
+       * transient database failure set a tab that still owed money to N$0.00.
+       *
+       * That is precisely the defect the comment above says this code exists to prevent: a tab total
+       * that disagrees with what is owed, handed to staff by /api/terminal/tables alongside a
+       * can_close figure computed from something else. The guard against it could produce it.
+       *
+       * Absence and failure lead to different actions. A tab whose orders cannot be read keeps the
+       * total it already has — stale, and honest about being stale — rather than being overwritten
+       * with a number nothing computed. The next settle on the tab recomputes it.
+       */
+      if (tabOrderRowsError) {
+        console.error(`[markOrderPaidConfirmed:${source}] tab total NOT recomputed; read failed`, {
           tabId,
-          newTotal,
-          error: tabUpdateError.message,
+          orderId,
+          error: tabOrderRowsError.message,
+          note: 'the tab keeps its previous total rather than being zeroed',
         })
+      } else {
+        tabPaymentStatuses = (tabOrderRows ?? []).map((o: { payment_status: unknown }) => o.payment_status)
+        const newTotal = (tabOrderRows ?? [])
+          .filter((o: { payment_status: unknown }) => owesMoney(o.payment_status))
+          .reduce((sum: number, o: { total: unknown }) => sum + Number(o.total), 0)
+
+        // The write's own error was discarded too, so a total that silently failed to persist looked
+        // exactly like one that succeeded.
+        const { error: tabUpdateError } = await supabase
+          .from('tabs')
+          .update({ total: newTotal })
+          .eq('id', tabId)
+        if (tabUpdateError) {
+          console.error(`[markOrderPaidConfirmed:${source}] tab total write failed`, {
+            tabId,
+            newTotal,
+            error: tabUpdateError.message,
+          })
+        }
       }
     }
   }
 
-  await safeIssueReceiptForOrder(orderId, source)
+  const settled = await Promise.allSettled([
+    recordAudit(),
+    recomputeTabTotal(),
+    safeIssueReceiptForOrder(orderId, source),
+  ])
+  for (const s of settled) if (s.status === 'rejected') throw s.reason
 
-  return { claimed: true, orderId, tabId }
+  // Present only when there is something to hand back, so a tab-less result keeps its exact shape.
+  return { claimed: true, orderId, tabId, ...(tabPaymentStatuses ? { tabPaymentStatuses } : {}) }
 }
 
 /**

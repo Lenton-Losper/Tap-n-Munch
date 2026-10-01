@@ -122,7 +122,15 @@ export async function clearReadyToPayAndReopenTab(
     }
   }
 
-  if (!preserveReadyToPay) {
+  /**
+   * STILL TWO STATEMENTS (point 1 above), NOW SENT TOGETHER (perf/latency-sprint 2026-10-01). They
+   * commute: they write disjoint columns, and the reopen's guard (`settled_at`) is a column the
+   * flag clear does not touch, so either order leaves the same row. Neither waits on the other's
+   * success -- which point 1 already required. No trigger or rule on `tabs` (checked on staging
+   * 2026-10-01: none in pg_trigger or pg_rules, none in migrations).
+   */
+  const clearFlags = async () => {
+    if (preserveReadyToPay) return
     const { error: clearFlagsError } = await supabase
       .from('tabs')
       .update({ payment_preference: null, ready_to_pay_at: null })
@@ -133,11 +141,10 @@ export async function clearReadyToPayAndReopenTab(
     }
   }
 
-  const { error: reopenError } = await supabase
-    .from('tabs')
-    .update({ status: 'open' })
-    .eq('id', tabId)
-    .is('settled_at', null)
+  const [, { error: reopenError }] = await Promise.all([
+    clearFlags(),
+    supabase.from('tabs').update({ status: 'open' }).eq('id', tabId).is('settled_at', null),
+  ])
 
   if (reopenError) {
     console.error(`${logPrefix} failed to reopen tab`, { tabId, error: reopenError })
