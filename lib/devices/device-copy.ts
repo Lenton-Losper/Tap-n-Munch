@@ -76,6 +76,16 @@ export const ACTIVATION_TRANSFER_REQUIRED =
   'This device is already registered to another restaurant. A manager can approve moving it here in ' +
   'FlashTap Settings → Devices. Then tap Activate again with the same code.'
 
+/**
+ * The transfer WAS approved, but the database refused it because another change to the same device
+ * landed at the same moment (a concurrent transfer or activation). Saying "a manager can approve"
+ * here would be false and would send staff to a screen where the approval already exists, so this
+ * says what is true: nothing is wrong with the approval, try again.
+ */
+export const ACTIVATION_TRANSFER_CONFLICT =
+  'This device was being changed at the same moment, so it was not moved. Tap Activate again in a ' +
+  'few seconds. If it still does not work, ask a manager to check this device in FlashTap Settings → Devices.'
+
 export const ACTIVATION_TRANSFER_REQUESTED_AGAIN =
   'Still waiting for a manager to approve moving this device here in FlashTap Settings → Devices. ' +
   'Tap Activate again once it has been approved.'

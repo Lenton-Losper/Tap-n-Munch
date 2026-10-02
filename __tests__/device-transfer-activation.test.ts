@@ -214,6 +214,30 @@ describe('approved for this device: the next attempt transfers', () => {
     expect(res.body.accessToken).toBeUndefined()
   })
 
+  it('a collision with a concurrent change is a 409 "try again", NOT "ask a manager to approve" (the approval exists)', async () => {
+    seed([oldRow(), codeRow({ transfer_request_device_id: DEVICE, transfer_requested_at: 'x', transfer_approved_at: 'y' })])
+    mockRpc.mockResolvedValue({
+      data: null,
+      error: { message: 'duplicate key value violates unique constraint "restaurant_terminals_device_id_unique"' },
+    })
+    const res = await activate({ code: CODE, device_id: DEVICE })
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('DEVICE_TRANSFER_CONFLICT')
+    expect(res.body.transfer).toBe('retry')
+    expect(res.body.error).toMatch(/Tap Activate again/)
+    expect(res.body.error).not.toMatch(/can approve|registered to another restaurant/i)
+    expect(res.body.accessToken).toBeUndefined()
+  })
+
+  it('when the database says the approval is missing, the answer is still "approval required"', async () => {
+    seed([oldRow(), codeRow({ transfer_request_device_id: DEVICE, transfer_requested_at: 'x', transfer_approved_at: 'y' })])
+    mockRpc.mockResolvedValue({ data: null, error: { message: 'TRANSFER_NOT_APPROVED' } })
+    const res = await activate({ code: CODE, device_id: DEVICE })
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('DEVICE_REGISTERED_ELSEWHERE')
+    expect(res.body.transfer).toBe('approval_required')
+  })
+
   it('when the database finds the code expired under its lock, it is the ordinary invalid-code answer', async () => {
     seed([oldRow(), codeRow({ transfer_request_device_id: DEVICE, transfer_requested_at: 'x', transfer_approved_at: 'y' })])
     mockRpc.mockResolvedValue({ data: null, error: { message: 'TRANSFER_CODE_INVALID' } })

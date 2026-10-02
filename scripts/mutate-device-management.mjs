@@ -192,6 +192,17 @@ const MUTATIONS = [
     to: "    status: 'revoked',\n    active: false,\n    device_id: null,\n    device_serial: `ft-${ctx.deviceId}`,\n    sn: null,\n",
     suites: [ROUTES],
   },
+  {
+    // 2026-10-02. A transfer refused for a CONCURRENT collision (approval exists) used to answer
+    // "ask a manager to approve" -- measured on staging, 2 of 5 two-destination races. The new
+    // DEVICE_TRANSFER_CONFLICT branch is what makes the answer true.
+    id: 'DM-19',
+    what: 'a concurrent-collision refusal is reported as "approval required" again (the misleading wording)',
+    file: ACTIVATE_ROUTE,
+    from: "          if (!reason.includes('TRANSFER_NOT_APPROVED') && !reason.includes('TRANSFER_SAME_RESTAURANT')) {\n",
+    to: '          if (false as boolean) {\n',
+    suites: [ACTIVATE],
+  },
 ]
 
 function runJest(suites) {

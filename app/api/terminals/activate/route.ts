@@ -17,6 +17,7 @@ import {
   checkActivationRateLimit,
 } from '@/lib/terminals/activation-rate-limit'
 import {
+  ACTIVATION_TRANSFER_CONFLICT,
   ACTIVATION_TRANSFER_REQUESTED_AGAIN,
   ACTIVATION_TRANSFER_REQUIRED,
 } from '@/lib/devices/device-copy'
@@ -205,6 +206,16 @@ export async function POST(request: Request) {
           console.error('[activate] transfer refused by the database', { codeTerminalId, reason })
           if (reason.includes('TRANSFER_CODE_INVALID')) {
             return NextResponse.json({ error: 'Invalid or expired activation code' }, { status: 400 })
+          }
+          // The approval exists (the guard above checked it) and the database did not say it is
+          // missing or that this restaurant already owns the device -- so the refusal is a collision
+          // with a concurrent change (the unique identity index, a lock). "Ask a manager to approve"
+          // would be false; tell the device to try again. Still a 409, never a 500.
+          if (!reason.includes('TRANSFER_NOT_APPROVED') && !reason.includes('TRANSFER_SAME_RESTAURANT')) {
+            return NextResponse.json(
+              { error: ACTIVATION_TRANSFER_CONFLICT, code: 'DEVICE_TRANSFER_CONFLICT', transfer: 'retry' },
+              { status: 409 },
+            )
           }
           return NextResponse.json(
             { error: ACTIVATION_TRANSFER_REQUIRED, code: 'DEVICE_REGISTERED_ELSEWHERE', transfer: 'approval_required' },
