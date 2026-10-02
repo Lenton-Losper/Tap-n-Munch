@@ -45,8 +45,45 @@ jest.mock('@/lib/terminals/refresh-token', () => ({
  * lookup, `.in()` on the two identity reads, and `.gt()` on the expiry. A fake that ignored them
  * would answer every question the same way and prove nothing about the branch under test.
  */
+let rpcCalls: Array<{ fn: string; args: Row }> = []
+let rpcError: Row | null = null
+
+/**
+ * A TypeScript MODEL of public.activate_terminal_by_code (migration 20261003100000), kept deliberately
+ * small. It exists so the ROUTE's contract can be tested here; the function itself is proven against
+ * real Postgres on staging, because a model cannot prove the SQL.
+ */
+function modelActivate(args: Row): Row {
+  const code = terminals.find((r) => r.id === args.p_code_terminal_id)
+  if (!code || !code.activation_code || code.active !== false) throw { message: 'ACTIVATION_CODE_INVALID', code: 'P0001' }
+  const ids = [args.p_device_id, args.p_device_serial].filter(Boolean)
+  const holders = terminals.filter((r) => r.id !== code.id && (ids.includes(r.device_id) || ids.includes(r.device_serial)))
+  const same = holders.filter((r) => r.restaurant_id === code.restaurant_id)
+  const target = same.length === 1 ? same[0] : code
+  for (const h of holders) {
+    if (h === target) continue
+    Object.assign(h, { device_id: null, device_serial: `ft-${h.id}`, sn: null, status: 'revoked', active: false, refresh_token_hash: null, activation_code: null })
+  }
+  Object.assign(target, {
+    device_id: args.p_device_id ?? target.device_id,
+    device_serial: args.p_device_serial ?? target.device_serial,
+    status: 'active', active: true, activation_code: null, activation_code_expires_at: null, refresh_token_hash: args.p_refresh_token_hash,
+  })
+  if (target !== code) Object.assign(code, { status: 'revoked', active: false, activation_code: null })
+  return { terminalId: target.id, restaurantId: code.restaurant_id }
+}
+
 jest.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: () => ({
+    rpc: async (fn: string, args: Row) => {
+      rpcCalls.push({ fn, args })
+      if (rpcError) return { data: null, error: rpcError }
+      try {
+        return { data: modelActivate(args), error: null }
+      } catch (e) {
+        return { data: null, error: e }
+      }
+    },
     from: (table: string) => {
       const state = { table, op: 'select', patch: null as Row | null, eq: {} as Row, inList: null as { col: string; vals: unknown[] } | null, gt: {} as Row }
       const rows = () =>
@@ -153,6 +190,8 @@ beforeEach(() => {
   terminals = []
   updates = []
   updateError = null
+  rpcCalls = []
+  rpcError = null
 })
 
 describe('first activation of a NEW device', () => {
@@ -217,41 +256,74 @@ describe('reinstall: the SAME device, the SAME restaurant', () => {
   })
 })
 
-describe('the SAME device, a DIFFERENT restaurant', () => {
-  it('is refused with 409 and an actionable message that names no other restaurant', async () => {
-    terminals = [ownedRow({ restaurant_id: VENUE_B }), pendingRow()]
+describe('the SAME device, a DIFFERENT restaurant: a valid code is sufficient (F19 removed 2026-10-03)', () => {
+  const heldByA = () => [ownedRow({ restaurant_id: VENUE_A }), pendingRow({ restaurant_id: VENUE_B })]
+
+  it("ACTIVATES for the code's restaurant -- no refusal, no approval step", async () => {
+    terminals = heldByA()
     const res = await call({ code: CODE, device_id: DEVICE })
     const body = await res.json()
-    expect(res.status).toBe(409)
-    expect(body.code).toBe('DEVICE_REGISTERED_ELSEWHERE')
-    // Device management sprint (2026-09-30): no longer a dead end -- it says what to do next.
-    expect(body.error).toMatch(/registered to another restaurant/i)
-    expect(body.error).toMatch(/approve/i)
-    expect(body.transfer).toBe('approval_required')
+    expect(res.status).toBe(200)
+    expect(body.restaurant_id).toBe(VENUE_B)
+    expect(body.terminal_id).toBe(PENDING_ROW)
+    expect(body.accessToken).toBe(`token-for-${PENDING_ROW}`)
   })
 
-  /**
-   * Superseded 2026-09-30 (device management sprint): this used to assert that a cross-restaurant
-   * refusal writes NOTHING. It now records the transfer REQUEST on this restaurant's own pending
-   * code row, so a manager here can approve it. What the old assertion actually protected is kept,
-   * explicitly: the other restaurant's registration is never written, and the code stays unused.
-   */
-  it("never writes the other restaurant's registration; records only a transfer request on its own code row", async () => {
-    terminals = [ownedRow({ restaurant_id: VENUE_B }), pendingRow()]
-    const owned = { ...terminals[0] }
+  it('the old restaurant LOSES the terminal: revoked, inactive, identity freed, cannot refresh', async () => {
+    terminals = heldByA()
     await call({ code: CODE, device_id: DEVICE })
-    expect(updates).toHaveLength(1)
-    expect(updates[0].id).toBe(PENDING_ROW)
-    expect(Object.keys(updates[0].patch).sort()).toEqual([
-      'transfer_approved_at',
-      'transfer_approved_by',
-      'transfer_request_device_id',
-      'transfer_requested_at',
-    ])
-    expect(updates[0].patch.transfer_request_device_id).toBe(DEVICE)
-    expect(updates[0].patch.transfer_approved_at).toBeNull()
-    expect(terminals.find((r) => r.id === OWN_ROW)).toEqual(owned)
-    expect(terminals.find((r) => r.id === PENDING_ROW)!.activation_code).toBe(CODE)
+    const old = terminals.find((r) => r.id === OWN_ROW)!
+    expect(old.status).toBe('revoked')
+    expect(old.active).toBe(false)
+    expect(old.device_id).toBeNull()
+    expect(old.device_serial).toBe(`ft-${OWN_ROW}`)
+    expect(old.refresh_token_hash).toBeNull()
+  })
+
+  it('the OLD session cannot operate it: every terminal route requires status active, and A is revoked', async () => {
+    terminals = heldByA()
+    await call({ code: CODE, device_id: DEVICE })
+    expect(terminals.find((r) => r.id === OWN_ROW)!.status).not.toBe('active')
+    expect(terminals.find((r) => r.id === PENDING_ROW)!.status).toBe('active')
+  })
+
+  it('EXACTLY ONE active owner holds the physical identity afterwards', async () => {
+    terminals = heldByA()
+    await call({ code: CODE, device_id: DEVICE })
+    const holders = terminals.filter((r) => r.device_id === DEVICE || r.device_serial === DEVICE)
+    expect(holders).toHaveLength(1)
+    expect(holders[0].restaurant_id).toBe(VENUE_B)
+    expect(terminals.filter((r) => r.active === true)).toHaveLength(1)
+  })
+
+  it('creates no transfer-request state and never answers DEVICE_REGISTERED_ELSEWHERE', async () => {
+    terminals = heldByA()
+    const res = await call({ code: CODE, device_id: DEVICE })
+    const body = await res.json()
+    expect(body.code).toBeUndefined()
+    expect(JSON.stringify(body)).not.toMatch(/transfer|registered to another|approve|REGISTERED_ELSEWHERE/i)
+    for (const r of terminals) {
+      expect(Object.keys(r).filter((k) => k.startsWith('transfer_'))).toEqual([])
+    }
+  })
+
+  it('hands the function exactly what it needs: the code row, the device identity and the new token hash', async () => {
+    terminals = heldByA()
+    await call({ code: CODE, device_id: DEVICE })
+    expect(rpcCalls).toHaveLength(1)
+    expect(rpcCalls[0].args).toMatchObject({
+      p_code_terminal_id: PENDING_ROW,
+      p_device_id: DEVICE,
+      p_device_serial: DEVICE,
+      p_refresh_token_hash: 'refresh-hash',
+    })
+  })
+
+  it('goes through the single transactional function -- the route itself writes no row on this path', async () => {
+    terminals = heldByA()
+    await call({ code: CODE, device_id: DEVICE })
+    expect(rpcCalls.map((c) => c.fn)).toEqual(['activate_terminal_by_code'])
+    expect(updates).toEqual([])
   })
 })
 
@@ -277,20 +349,28 @@ describe('the protections that were already there stay there', () => {
   })
 })
 
-describe('concurrency: the identity is claimed between the check and the write', () => {
-  it('answers 409 with something actionable, never the old generic 500', async () => {
+describe('concurrency: two activations of one device', () => {
+  it('a unique-index loss is a retryable 409 ACTIVATION_CONFLICT, not a 500 and not a second owner', async () => {
     terminals = [pendingRow()]
-    updateError = { code: '23505', constraint: 'restaurant_terminals_device_id_unique' }
+    rpcError = { code: '23505', message: 'duplicate key value violates unique constraint "restaurant_terminals_device_id_unique"' }
     const res = await call({ code: CODE, device_id: DEVICE })
     const body = await res.json()
     expect(res.status).toBe(409)
-    expect(body.code).toBe('DEVICE_IDENTITY_TAKEN')
-    expect(body.error).toMatch(/reissue/i)
+    expect(body.code).toBe('ACTIVATION_CONFLICT')
+    expect(body.error).not.toMatch(/restaurant_terminals|constraint|23505/i)
   })
 
-  it('a non-duplicate write failure is a retryable 503, not a 500 dead end', async () => {
+  it('the code consumed by a rival is the ordinary invalid-code 400', async () => {
     terminals = [pendingRow()]
-    updateError = { code: '08006', message: 'connection failure' }
+    rpcError = { code: 'P0001', message: 'ACTIVATION_CODE_INVALID' }
+    const res = await call({ code: CODE, device_id: DEVICE })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe('Invalid or expired activation code')
+  })
+
+  it('any other database failure is a retryable 503', async () => {
+    terminals = [pendingRow()]
+    rpcError = { code: '08006', message: 'connection failure' }
     const res = await call({ code: CODE, device_id: DEVICE })
     expect(res.status).toBe(503)
     expect((await res.json()).code).toBe('ACTIVATION_WRITE_FAILED')
@@ -298,32 +378,22 @@ describe('concurrency: the identity is claimed between the check and the write',
 })
 
 describe('no refusal leaks the schema, and none is the old generic message', () => {
-  const GENERIC = 'Failed to activate terminal'
-
-  it('never returns the message that meant everything and nothing', async () => {
-    const cases: Array<() => Promise<Response>> = [
-      async () => {
-        terminals = [ownedRow({ restaurant_id: VENUE_B }), pendingRow()]
-        return call({ code: CODE, device_id: DEVICE })
-      },
-      async () => {
-        terminals = [pendingRow()]
-        updateError = { code: '23505', constraint: 'restaurant_terminals_device_id_unique' }
-        return call({ code: CODE, device_id: DEVICE })
-      },
-      async () => {
-        terminals = [pendingRow()]
-        updateError = { code: '08006' }
-        return call({ code: CODE, device_id: DEVICE })
-      },
-    ]
-    for (const run of cases) {
-      terminals = []
-      updates = []
-      updateError = null
-      const body = await (await run()).json()
-      expect(body.error).not.toBe(GENERIC)
+  it('never returns the generic message or a schema name', async () => {
+    for (const err of [{ code: '23505', message: 'x' }, { code: '08006', message: 'x' }]) {
+      terminals = [pendingRow()]
+      rpcError = err
+      const body = await (await call({ code: CODE, device_id: DEVICE })).json()
+      expect(body.error).not.toBe('Failed to activate terminal')
       expect(body.error).not.toMatch(/restaurant_terminals|device_id|device_serial|23505|constraint/i)
     }
+  })
+})
+
+describe('a device presenting no identity (older app)', () => {
+  it('activates the code row directly and calls no function', async () => {
+    terminals = [pendingRow()]
+    const res = await call({ code: CODE })
+    expect(res.status).toBe(200)
+    expect(rpcCalls).toEqual([])
   })
 })

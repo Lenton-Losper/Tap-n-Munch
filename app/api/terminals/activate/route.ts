@@ -2,11 +2,6 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { normalizeActivationCode } from '@/lib/terminals/activation-code'
 import {
-  ACTIVATION_REFUSALS,
-  resolveActivationTarget,
-  type IdentityHolder,
-} from '@/lib/terminals/resolve-activation-target'
-import {
   generateRefreshToken,
   hashRefreshToken,
   refreshTokenExpiresAt,
@@ -16,29 +11,8 @@ import {
   ACTIVATION_RATE_PERIOD_SECONDS,
   checkActivationRateLimit,
 } from '@/lib/terminals/activation-rate-limit'
-import {
-  ACTIVATION_TRANSFER_CONFLICT,
-  ACTIVATION_TRANSFER_REQUESTED_AGAIN,
-  ACTIVATION_TRANSFER_REQUIRED,
-} from '@/lib/devices/device-copy'
 
 export const dynamic = 'force-dynamic'
-
-/**
- * AUDIT IS BEST-EFFORT ON THIS ROUTE. The activation (or refusal) has already been decided; a history
- * line that cannot be written is logged, never allowed to turn a working activation into a failure.
- */
-async function recordAudit(
-  supabase: ReturnType<typeof createServerSupabaseClient>,
-  entry: { restaurant_id: string; action: string; entity_id: string; metadata: Record<string, unknown> },
-): Promise<void> {
-  try {
-    const { error } = await supabase.from('audit_logs').insert({ ...entry, entity_type: 'terminal' })
-    if (error) console.error('[activate] audit event not recorded', { action: entry.action, error })
-  } catch (error) {
-    console.error('[activate] audit event not recorded', { action: entry.action, error })
-  }
-}
 
 function readBodyString(body: Record<string, unknown>, ...keys: string[]): string | null {
   for (const key of keys) {
@@ -90,7 +64,7 @@ export async function POST(request: Request) {
     const nowIso = new Date().toISOString()
     const { data, error } = await supabase
       .from('restaurant_terminals')
-      .select('id, restaurant_id, device_id, name, activation_code_expires_at, active, activation_code, transfer_request_device_id, transfer_approved_at')
+      .select('id, restaurant_id, device_id, name, activation_code_expires_at, active, activation_code')
       .eq('activation_code', code)
       .eq('active', false)
       .gt('activation_code_expires_at', nowIso)
@@ -120,269 +94,114 @@ export async function POST(request: Request) {
     const deviceSerial =
       deviceId || terminalSn || (data.device_id ? String(data.device_id) : null)
 
-    /**
-     * ============================================================================================
-     * DOES THIS DEVICE ALREADY OWN A ROW?
-     * ============================================================================================
-     *
-     * Asked BEFORE any write, because the alternative is what shipped: write blindly, collide with
-     * `restaurant_terminals_device_id_unique`, and hand the reader a 23505 dressed as
-     * "Failed to activate terminal". See lib/terminals/resolve-activation-target.ts for the
-     * invariant this keeps.
-     *
-     * TWO `.in()` READS RATHER THAN ONE `.or()`. `.in()` is parser-free -- the #242/#254 shape --
-     * and these values arrive in a request body. An `.or()` string built from them would be a
-     * filter expression assembled from caller input, which is exactly the class this codebase has
-     * fixed twice.
-     */
-    const presentedIdentity = [...new Set([deviceId, deviceSerial].filter(Boolean) as string[])]
-    const holders: IdentityHolder[] = []
-    if (presentedIdentity.length > 0) {
-      for (const column of ['device_id', 'device_serial'] as const) {
-        const { data: rows, error: holderError } = await supabase
-          .from('restaurant_terminals')
-          .select('id, restaurant_id')
-          .in(column, presentedIdentity)
-        if (holderError) {
-          // A failed read must not be read as "nobody holds it" -- that lands straight back on the
-          // 23505 this exists to avoid. Refuse, and let the operator retry.
-          console.error('[activate] could not read device identity holders', holderError)
-          return NextResponse.json(
-            { error: 'Could not check this device. Try again in a moment.', code: 'DEVICE_CHECK_UNAVAILABLE' },
-            { status: 503 },
-          )
-        }
-        for (const row of rows ?? []) {
-          holders.push({ id: String(row.id), restaurant_id: String(row.restaurant_id) })
-        }
-      }
-    }
-
-    const decision = resolveActivationTarget({
-      codeRow: { id: codeTerminalId, restaurant_id: codeRestaurantId },
-      holders,
-    })
+    const restaurantId = codeRestaurantId
 
     const refreshToken = generateRefreshToken()
     const refreshTokenHash = await hashRefreshToken(refreshToken)
     const refreshTokenExpiresAtValue = refreshTokenExpiresAt()
 
-    /**
-     * ============================================================================================
-     * REGISTERED ELSEWHERE: REFUSED -- UNLESS THIS RESTAURANT APPROVED MOVING THIS DEVICE HERE
-     * ============================================================================================
-     *
-     * The refusal (F19) is unchanged: a valid code alone never takes a device from another venue.
-     * What changed is that it is no longer a dead end. The refusal records WHICH device asked on
-     * this restaurant's own code row, a manager of this restaurant approves it in Settings ->
-     * Devices, and the device's next attempt with the same code is carried out by
-     * transfer_terminal_device() -- which re-checks the code, its expiry and that the approval is
-     * for THIS device, under row locks, and releases the old registration and its session in the
-     * same transaction (supabase/migrations/20260930200000).
-     *
-     * Only the plain case transfers: every other holder in another restaurant. A holder in THIS
-     * restaurant alongside one elsewhere stays refused, exactly as before.
-     */
-    let transferred = false
-    if (decision.kind === 'reject_cross_restaurant') {
-      const others = holders.filter((h) => h.id !== codeTerminalId)
-      const onlyElsewhere = others.length > 0 && others.every((h) => h.restaurant_id !== codeRestaurantId)
-      const approvedForThisDevice =
-        Boolean(deviceId) &&
-        Boolean(data.transfer_approved_at) &&
-        String(data.transfer_request_device_id ?? '') === deviceId
+    const presentsIdentity = Boolean(deviceId || deviceSerial)
+    let terminalId = codeTerminalId
+    let updateData: { id: unknown; device_serial?: unknown; device_id?: unknown; sn?: unknown } | null = null
 
-      if (onlyElsewhere && approvedForThisDevice) {
-        const { error: transferError } = await supabase.rpc('transfer_terminal_device', {
-          p_code_terminal_id: codeTerminalId,
-          p_device_id: deviceId,
-          p_device_serial: deviceSerial,
-          p_sn: terminalSn,
-          p_refresh_token_hash: refreshTokenHash,
-          p_refresh_token_expires_at: refreshTokenExpiresAtValue,
-        })
-        if (transferError) {
-          const reason = String((transferError as { message?: unknown }).message ?? '')
-          console.error('[activate] transfer refused by the database', { codeTerminalId, reason })
-          if (reason.includes('TRANSFER_CODE_INVALID')) {
-            return NextResponse.json({ error: 'Invalid or expired activation code' }, { status: 400 })
-          }
-          // The approval exists (the guard above checked it) and the database did not say it is
-          // missing or that this restaurant already owns the device -- so the refusal is a collision
-          // with a concurrent change (the unique identity index, a lock). "Ask a manager to approve"
-          // would be false; tell the device to try again. Still a 409, never a 500.
-          if (!reason.includes('TRANSFER_NOT_APPROVED') && !reason.includes('TRANSFER_SAME_RESTAURANT')) {
-            return NextResponse.json(
-              { error: ACTIVATION_TRANSFER_CONFLICT, code: 'DEVICE_TRANSFER_CONFLICT', transfer: 'retry' },
-              { status: 409 },
-            )
-          }
+    if (presentsIdentity) {
+      /**
+       * ============================================================================================
+       * A VALID ACTIVATION CODE IS SUFFICIENT. (Owner decision 2026-10-03; replaces F19.)
+       * ============================================================================================
+       *
+       * The code names a restaurant; presenting it registers THIS physical device to that restaurant,
+       * wherever the device was registered before. There is no manager approval, no transfer request
+       * and no refusal because the device "belongs elsewhere".
+       *
+       * What stays absolute is that exactly ONE row holds a physical device identity. The whole change
+       * is made by activate_terminal_by_code() in ONE transaction: it locks the code row and every row
+       * holding the identity, RELEASES every other registration -- whichever restaurant they belong to -- and
+       * binds exactly one row. The old restaurant's row is revoked, its identity and session cleared,
+       * so its token can operate nothing. The unique indexes on device_id and device_serial are
+       * untouched and remain the backstop for two activations racing.
+       *
+       * The function re-derives who holds the identity under its locks, so nothing read earlier in this request
+       * (a decision made from a stale read) can put two restaurants on one device.
+       */
+      const { data: bound, error: bindError } = await supabase.rpc('activate_terminal_by_code', {
+        p_code_terminal_id: codeTerminalId,
+        p_device_id: deviceId,
+        p_device_serial: deviceSerial,
+        p_sn: terminalSn,
+        p_refresh_token_hash: refreshTokenHash,
+        p_refresh_token_expires_at: refreshTokenExpiresAtValue,
+      })
+
+      if (bindError) {
+        const message = String((bindError as { message?: unknown }).message ?? '')
+        const pgCode = (bindError as { code?: unknown }).code
+        if (message.includes('ACTIVATION_CODE_INVALID')) {
+          return NextResponse.json({ error: 'Invalid or expired activation code' }, { status: 400 })
+        }
+        if (pgCode === '23505' || pgCode === '40P01' || pgCode === '40001') {
+          // Another activation of this same device landed in the same instant and took the identity
+          // first. Nothing was written here; one owner remains. A retry lands cleanly.
+          console.warn('[activate] concurrent activation of the same device; asking the device to retry', {
+            codeTerminalId,
+          })
           return NextResponse.json(
-            { error: ACTIVATION_TRANSFER_REQUIRED, code: 'DEVICE_REGISTERED_ELSEWHERE', transfer: 'approval_required' },
+            { error: 'This device was being activated at the same moment. Tap Activate again.', code: 'ACTIVATION_CONFLICT' },
             { status: 409 },
           )
         }
-        transferred = true
-        console.log('[activate] device transferred here', { codeTerminalId, codeRestaurantId, released: others.length })
-      } else {
-        console.warn('[activate] refused: device identity is held elsewhere', {
-          codeTerminalId,
-          codeRestaurantId,
-          holders: holders.map((h) => h.id),
-        })
-        const alreadyRequested = Boolean(deviceId) && String(data.transfer_request_device_id ?? '') === deviceId
-        if (deviceId && onlyElsewhere && !alreadyRequested) {
-          // Record the request on THIS restaurant's code row, so its managers can see and approve it.
-          // A different device asking replaces the request -- and drops any approval, which was for
-          // the device that asked before.
-          const { error: requestError } = await supabase
-            .from('restaurant_terminals')
-            .update({
-              transfer_request_device_id: deviceId,
-              transfer_requested_at: nowIso,
-              transfer_approved_at: null,
-              transfer_approved_by: null,
-            })
-            .eq('id', codeTerminalId)
-            .eq('restaurant_id', codeRestaurantId)
-            .eq('active', false)
-          if (requestError) {
-            console.error('[activate] could not record the transfer request', requestError)
-          } else {
-            await recordAudit(supabase, {
-              restaurant_id: codeRestaurantId,
-              action: 'terminal.transfer_requested',
-              entity_id: codeTerminalId,
-              metadata: { deviceId, at: nowIso },
-            })
-          }
-        }
+        console.error('[activate] activate_terminal_by_code failed', bindError)
         return NextResponse.json(
-          {
-            error: alreadyRequested ? ACTIVATION_TRANSFER_REQUESTED_AGAIN : ACTIVATION_TRANSFER_REQUIRED,
-            code: 'DEVICE_REGISTERED_ELSEWHERE',
-            transfer: onlyElsewhere ? 'approval_required' : 'not_available',
-          },
-          { status: 409 },
+          { error: 'Could not activate this terminal. Try again in a moment.', code: 'ACTIVATION_WRITE_FAILED' },
+          { status: 503 },
         )
       }
-    }
 
-    /**
-     * THE ROW THAT ENDS UP ACTIVE. On a rebind it is the row the device already owns, NOT the row
-     * the code named -- so the till keeps its id, and with it every payment, printer config and
-     * audit row ever attributed to it. The code's own row is retired below. On a transfer it is the
-     * code's row, already bound and activated by transfer_terminal_device().
-     */
-    const rebinding = decision.kind === 'rebind_existing'
-    const terminalId = rebinding ? decision.terminalId : codeTerminalId
-    const restaurantId = codeRestaurantId
+      terminalId = String((bound as { terminalId?: unknown } | null)?.terminalId ?? '')
+      if (!terminalId) throw new Error('activate_terminal_by_code returned no terminal id')
 
-    const updates: Record<string, unknown> = {
-      active: true,
-      status: 'active',
-      activated_at: nowIso,
-      last_seen_at: nowIso,
-      activation_code: null,
-      activation_code_expires_at: null,
-      refresh_token_hash: refreshTokenHash,
-      refresh_token_expires_at: refreshTokenExpiresAtValue,
-    }
-
-    if (deviceId) {
-      updates.device_id = deviceId
-    }
-
-    if (terminalSn) {
-      updates.sn = terminalSn
-    }
-
-    if (deviceSerial) {
-      updates.device_serial = deviceSerial
-    }
-
-    // A transfer has already bound and activated the code's row inside transfer_terminal_device();
-    // writing it again here would only race that transaction. Read what it wrote instead.
-    const { data: updateData, error: updateError } = transferred
-      ? await supabase
-          .from('restaurant_terminals')
-          .select('id, restaurant_id, name, device_serial, device_id, sn')
-          .eq('id', terminalId)
-          .eq('restaurant_id', restaurantId)
-          .single()
-      : await supabase
-          .from('restaurant_terminals')
-          .update(updates)
-          .eq('id', terminalId)
-          .eq('restaurant_id', restaurantId)
-          .select('id, restaurant_id, name, device_serial, device_id, sn')
-          .single()
-
-    if (updateError || !updateData?.id) {
-      /**
-       * NOT RETHROWN AS-IS. A PostgREST error is a PLAIN OBJECT, so the outer catch's
-       * `error instanceof Error` was false and EVERY failed update -- whatever the cause --
-       * collapsed to 500 "Failed to activate terminal". That message is true of every failure and
-       * actionable for none of them, and the real 23505 lived only in a log with no retention.
-       *
-       * A duplicate HERE means the identity was claimed between the read above and this write.
-       * That is answerable: reissue on the terminal that holds it.
-       */
-      const pgCode = (updateError as { code?: unknown } | null)?.code
-      if (pgCode === '23505') {
-        console.error('[activate] identity claimed between check and write', {
-          terminalId,
-          constraint: (updateError as { constraint?: unknown } | null)?.constraint,
-        })
+      const { data: row, error: rowError } = await supabase
+        .from('restaurant_terminals')
+        .select('id, restaurant_id, name, device_serial, device_id, sn')
+        .eq('id', terminalId)
+        .eq('restaurant_id', restaurantId)
+        .single()
+      if (rowError || !row?.id) {
+        console.error('[activate] could not read the activated terminal', rowError)
         return NextResponse.json(
-          { error: ACTIVATION_REFUSALS.identity_taken, code: 'DEVICE_IDENTITY_TAKEN' },
-          { status: 409 },
+          { error: 'Could not activate this terminal. Try again in a moment.', code: 'ACTIVATION_WRITE_FAILED' },
+          { status: 503 },
         )
       }
-      console.error('[activate] terminal update failed', updateError)
-      return NextResponse.json(
-        {
-          error: 'Could not activate this terminal. Try again in a moment.',
-          code: 'ACTIVATION_WRITE_FAILED',
-        },
-        { status: 503 },
-      )
-    }
-
-    /**
-     * RETIRE THE ROW THE CODE NAMED, once the device is bound to the row it owns. Left pending it
-     * would keep a live activation code against a till that does not exist, and appear in the admin
-     * list as a screen nobody can pair. Best-effort: the activation has already succeeded, and
-     * failing it now would be worse than a stale pending row.
-     */
-    if (rebinding) {
-      const { error: retireError } = await supabase
+      updateData = row
+    } else {
+      // No device identity presented (an older app): there is nothing for another row to hold, so the
+      // code's own row is simply activated.
+      const { data: row, error: updateError } = await supabase
         .from('restaurant_terminals')
         .update({
-          status: 'revoked',
-          active: false,
+          active: true,
+          status: 'active',
+          activated_at: nowIso,
+          last_seen_at: nowIso,
           activation_code: null,
           activation_code_expires_at: null,
+          refresh_token_hash: refreshTokenHash,
+          refresh_token_expires_at: refreshTokenExpiresAtValue,
+          ...(terminalSn ? { sn: terminalSn } : {}),
         })
-        .eq('id', decision.supersededTerminalId)
+        .eq('id', terminalId)
         .eq('restaurant_id', restaurantId)
-      if (retireError) {
-        console.error('[activate] could not retire the superseded pending row', {
-          supersededTerminalId: decision.supersededTerminalId,
-          error: retireError,
-        })
+        .select('id, restaurant_id, name, device_serial, device_id, sn')
+        .single()
+      if (updateError || !row?.id) {
+        console.error('[activate] terminal update failed', updateError)
+        return NextResponse.json(
+          { error: 'Could not activate this terminal. Try again in a moment.', code: 'ACTIVATION_WRITE_FAILED' },
+          { status: 503 },
+        )
       }
-    }
-
-    // The device's history in Settings -> Devices starts here. Best-effort: the activation has
-    // succeeded, and a missing history line must not undo it. A transfer recorded its own events.
-    if (!transferred) {
-      await recordAudit(supabase, {
-        restaurant_id: restaurantId,
-        action: 'terminal.activated',
-        entity_id: terminalId,
-        metadata: { rebind: rebinding, codeTerminalId, deviceId: deviceId ?? null, at: nowIso },
-      })
+      updateData = row
     }
 
     const { data: restaurant, error: restaurantError } = await supabase
@@ -395,9 +214,9 @@ export async function POST(request: Request) {
 
     const resolvedDeviceSerial =
       deviceSerial ||
-      (updateData.device_serial ? String(updateData.device_serial) : '') ||
-      (updateData.device_id ? String(updateData.device_id) : '') ||
-      (updateData.sn ? String(updateData.sn) : '')
+      (updateData?.device_serial ? String(updateData.device_serial) : '') ||
+      (updateData?.device_id ? String(updateData.device_id) : '') ||
+      (updateData?.sn ? String(updateData.sn) : '')
 
     const finalDeviceSerial = resolvedDeviceSerial || `ft-${terminalId}`
 

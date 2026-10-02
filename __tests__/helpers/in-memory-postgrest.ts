@@ -106,7 +106,7 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
   private containsFilters: Array<{ column: string; values: readonly unknown[] }> = []
   private overlapFilters: Array<{ column: string; values: readonly unknown[] }> = []
   private pending: {
-    kind: 'insert' | 'update' | 'upsert' | 'delete'
+    kind: 'insert' | 'update' | 'upsert'
     payload: Row | Row[]
     onConflict?: string
   } | null = null
@@ -224,11 +224,6 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
     this.pending = { kind: 'update', payload }
     return this
   }
-  /** Removes exactly the rows the filters match; returns them, as `.delete().select()` does. */
-  delete() {
-    this.pending = { kind: 'delete', payload: {} }
-    return this
-  }
   /**
    * PostgREST's insert-or-update, keyed on `onConflict` as the real DDL's unique constraint.
    *
@@ -336,12 +331,6 @@ class QueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
     if (this.pending?.kind === 'update') {
       const hit = this.matching()
       for (const r of hit) Object.assign(r, this.pending.payload)
-      return { data: hit, error: null }
-    }
-    if (this.pending?.kind === 'delete') {
-      const hit = this.matching()
-      const all = this.db.rows(this.table)
-      for (const r of hit) all.splice(all.indexOf(r), 1)
       return { data: hit, error: null }
     }
     if (this.pending?.kind === 'upsert') {

@@ -1,6 +1,6 @@
 /**
- * feat/station-screens-v1 — every string in the "pair a screen" settings UI (since 2026-09-30 the
- * Devices console, components/devices/devices-console.tsx) and the three admin routes behind it
+ * feat/station-screens-v1 — every string in the "pair a screen" settings UI
+ * (components/settings/station-screens-pairing-section.tsx) and the three admin routes behind it
  * (app/api/admin/terminals/stations*). One module, greppable, same convention as
  * lib/stations/copy.ts and lib/dashboard/feed-connection-copy.ts.
  *
