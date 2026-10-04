@@ -130,6 +130,7 @@ import {
 } from '@/lib/payments/payment-integrity'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { cancelOrderWithTrail, type CancelBasis } from './cancel-order-with-trail'
+import { findOrdersWithMoney } from './paid-order-cancellation'
 import { holdForAmountReview } from './auto-cancel-stale-pos-orders'
 import { hasAllocatedOrderNumber } from './order-identity'
 import {
@@ -1266,6 +1267,31 @@ async function cancel(
   extra: Record<string, unknown>,
 ): Promise<void> {
   const { supabase, control, record, row, cause, restaurantId, requestedBy, merchantOrderNo } = ctx
+
+  /**
+   * THE MONEY GUARD, immediately before the write. Owner decision 2026-10-04.
+   *
+   * Every automatic canceller asks `findOrdersWithMoney` first; this action did not. None of its other
+   * guards -- the gateway answer, the control, the E04111 persistence rule, `require_pending` -- can
+   * see a cash/non-gateway ledger row, a settled split allocation, or a gateway sale row recorded here
+   * while the order still reads `pending`, and a person pressing the button does not change what is
+   * recorded against the order. `null` means the payment state could not be read: that refuses too,
+   * because unreadable is not "no money".
+   */
+  const orderId = String(row.id)
+  const moneyHeld = await findOrdersWithMoney(supabase as never, [orderId])
+  if (moneyHeld === null || moneyHeld.has(orderId)) {
+    await record(row, cause, 'skipped_money_not_ruled_out', {
+      code: gatewayCode,
+      askedAt,
+      note:
+        moneyHeld === null
+          ? 'The payment state could not be read, so money could not be ruled out. Not cancelled.'
+          : 'Money is recorded against this order (a settled allocation, a non-gateway ledger row or an unrefunded gateway sale). Not cancelled.',
+    })
+    return
+  }
+
   const result = await cancelOrderWithTrail(supabase, {
     orderId: String(row.id),
     restaurantId,
@@ -1424,6 +1450,10 @@ export const CLEAR_HELD_OUTCOME_AUDIT_REASON: Record<ClearHeldOutcome, string> =
   skipped_already_resolved:
     'The order left the held set between being listed and being written to — settled, cancelled or ' +
     'moved by something else. The concurrency guard held and nothing was overwritten.',
+  skipped_money_not_ruled_out:
+    'The gateway answer would have authorised a cancel, but money is recorded against this order (a ' +
+    'settled allocation, a non-gateway ledger row or an unrefunded gateway sale), or the payment ' +
+    'state could not be read. Not cancelled: the same money guard every automatic canceller applies.',
   skipped_control_failed:
     'The venue\'s live positive control did not come back PAID, so no gateway answer in this run ' +
     'can be trusted and nothing further was written at this venue.',

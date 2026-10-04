@@ -79,6 +79,10 @@ const SIGNED_OUTCOME: Record<string, string> = {
     'someone to check the amount.',
   skipped_already_resolved:
     'this one was already sorted out while the check was running, so it was left alone.',
+  // Signed by the owner 2026-10-04 ("option A"), with the money guard.
+  skipped_money_not_ruled_out:
+    'money is recorded against this order here, or its payment records could not be checked, so it ' +
+    'was not cancelled. Nothing was changed. Someone needs to look at this one.',
   skipped_control_failed:
     'the answers from the payment provider could not be trusted in this check, so this order was ' +
     'left as it is.',
@@ -241,7 +245,7 @@ describe('the signed set as a whole', () => {
     expect(ALL_SIGNED.filter((s) => s.includes('…'))).toEqual([SIGNED_CONTROL.running])
   })
 
-  it('is THIRTY signed strings and nothing unsigned — the four E04111 refusals were signed 2026-08-27', () => {
+  it('is THIRTY-ONE signed strings and nothing unsigned — the money-guard refusal was signed 2026-10-04', () => {
     /**
      * BOTH DIRECTIONS IN ONE ASSERTION, because each alone has a way of passing while wrong.
      * Counting the signed strings alone would not notice a marker deleted to get
@@ -252,7 +256,8 @@ describe('the signed set as a whole', () => {
     // this assertion was INVERTED rather than deleted: it was a tripwire for exactly that moment,
     // and it fired. What it protects now is the other direction — nothing may quietly become
     // unsigned, and no outcome may exist without a pinned string.
-    expect(ALL_SIGNED).toHaveLength(30)
+    // 30 -> 31 on 2026-10-04: `skipped_money_not_ruled_out`, signed by the owner as it arrived.
+    expect(ALL_SIGNED).toHaveLength(31)
 
     const unsigned = unsignedClearHeldStrings()
     expect(unsigned).toHaveLength(0)

@@ -85,6 +85,13 @@ export const CLEAR_HELD_OUTCOMES = [
   'skipped_gateway_confirmed_payment_already_held',
   /** It left the held set between enumeration and the write — settled, cancelled, or moved. */
   'skipped_already_resolved',
+  /**
+   * The gateway answer authorised a cancel, but `findOrdersWithMoney` found money recorded against
+   * the order here (a settled allocation, a non-gateway ledger row, or an unrefunded gateway sale)
+   * — or could not read the payment state at all, which is not the same as "no money". Owner
+   * decision 2026-10-04: the money guard every automatic canceller applies applies here too.
+   */
+  'skipped_money_not_ruled_out',
   /** The venue's positive control did not come back PAID, so no answer in this run is trustworthy. */
   'skipped_control_failed',
   /** The venue has no known-paid order carrying a gateway reference, so no control can be formed. */

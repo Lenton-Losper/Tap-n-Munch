@@ -205,7 +205,22 @@ function jsonPathValue(row: Row, column: string): unknown {
   return (container as Row)[key]
 }
 
-function makeSupabase(orders: OrderFixture[], observations?: Row[]) {
+/**
+ * The three tables `findOrdersWithMoney` reads, modelled so the clear's money guard sees real rows.
+ * EMPTY BY DEFAULT: every test written before the guard existed runs exactly as it did, because an
+ * order with no money recorded is what those fixtures always were. `unreadable` makes every read of
+ * these tables fail, which the guard must treat as "money not ruled out", never as "no money".
+ */
+type MoneyFixture = {
+  allocations?: Row[]
+  ledger?: Row[]
+  sales?: Row[]
+  refunds?: Row[]
+  unreadable?: boolean
+}
+const MONEY_TABLES = ['order_line_allocations', 'non_gateway_payment_events', 'payment_events']
+
+function makeSupabase(orders: OrderFixture[], observations?: Row[], money: MoneyFixture = {}) {
   const audits: Row[] = []
   const updates: UpdateCall[] = []
   const observationRows = observations ?? defaultObservations(orders)
@@ -233,6 +248,7 @@ function makeSupabase(orders: OrderFixture[], observations?: Row[]) {
        * Projecting the row to what was actually selected is what makes that a red test.
        */
       let selected: string[] | null = null
+      const overlapsFilters: Array<[string, unknown[]]> = []
       let limitN: number | null = null
       let orderBy: { col: string; ascending: boolean } | null = null
       const chain: Record<string, unknown> = {}
@@ -277,6 +293,24 @@ function makeSupabase(orders: OrderFixture[], observations?: Row[]) {
           return { data: rows.map((r) => ({ ...r })), error: null }
         }
         if (table === 'tabs') return { data: [], error: null }
+        if (MONEY_TABLES.includes(table)) {
+          if (money.unreadable) return { data: null, error: { message: 'money read failed (fixture)' } }
+          const source =
+            table === 'order_line_allocations'
+              ? money.allocations ?? []
+              : table === 'non_gateway_payment_events'
+                ? money.ledger ?? []
+                : [...(money.sales ?? []), ...(money.refunds ?? [])]
+          const rows = source.filter(
+            (r) =>
+              eqs.every(([col, val]) => String(r[col] ?? '') === String(val)) &&
+              ins.every(([col, vals]) => vals.map(String).includes(String(r[col] ?? ''))) &&
+              overlapsFilters.every(([col, vals]) =>
+                (Array.isArray(r[col]) ? (r[col] as unknown[]) : []).some((v) => vals.map(String).includes(String(v))),
+              ),
+          )
+          return { data: rows.map((r) => ({ ...r })), error: null }
+        }
         if (op === 'update') {
           const hit = matching()
           updates.push({ table, patch: { ...patch }, filters: [...eqs] })
@@ -319,6 +353,10 @@ function makeSupabase(orders: OrderFixture[], observations?: Row[]) {
       }
       chain.lt = (col: string, val: unknown) => {
         lts.push([col, val])
+        return self()
+      }
+      chain.overlaps = (col: string, vals: unknown[]) => {
+        overlapsFilters.push([col, vals])
         return self()
       }
       chain.not = (col: string, operator: string, val: unknown) => {
@@ -1548,5 +1586,95 @@ describe('the vocabulary', () => {
     ] as const) {
       expect(CLEAR_HELD_OUTCOME_COPY[outcome]).toMatch(/run the check again/i)
     }
+  })
+})
+
+/**
+ * THE MONEY GUARD. Owner decision 2026-10-04, before the 341-order production backlog is cleared.
+ *
+ * Every automatic canceller in this codebase asks `findOrdersWithMoney` before it cancels (Sprint
+ * 2026-09-29: "automatic cancellers never cancel over money"). This action did not: its guards were
+ * the gateway answer, the control, the E04111 persistence rule and `require_pending` -- none of which
+ * sees a cash/non-gateway ledger row, a settled split allocation, or a gateway sale row that is
+ * recorded here while the order still reads `pending`. A person pressing the button does not change
+ * what is recorded against the order, so the same guard applies.
+ *
+ * Asserted on the STORED fixture: the order's payment_status after the run, not the result object.
+ */
+describe('the money guard', () => {
+  const unpaidEverywhere = async ({ merchantOrderNo }: { merchantOrderNo: string }) =>
+    merchantOrderNo === 'FT-CONTROL'
+      ? finatic({ paid: true, status: 'paid', amount: 40, merchantOrderNo })
+      : finatic({ paid: false, statusRecognised: true, status: 'failed', merchantOrderNo })
+
+  const cases: Array<[string, MoneyFixture]> = [
+    ['a settled split allocation', { allocations: [{ order_id: 'o-435', settled_at: LONG_AGO }] }],
+    ['a cash / non-gateway ledger row', { ledger: [{ order_ids: ['o-435'] }] }],
+    [
+      'an unrefunded gateway sale row',
+      { sales: [{ event_type: 'sale', business_order_no: 'FT-o-435', amount: 52.5, order_ids: ['o-435'] }] },
+    ],
+  ]
+
+  for (const [what, money] of cases) {
+    it(`never cancels an order with ${what} recorded against it -- and still cancels the others`, async () => {
+      const s = makeSupabase([...theSix(), CONTROL], undefined, money)
+      const summary = await clearHeldForReview(s.client, {
+        restaurantId: RESTAURANT,
+        nowMs: NOW,
+        queryFinaticOrderPaidFn: unpaidEverywhere,
+      })
+
+      const guarded = s.orders.find((o) => o.id === 'o-435')!
+      expect(guarded.payment_status).toBe('pending')
+      expect(guarded.status).not.toBe('cancelled')
+      expect(guarded.cancelled_at).toBeNull()
+      expect(outcomesById(summary)['o-435']).toBe('skipped_money_not_ruled_out')
+      expect(summary.cancelledIds).not.toContain('o-435')
+      // NOT a blanket refusal: the five with nothing recorded are cancelled exactly as before.
+      expect(summary.cancelledIds.sort()).toEqual(['o-462', 'o-494', 'o-523', 'o-548', 'o-615'])
+      // and the refusal is written down, naming why
+      const skip = auditsFor(s.audits, HELD_CLEAR_SKIPPED_ACTION, 'o-435')
+      expect(skip).toHaveLength(1)
+      expect((skip[0].metadata as Row).outcome).toBe('skipped_money_not_ruled_out')
+    })
+  }
+
+  it('cancels NOTHING when the payment state cannot be read -- unreadable is not "no money"', async () => {
+    const s = makeSupabase([...theSix(), CONTROL], undefined, { unreadable: true })
+    const summary = await clearHeldForReview(s.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: unpaidEverywhere,
+    })
+
+    expect(summary.cancelledIds).toEqual([])
+    for (const o of theSix()) {
+      expect(s.orders.find((x) => x.id === o.id)!.payment_status).toBe('pending')
+      expect(outcomesById(summary)[o.id]).toBe('skipped_money_not_ruled_out')
+    }
+  })
+
+  it('positive control: a sale refunded in full no longer holds the order, so it IS cancelled', async () => {
+    // Without this, every "not cancelled" above could just mean the guard refuses everything.
+    const s = makeSupabase([...theSix(), CONTROL], undefined, {
+      sales: [{ event_type: 'sale', business_order_no: 'FT-o-435', amount: 52.5, order_ids: ['o-435'] }],
+      refunds: [{ event_type: 'refund_succeeded', origin_business_order_no: 'FT-o-435', amount: 52.5 }],
+    })
+    const summary = await clearHeldForReview(s.client, {
+      restaurantId: RESTAURANT,
+      nowMs: NOW,
+      queryFinaticOrderPaidFn: unpaidEverywhere,
+    })
+
+    expect(summary.cancelledIds).toContain('o-435')
+    expect(s.orders.find((o) => o.id === 'o-435')!.payment_status).toBe('cancelled')
+  })
+
+  it('wrote nothing to a money column for a guarded order -- the outcome is not one that writes', async () => {
+    const s = makeSupabase([...theSix(), CONTROL], undefined, { ledger: [{ order_ids: ['o-435'] }] })
+    await clearHeldForReview(s.client, { restaurantId: RESTAURANT, nowMs: NOW, queryFinaticOrderPaidFn: unpaidEverywhere })
+    const touched = s.updates.filter((u) => u.filters.some(([c, v]) => c === 'id' && v === 'o-435'))
+    expect(touched).toEqual([])
   })
 })

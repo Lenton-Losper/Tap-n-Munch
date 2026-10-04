@@ -306,6 +306,14 @@ export const CLEAR_HELD_OUTCOME_COPY: Record<ClearHeldOutcome, string> = {
   skipped_already_resolved:
     'this one was already sorted out while the check was running, so it was left alone.',
 
+  /**
+   * INTENT: the provider's answer would have allowed a cancel, but money is recorded against the
+   * order here (or that could not be checked), so it was refused. Never clears by waiting. SIGNED by
+   * the owner 2026-10-04 as worded.
+   */
+  skipped_money_not_ruled_out:
+    'money is recorded against this order here, or its payment records could not be checked, so it was not cancelled. Nothing was changed. Someone needs to look at this one.',
+
   /** INTENT: the trustworthiness test failed, so this order's answer was never used. */
   skipped_control_failed:
     'the answers from the payment provider could not be trusted in this check, so ' +
