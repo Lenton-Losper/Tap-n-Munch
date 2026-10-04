@@ -925,7 +925,7 @@ export async function autoCancelStalePosOrders(
     const lookbackMs = Math.max(SKIP_REPROBE_INTERVAL_MS, E04111_MIN_OBSERVATION_SEPARATION_MS)
     const lookback = new Date(nowMs - lookbackMs).toISOString()
 
-    const { data: priorSkips } = await supabase
+    const { data: priorSkips, error: priorSkipsError } = await supabase
       .from('audit_logs')
       .select('entity_id, created_at, metadata')
       .eq('action', VERIFICATION_SKIPPED_ACTION)
@@ -935,6 +935,16 @@ export async function autoCancelStalePosOrders(
       )
       .gte('created_at', lookback)
       .order('created_at', { ascending: false })
+
+    /**
+     * supabase-js RETURNS a failed request as `{ data: null, error }`; it does not throw. This read
+     * used to destructure only `data`, so a failure was indistinguishable from "nothing was ever
+     * probed": every due order was probed again and the catch below -- the only place the failure is
+     * reported -- never ran. Production, 2026-10-04: 1,220 E04111 re-probes in seven days inside the
+     * 24 h separation, always in runs of exactly the per-run cap, every one silent. Throwing hands
+     * the failure to that catch, which keeps the recorded fail-open and makes it visible.
+     */
+    if (priorSkipsError) throw priorSkipsError
 
     /** The most recent observation per order, and whether it was the permanent answer. */
     const newestSkip = new Map<string, { at: number; permanent: boolean }>()
@@ -963,9 +973,14 @@ export async function autoCancelStalePosOrders(
       if (nowMs - seen.at < interval) recentlyProbed.add(id)
     }
   } catch (probeReadErr) {
+    // A PostgREST error can arrive as a plain object, which a log line renders as
+    // "[object Object]" -- name the cause in text so the failure is diagnosable from the log alone.
+    const cause =
+      probeReadErr instanceof Error
+        ? probeReadErr.message
+        : JSON.stringify(probeReadErr)
     console.error(
-      '[autoCancelStalePosOrders] could not read prior skip audit rows; probing every candidate:',
-      probeReadErr,
+      `[autoCancelStalePosOrders] could not read prior skip audit rows; probing every candidate: ${cause}`,
     )
   }
 
@@ -1233,10 +1248,26 @@ export async function autoCancelStalePosOrders(
       // Finatic unreachable or errored -- no confident answer, but a future run may get one.
       // Never default to cancelling here; leave payment_status='pending' and retry next run.
       const e04111 = isFinaticMerchantOrderInvalidError(err)
-      console.error(
-        `[autoCancelStalePosOrders] Finatic check failed for order ${orderId} (restaurant ${orderRestaurantId}), skipping this run${e04111 ? ' [E04111 -- gateway has no record of this reference yet]' : ''}:`,
-        err instanceof Error ? err.message : err,
-      )
+      /**
+       * E04111 IS AN ANSWER, NOT A FAILED CHECK. The gateway was reached and said, recognisably,
+       * that it has no record of this reference. Logging it as "Finatic check failed" at error
+       * buried the real failures under it: on production, 2026-09-28 to 10-04, all 3,550 skips
+       * were E04111. It is logged at warn with its own wording; the decision is unchanged (skipped,
+       * recorded below, never cancelled or marked paid on E04111 alone -- the 2026-08-05 ruling).
+       * Anything that is NOT E04111 -- unreachable, auth, an unrecognised error -- is still an
+       * error and still says "Finatic check failed".
+       */
+      if (e04111) {
+        console.warn(
+          `[autoCancelStalePosOrders] order ${orderId} (restaurant ${orderRestaurantId}): E04111 -- Finatic has no record of this reference; left pending for review, not cancelled:`,
+          err instanceof Error ? err.message : err,
+        )
+      } else {
+        console.error(
+          `[autoCancelStalePosOrders] Finatic check failed for order ${orderId} (restaurant ${orderRestaurantId}), skipping this run:`,
+          err instanceof Error ? err.message : err,
+        )
+      }
       /**
        * WRITE THE SKIP DOWN. Part 2 of docs/design-persistence-pass-2026-08-21.md.
        *
