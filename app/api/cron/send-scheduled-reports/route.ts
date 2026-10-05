@@ -137,6 +137,39 @@ async function runScheduledReports(req: Request) {
     // The trading day that is CLOSING, in the restaurant's timezone -- not yesterday, and not
     // a UTC calendar date. getReportData resolves the day boundaries in the same zone.
     const reportPeriod = decision.reportPeriod
+
+    /**
+     * CLAIM THE PERIOD BEFORE SENDING. The "already sent?" read above is not enough on its own: two
+     * invocations running together both read "not sent" and both send. On 2026-10-04 Cloudflare
+     * dispatched every production cron tick twice, 3 s apart, for over an hour. Only the database
+     * can arbitrate between two isolates, so the claim is an INSERT against the unique partial
+     * index report_send_log_one_claim_per_period (migration 20261005120000): one `claimed` or
+     * `success` row per (schedule, period). The loser gets 23505 and sends nothing.
+     *
+     * Any OTHER claim failure also sends nothing. Without a claim there is no guarantee, and a
+     * missed day is detectable (detectMissedDay) while a duplicate email cannot be recalled.
+     */
+    const { data: claim, error: claimError } = await supabase
+      .from('report_send_log')
+      .insert({
+        schedule_id: schedule.id,
+        restaurant_id: schedule.restaurant_id,
+        report_period: reportPeriod,
+        status: 'claimed',
+      })
+      .select('id')
+      .single()
+
+    if (claimError || !claim?.id) {
+      if ((claimError as { code?: string } | null)?.code === '23505') {
+        results.push({ scheduleId: schedule.id, status: 'claimed_elsewhere', reportPeriod })
+      } else {
+        console.error(`[REPORTS] could not claim ${schedule.id} period=${reportPeriod}; NOT sending:`, claimError?.message)
+        results.push({ scheduleId: schedule.id, status: 'skipped', reason: 'claim_failed', reportPeriod })
+      }
+      continue
+    }
+    const claimId = String(claim.id)
     const start = Date.now()
 
     try {
@@ -168,16 +201,14 @@ async function runScheduledReports(req: Request) {
 
       const duration = Date.now() - start
 
-      // The insert result IS checked. Previously it was discarded on both paths, so a failed
-      // log write left last_sent_at updated and the run looking clean -- the same silent-gap
-      // shape as the auto-cancel cron.
-      const { error: logInsertError } = await supabase.from('report_send_log').insert({
-        schedule_id: schedule.id,
-        restaurant_id: schedule.restaurant_id,
-        report_period: reportPeriod,
-        status: 'success',
-        duration_ms: duration,
-      })
+      // The claim row BECOMES the success row. The write result IS checked: previously it was
+      // discarded, so a failed log write left last_sent_at updated and the run looking clean. If it
+      // fails, the row stays `claimed`, which still blocks a second send -- the email went out.
+      const { error: logInsertError } = await supabase
+        .from('report_send_log')
+        .update({ status: 'success', duration_ms: duration, sent_at: new Date().toISOString() })
+        .eq('id', claimId)
+        .eq('status', 'claimed')
       if (logInsertError) {
         console.error(`[REPORTS] send-log insert FAILED after a successful send for ${schedule.id}:`, logInsertError.message)
         await supabase.from('audit_logs').insert({
@@ -214,16 +245,20 @@ async function runScheduledReports(req: Request) {
       failed++
       console.error(`[REPORTS] FAILED ${schedule.id} period=${reportPeriod}:`, message)
 
-      const { error: logInsertError } = await supabase.from('report_send_log').insert({
-        schedule_id: schedule.id,
-        restaurant_id: schedule.restaurant_id,
-        report_period: reportPeriod,
-        status: 'failed',
-        error: message,
-        duration_ms: duration,
-      })
+      // RELEASE THE CLAIM: `failed` is outside the unique index, so the next tick can claim the period
+      // again and retry. If the release itself fails the period stays claimed and is NOT retried
+      // automatically -- at most once is the guarantee this route makes. That is surfaced below
+      // (claimReleaseFailed) and by the missed-day alert, and a person can resend.
+      const { error: logInsertError } = await supabase
+        .from('report_send_log')
+        .update({ status: 'failed', error: message, duration_ms: duration })
+        .eq('id', claimId)
+        .eq('status', 'claimed')
       if (logInsertError) {
-        console.error('[REPORTS] send-log insert failed for a FAILED send:', logInsertError.message)
+        console.error(
+          '[REPORTS] could not release the claim for a FAILED send; this period will not be retried automatically:',
+          logInsertError.message,
+        )
       }
 
       // Audit at error severity so computePlatformAlerts surfaces it, rather than leaving the
@@ -240,6 +275,14 @@ async function runScheduledReports(req: Request) {
           error: message,
           durationMs: duration,
           logWriteFailed: Boolean(logInsertError),
+          claimReleaseFailed: Boolean(logInsertError),
+          ...(logInsertError
+            ? {
+                note:
+                  'The send failed AND its claim could not be released, so this period will not be ' +
+                  'retried automatically. Resend it by hand once the cause is fixed.',
+              }
+            : {}),
           requiresAttention: true,
         },
       })
