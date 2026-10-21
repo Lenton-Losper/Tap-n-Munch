@@ -52,6 +52,8 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
    * fallbacks is how the dashboard says "PayToday" while the same night's email says "paytoday".
    */
   paytoday: 'PayToday',
+  /** Its own row, never folded into cash. The staff-settled method (see lib/payments/payment-integrity.ts). */
+  other: 'Other',
   unknown: 'Unrecorded',
 }
 

@@ -7,9 +7,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -17,6 +14,7 @@ import {
 } from 'recharts'
 import { ArrowLeft, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { PaymentMethodBreakdown } from '@/components/analytics/payment-method-breakdown'
 
 type PeriodKey = 'week' | 'month' | 'threeMonths'
 
@@ -49,7 +47,6 @@ const PERIODS: Array<{ key: PeriodKey; label: string; itemTitle: string }> = [
 ]
 
 const ORANGE = '#FF6B35'
-const PIE_COLORS = ['#FF6B35', '#37352F', '#C4BBAF']
 
 function toDate(value: unknown): Date | null {
   if (!value) return null
@@ -168,14 +165,8 @@ export function AnalyticsContent() {
     const itemMap = new Map<string, { name: string; quantity: number; revenue: number }>()
     const categoryMap = new Map<string, { name: string; orders: number; revenue: number }>()
     const hourMap = new Map<number, number>()
-    const paymentCounts = { card: 0, cash: 0, other: 0 }
 
     filtered.forEach((order) => {
-      const method = String(order.payment_method || '').toLowerCase()
-      if (method === 'card') paymentCounts.card += 1
-      else if (method === 'cash') paymentCounts.cash += 1
-      else paymentCounts.other += 1
-
       const orderDate = toDate(order.created_at) || toDate(order.placed_at)
       if (orderDate) {
         const hour = orderDate.getHours()
@@ -211,12 +202,6 @@ export function AnalyticsContent() {
     const peakHours = Array.from(hourMap.entries())
       .map(([hour, orders]) => ({ hour, orders, label: `${hour.toString().padStart(2, '0')}:00` }))
       .sort((a, b) => b.orders - a.orders)
-
-    const paymentTotal = paymentCounts.card + paymentCounts.cash + paymentCounts.other
-    const paymentSplit = [
-      { name: 'Card', value: paymentCounts.card, percent: paymentTotal ? (paymentCounts.card / paymentTotal) * 100 : 0 },
-      { name: 'Cash', value: paymentCounts.cash, percent: paymentTotal ? (paymentCounts.cash / paymentTotal) * 100 : 0 },
-    ]
 
     let salesOverTime: Array<{ label: string; revenue: number }> = []
     if (period === 'week') {
@@ -282,7 +267,6 @@ export function AnalyticsContent() {
       topItem,
       categories,
       peakHours,
-      paymentSplit,
       salesOverTime,
       periodTitle,
       filteredCount: filtered.length,
@@ -385,8 +369,8 @@ export function AnalyticsContent() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-              <div className="rounded-2xl border border-[#E9E9E7] bg-white p-5 xl:col-span-2">
+            <div className="grid grid-cols-1 gap-6">
+              <div className="rounded-2xl border border-[#E9E9E7] bg-white p-5">
                 <h3 className="font-serif text-xl text-[#37352F]">Sales Over Time</h3>
                 <div className="mt-4 h-72">
                   <ResponsiveContainer width="100%" height="100%">
@@ -400,30 +384,11 @@ export function AnalyticsContent() {
                   </ResponsiveContainer>
                 </div>
               </div>
-
-              <div className="rounded-2xl border border-[#E9E9E7] bg-white p-5">
-                <h3 className="font-serif text-xl text-[#37352F]">Payment Method Split</h3>
-                <div className="mt-4 h-56">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={analytics.paymentSplit} dataKey="value" nameKey="name" outerRadius={85} label>
-                        {analytics.paymentSplit.map((entry, index) => (
-                          <Cell key={entry.name} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="mt-2 space-y-1 text-sm text-[#6B675F]">
-                  {analytics.paymentSplit.map((split) => (
-                    <p key={split.name}>
-                      {split.name}: {split.percent.toFixed(1)}% ({split.value})
-                    </p>
-                  ))}
-                </div>
-              </div>
             </div>
+
+            {restaurantId && (
+              <PaymentMethodBreakdown restaurantId={restaurantId} currencySymbol={currencySymbol} />
+            )}
 
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
               <div className="rounded-2xl border border-[#E9E9E7] bg-white p-5">
